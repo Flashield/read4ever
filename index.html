@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ReadBook - 文本阅读器</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <!-- 顶部菜单栏 -->
+    <div id="menu-bar">
+      <div class="menu-item" data-menu="file">文件(F)</div>
+      <div class="menu-item" data-menu="view">视图(V)</div>
+      <div class="menu-item" data-menu="read">阅读(R)</div>
+      <div class="menu-item" data-menu="tool">工具(T)</div>
+      <div class="menu-item hidden" data-menu="plugin">插件</div>
+      <div class="menu-item" data-menu="help">帮助(H)</div>
+    </div>
+
+    <!-- 工具栏 -->
+    <div id="toolbar">
+      <button class="tb-btn" id="btn-open" title="打开文件 (Ctrl+O)">📖</button>
+      <button class="tb-btn" id="btn-folder" title="打开文件夹 (Ctrl+Shift+O)">📁</button>
+      <button class="tb-btn" id="btn-prev-file" title="上一个文件">◀</button>
+      <button class="tb-btn" id="btn-next-file" title="下一个文件">▶</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" id="btn-scroll" title="开始/停止滚屏 (Space)">▶|</button>
+      <button class="tb-btn" id="btn-speed-down" title="减速 (-)">🐢</button>
+      <button class="tb-btn" id="btn-speed-up" title="加速 (+)">🐇</button>
+      <span class="tb-speed-label" id="speed-label">速度:3</span>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" id="btn-page-mode" title="页模式翻页">📄</button>
+      <button class="tb-btn" id="btn-find" title="查找 (Ctrl+F)">🔍</button>
+      <button class="tb-btn" id="btn-keyword" title="关键词检索与统计 (Ctrl+K)">🔑</button>
+      <button class="tb-btn" id="btn-bookmark" title="添加书签 (Ctrl+B)">🔖</button>
+      <button class="tb-btn" id="btn-bookmark-list" title="书签列表">📑</button>
+      <button class="tb-btn" id="btn-bookshelf" title="收藏书架 (Ctrl+Shift+S)">📚</button>
+      <button class="tb-btn" id="btn-history" title="历史记录">📋</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" id="btn-reorder" title="重新排版 (F5)">📝</button>
+      <button class="tb-btn" id="btn-simp-trad" title="简/繁切换">简</button>
+      <button class="tb-btn" id="btn-dual-page" title="双页模式">双</button>
+      <button class="tb-btn" id="btn-fullscreen" title="全屏 (F11)">⛶</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" id="btn-hide" title="隐藏到托盘(T)">📥</button>
+      <span class="tb-spacer"></span>
+      <span class="tb-info" id="file-info">未打开文件</span>
+    </div>
+
+    <!-- 下拉菜单 -->
+    <div id="menu-dropdown" class="dropdown hidden">
+      <div class="dropdown-content" id="dropdown-content"></div>
+    </div>
+
+    <!-- 阅读区 -->
+    <div id="reader-container">
+      <div id="reader-content" class="reader-content" tabindex="0">
+        <div class="welcome-screen">
+          <h1>📖 ReadBook</h1>
+          <p>文本阅读器 — 按 Ctrl+O 打开文件，或拖拽文件到窗口</p>
+          <p class="welcome-tip">支持 TXT 文件和 ZIP 压缩包内的 TXT 文件</p>
+        </div>
+      </div>
+      <!-- 插件视图宿主（图片查看等插件渲染于此，激活时覆盖阅读区） -->
+      <div id="plugin-view-host" class="hidden"></div>
+    </div>
+
+    <!-- 底部状态栏 -->
+    <div id="status-bar">
+      <span id="status-encoding">编码: -</span>
+      <span id="status-position">位置: 0%</span>
+      <span id="status-mode">模式: 连续</span>
+      <span id="status-display">显示: 原码</span>
+    </div>
+
+    <!-- 查找栏 -->
+    <div id="find-bar" class="panel hidden">
+      <input type="text" id="find-input" placeholder="查找文字，? 匹配任意一个字符" />
+      <button id="find-prev-btn">上一个</button>
+      <button id="find-next-btn">下一个</button>
+      <span id="find-count"></span>
+      <button id="find-close">✕</button>
+    </div>
+
+    <!-- 文件夹侧栏（左侧） -->
+    <div id="folder-panel" class="side-panel panel-left hidden">
+      <div class="panel-header">
+        <span>文件夹</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="folder-toolbar">
+        <button id="folder-pick">📂 选择文件夹</button>
+        <span id="folder-path" title="">未选择文件夹</span>
+      </div>
+      <div id="folder-tree" class="folder-tree"></div>
+      <div class="folder-listbar">
+        <label class="folder-recursive" title="同时列出所有子目录中的文件">
+          <input type="checkbox" id="folder-recursive" /> 含子目录
+        </label>
+        <input type="text" id="folder-filter" placeholder="过滤文件名…" />
+        <button id="folder-refresh" title="刷新">🔄</button>
+      </div>
+      <div id="folder-list-head"><span id="folder-list-count"></span></div>
+      <div id="folder-list" class="folder-list"></div>
+    </div>
+
+    <!-- 插件管理面板 -->
+    <div id="plugin-panel" class="side-panel hidden">
+      <div class="panel-header">
+        <span>插件管理</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="panel-body" id="plugin-list"></div>
+    </div>
+
+    <!-- 书签面板 -->
+    <div id="bookmark-panel" class="side-panel hidden">
+      <div class="panel-header">
+        <span>书签</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="panel-body" id="bookmark-list"></div>
+      <div class="panel-footer">
+        <input type="text" id="bookmark-desc" placeholder="书签描述..." />
+        <button id="bookmark-add">添加书签</button>
+      </div>
+    </div>
+
+    <!-- 收藏书架面板 -->
+    <div id="bookshelf-panel" class="side-panel hidden">
+      <div class="panel-header">
+        <span>收藏书架</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="panel-body" id="bookshelf-list"></div>
+      <div class="panel-footer">
+        <input type="text" id="bookshelf-name" placeholder="书籍名称..." />
+        <button id="bookshelf-add">添加当前</button>
+      </div>
+    </div>
+
+    <!-- 历史记录面板 -->
+    <div id="history-panel" class="side-panel hidden">
+      <div class="panel-header">
+        <span>历史记录</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="panel-body" id="history-list"></div>
+      <div class="panel-footer">
+        <button id="history-clear">清除全部</button>
+      </div>
+    </div>
+
+    <!-- 配色/字体设置面板 -->
+    <div id="theme-panel" class="side-panel hidden">
+      <div class="panel-header">
+        <span>外观方案</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="panel-body">
+        <div class="setting-group">
+          <label>预设方案</label>
+          <select id="theme-select"></select>
+        </div>
+        <div class="setting-group">
+          <label>背景色</label>
+          <input type="color" id="bg-color" />
+        </div>
+        <div class="setting-group">
+          <label>文字颜色</label>
+          <input type="color" id="text-color" />
+        </div>
+        <div class="setting-group">
+          <label>字体</label>
+          <!-- 选项由 panels.ts 按 themes.ts 的跨平台字体栈动态填充 -->
+          <select id="font-family"></select>
+        </div>
+        <div class="setting-group">
+          <label>字号 (px)</label>
+          <input type="range" id="font-size" min="10" max="40" step="1" value="18" />
+          <span id="font-size-val">18</span>
+        </div>
+        <div class="setting-group">
+          <label>行间距</label>
+          <input type="range" id="line-spacing" min="1.0" max="3.0" step="0.1" value="1.8" />
+          <span id="line-spacing-val">1.8</span>
+        </div>
+        <div class="setting-group">
+          <label>字号快捷档</label>
+          <div class="size-presets">
+            <button class="size-preset" data-size="14">小</button>
+            <button class="size-preset" data-size="16">较小</button>
+            <button class="size-preset" data-size="18">中</button>
+            <button class="size-preset" data-size="22">较大</button>
+            <button class="size-preset" data-size="28">大</button>
+          </div>
+        </div>
+        <div class="setting-group">
+          <label>自定义方案名称</label>
+          <input type="text" id="custom-theme-name" placeholder="方案名称..." />
+          <button id="save-custom-theme">保存方案</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关键词检索与统计面板 -->
+    <div id="keyword-panel" class="side-panel hidden">
+      <div class="panel-header">
+        <span>关键词检索</span>
+        <button class="panel-close">✕</button>
+      </div>
+      <div class="kw-toolbar">
+        <select id="kw-group-select" title="选择关键词组"></select>
+        <button id="kw-rename-btn" title="重命名当前组">✎</button>
+        <button id="kw-group-add" title="新建关键词组">＋组</button>
+        <button id="kw-group-del" title="删除当前组（需二次确认）">－组</button>
+      </div>
+      <div class="kw-keywords">
+        <div id="kw-chips" class="kw-chips"></div>
+        <div class="kw-add-row">
+          <input type="text" id="kw-input" placeholder="输入关键词，回车添加（? 匹配任意一字）" />
+          <button id="kw-add">添加</button>
+        </div>
+      </div>
+      <div class="kw-tabs">
+        <button id="kw-tab-stats" class="kw-tab active">统计</button>
+        <button id="kw-tab-index" class="kw-tab">索引</button>
+      </div>
+      <div id="kw-stats" class="panel-body kw-stats"></div>
+      <div id="kw-index" class="panel-body kw-index hidden"></div>
+    </div>
+
+    <!-- 局部编辑弹窗 -->
+    <div id="edit-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <span>局部编辑</span>
+          <button id="edit-close">✕</button>
+        </div>
+        <textarea id="edit-textarea" rows="5"></textarea>
+        <div class="modal-footer">
+          <button id="edit-save-btn">保存</button>
+          <button id="edit-cancel-btn">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局遮罩 -->
+    <div id="overlay" class="hidden"></div>
+  </body>
+</html>

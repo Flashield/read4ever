@@ -1,0 +1,57 @@
+/* Tauri 后端命令封装 */
+import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import type { FileContent, FileEntry, StoreData } from "./types";
+
+export const api = {
+  openText: (path: string, encoding?: string) =>
+    invoke<FileContent>("open_text_file", { path, encoding: encoding ?? null }),
+  listZip: (path: string) => invoke<string[]>("open_zip_file", { path }),
+  readZip: (path: string, entryName: string, encoding?: string) =>
+    invoke<FileContent>("read_zip_entry", { path, entryName, encoding: encoding ?? null }),
+  saveText: (path: string, content: string, encoding: string) =>
+    invoke<void>("save_text_file", { path, content, encoding }),
+  editSave: (path: string, content: string, encoding: string) =>
+    invoke<void>("edit_save", { path, content, encoding }),
+  reorder: (content: string) => invoke<string>("reorder", { content }),
+  nextFile: (path: string) => invoke<string | null>("find_next", { path }),
+  prevFile: (path: string) => invoke<string | null>("find_prev", { path }),
+  loadStore: () => invoke<StoreData>("load_store"),
+  saveStore: (data: StoreData) => invoke<void>("save_store", { data }),
+  setTitle: (title: string) => invoke<void>("set_window_title", { title }),
+  hideToTray: () => invoke<void>("hide_to_tray"),
+  exitApp: () => invoke<void>("exit_app"),
+
+  /* 文件夹侧栏 */
+  listDir: (path: string) => invoke<FileEntry[]>("list_dir", { path }),
+  trashPath: (path: string) => invoke<void>("trash_path", { path }),
+  moveTo: (from: string, toDir: string) => invoke<string>("move_path", { from, toDir }),
+  renamePath: (from: string, newName: string) =>
+    invoke<string>("rename_path", { from, newName }),
+  makeDir: (parent: string, name: string) => invoke<string>("make_dir", { parent, name }),
+
+  /* 二进制读取（插件用；命令返回 tauri ipc Response → ArrayBuffer） */
+  readFileBytes: (path: string) => invoke<ArrayBuffer>("read_file_bytes", { path }),
+  readZipBytes: (path: string, entryName: string) =>
+    invoke<ArrayBuffer>("read_zip_entry_bytes", { path, entryName }),
+
+  /* 文件对话框 */
+  pickOpenFile: async (extraExts: string[] = []): Promise<string | null> => {
+    const f = await open({
+      multiple: false,
+      filters: [{ name: "可打开的文件", extensions: ["txt", "zip", ...extraExts] }],
+    });
+    return typeof f === "string" ? f : null;
+  },
+  pickDirectory: async (): Promise<string | null> => {
+    const d = await open({ directory: true, multiple: false });
+    return typeof d === "string" ? d : null;
+  },
+  pickSaveFile: async (defaultName: string): Promise<string | null> => {
+    const f = await save({
+      defaultPath: defaultName,
+      filters: [{ name: "文本文件", extensions: ["txt"] }],
+    });
+    return typeof f === "string" ? f : null;
+  },
+};
