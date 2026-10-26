@@ -9,6 +9,15 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
   file: () => [
     { label: "打开文件…", shortcut: "Ctrl+O", action: () => app.openFileDialog() },
     { label: "打开文件夹…", shortcut: "Ctrl+Shift+O", action: () => void folder.pickFolder() },
+    {
+      label: "浏览 SMB 远程共享…",
+      shortcut: "Ctrl+Alt+O",
+      action: () =>
+        void (async () => {
+          await folder.openFolderPanel();
+          await folder.switchSideTab("smb");
+        })(),
+    },
     { sep: true },
     { label: "上一个文件", shortcut: "Ctrl+PgUp", action: () => app.gotoPrevFile(), disabled: !app.state.filePath },
     { label: "下一个文件", shortcut: "Ctrl+PgDn", action: () => app.gotoNextFile(), disabled: !app.state.filePath },
@@ -102,6 +111,7 @@ function showShortcuts(): void {
     [
       "Ctrl+O        打开文件",
       "Ctrl+Shift+O  打开文件夹（左侧栏树状浏览）",
+      "Ctrl+Alt+O    浏览 SMB 远程共享（左侧栏远程标签）",
       "Ctrl+PgUp/Dn  上一个/下一个文件（按序号）",
       "Space         开始/停止滚屏（鼠标上下位置调速）",
       "1-9 / + / -   滚屏速度档位（点工具栏速度标签精确设置）",

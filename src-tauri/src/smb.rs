@@ -167,11 +167,6 @@ pub fn put_servers(servers: Vec<SmbServer>) {
         .retain(|_id, s| reg.iter().any(|cur| cur == &s.cfg));
 }
 
-/// 丢弃某服务器的会话（面板「刷新」用，强制重连）
-pub fn drop_session(id: &str) {
-    sessions().write().unwrap().remove(id);
-}
-
 /// 测试连接：连服务器 + 连共享 + 列共享根，全通才返回成功
 pub async fn test_connection(cfg: &SmbServer) -> Result<String, String> {
     let addr = addr_of(cfg);

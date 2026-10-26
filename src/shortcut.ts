@@ -29,6 +29,11 @@ export function initShortcuts(): void {
         case "o":
           e.preventDefault();
           if (e.shiftKey) void folder.pickFolder();
+          else if (e.altKey)
+            void (async () => {
+              await folder.openFolderPanel();
+              await folder.switchSideTab("smb");
+            })();
           else app.openFileDialog();
           return;
         case "z":
