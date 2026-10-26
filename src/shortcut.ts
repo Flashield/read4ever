@@ -2,6 +2,7 @@
 import * as app from "./app";
 import * as reader from "./reader";
 import * as folder from "./folder";
+import * as plugins from "./plugins/registry";
 import { isFindOpen, closeFind, findNext, findPrev } from "./findbar";
 
 export function initShortcuts(): void {
@@ -72,16 +73,20 @@ export function initShortcuts(): void {
       }
       if (key === "PageDown") {
         e.preventDefault();
-        app.gotoNextFile();
+        if (!plugins.isActive()) app.gotoNextFile();
         return;
       }
       if (key === "PageUp") {
         e.preventDefault();
-        app.gotoPrevFile();
+        if (!plugins.isActive()) app.gotoPrevFile();
         return;
       }
       return;
     }
+
+    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（Space/数字/±/P/PgUp/PgDn/Home/End/T
+    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）与 Ctrl 组合不受影响
+    if (plugins.isActive()) return;
 
     // 功能键
     if (key === "F5") {
@@ -117,18 +122,16 @@ export function initShortcuts(): void {
       return;
     }
     if (key >= "1" && key <= "9") {
-      app.setSpeed(Number(key));
-      app.toast(`速度: ${key} 档（约 ${Number(key) * 45} 像素/秒）`);
+      app.setSpeed(Number(key) * 45); // 1-9 预设档位 → 45..405 像素/秒
+      app.toast(`速度: ${Number(key) * 45} 像素/秒`);
       return;
     }
     if (key === "+" || key === "=") {
       app.adjustSpeed(1);
-      app.toast(`速度: ${reader.getSpeed()} 档（约 ${reader.speedPx()} 像素/秒）`);
       return;
     }
     if (key === "-") {
       app.adjustSpeed(-1);
-      app.toast(`速度: ${reader.getSpeed()} 档（约 ${reader.speedPx()} 像素/秒）`);
       return;
     }
     if (key === "p" || key === "P") {

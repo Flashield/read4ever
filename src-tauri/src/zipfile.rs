@@ -40,6 +40,63 @@ pub async fn read_zip_entry_raw(path: &str, entry_name: &str) -> Result<Vec<u8>,
     extract_entry_ranged(&mut f, e).await
 }
 
+/// 读取本地 zip 内 Stored（未压缩）条目的一个字节区间（大体积媒体流式播放用）。
+/// 压缩条目（deflate）不可随机定位，返回错误让调用方回退整读。
+pub async fn zip_entry_stored_size(path: &str, entry_name: &str) -> Result<u64, String> {
+    let entry = cache_entry(path).await?;
+    let e = entry
+        .index
+        .entries
+        .iter()
+        .find(|x| x.name == entry_name)
+        .ok_or_else(|| format!("zip 内未找到: {}", entry_name))?;
+    if e.method != 0 {
+        return Err(format!("条目「{}」为压缩存储，不支持区间读取", e.name));
+    }
+    Ok(e.compressed_size) // Stored 条目未压缩大小 == 压缩大小
+}
+
+pub async fn read_zip_entry_stored_range(
+    path: &str,
+    entry_name: &str,
+    offset: u64,
+    len: u64,
+) -> Result<Vec<u8>, String> {
+    let entry = cache_entry(path).await?;
+    let e = entry
+        .index
+        .entries
+        .iter()
+        .find(|x| x.name == entry_name)
+        .ok_or_else(|| format!("zip 内未找到: {}", entry_name))?;
+    if e.method != 0 {
+        return Err(format!("条目「{}」为压缩存储，不支持区间读取", e.name));
+    }
+    let mut f = entry
+        .file
+        .try_clone()
+        .map_err(|err| format!("zip 句柄不可用: {}", err))?;
+    // 数据起点：本地文件头之后（头内记录了实际的名称/扩展字段长度）
+    let mut lfh = [0u8; 30];
+    f.seek(SeekFrom::Start(e.header_offset))
+        .map_err(|err| format!("定位本地文件头失败: {}", err))?;
+    f.read_exact(&mut lfh).map_err(|err| format!("读取本地文件头失败: {}", err))?;
+    if lfh[0..4] != SIG_LFH {
+        return Err(format!("条目「{}」的本地文件头损坏", e.name));
+    }
+    let name_len = u16_at(&lfh, 26).ok_or("本地文件头损坏")? as u64;
+    let extra_len = u16_at(&lfh, 28).ok_or("本地文件头损坏")? as u64;
+    let data_off = e.header_offset + 30 + name_len + extra_len;
+    let avail = e.compressed_size.saturating_sub(offset);
+    let take = len.min(avail) as usize;
+    let mut buf = vec![0u8; take];
+    f.seek(SeekFrom::Start(data_off.saturating_add(offset)))
+        .map_err(|err| format!("定位条目数据失败: {}", err))?;
+    f.read_exact(&mut buf)
+        .map_err(|_| format!("条目「{}」的数据不完整", e.name))?;
+    Ok(buf)
+}
+
 /// 读取 zip 内指定 txt 条目。forced_encoding 不为 None 时按指定编码解码。
 pub async fn read_zip_entry(
     path: &str,

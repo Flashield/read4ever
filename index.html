@@ -14,7 +14,7 @@
       <div class="menu-item" data-menu="view">视图(V)</div>
       <div class="menu-item" data-menu="read">阅读(R)</div>
       <div class="menu-item" data-menu="tool">工具(T)</div>
-      <div class="menu-item hidden" data-menu="plugin">插件</div>
+      <div class="menu-item" data-menu="plugin">插件(P)</div>
       <div class="menu-item" data-menu="help">帮助(H)</div>
     </div>
 
@@ -27,9 +27,7 @@
       <button class="tb-btn" id="btn-next-file" title="下一个文件">▶</button>
       <span class="tb-sep"></span>
       <button class="tb-btn" id="btn-scroll" title="开始/停止滚屏 (Space)">▶|</button>
-      <button class="tb-btn" id="btn-speed-down" title="减速 (-)">🐢</button>
-      <button class="tb-btn" id="btn-speed-up" title="加速 (+)">🐇</button>
-      <span class="tb-speed-label" id="speed-label">速度:3</span>
+      <span class="tb-speed-label" id="speed-label" title="点击精确设置滚屏速度">速度:135px/s</span>
       <span class="tb-sep"></span>
       <button class="tb-btn" id="btn-page-mode" title="页模式翻页">📄</button>
       <button class="tb-btn" id="btn-find" title="查找 (Ctrl+F)">🔍</button>
@@ -69,6 +67,7 @@
 
     <!-- 底部状态栏 -->
     <div id="status-bar">
+      <span id="status-file">文件: -</span>
       <span id="status-encoding">编码: -</span>
       <span id="status-position">位置: 0%</span>
       <span id="status-mode">模式: 连续</span>

@@ -13,7 +13,7 @@ let hooks: ReaderHooks = { onProgress: () => {}, onPageEnd: () => {} };
 
 let scrolling = false;
 let mode: ScrollMode = "continuous";
-let speed = 3; // 1..9 档
+let speed = 135; // 滚屏基准速度（像素/秒，鼠标位于屏幕中部时）
 let pageInterval = 10; // 页模式间隔（秒）
 let mouseFactor = 1; // 滚屏时鼠标纵向位置调速系数
 let dual = false;
@@ -113,7 +113,7 @@ function loop(ts: number): void {
   if (!scrolling || mode !== "continuous") return;
   const dt = Math.min(100, ts - lastTs);
   lastTs = ts;
-  const px = (speed * 45 * mouseFactor * dt) / 1000;
+  const px = (speed * mouseFactor * dt) / 1000;
   const e = el();
   if (dual) e.scrollLeft += px;
   else e.scrollTop += px;
@@ -183,17 +183,14 @@ export function getSpeed(): number {
   return speed;
 }
 
-/** 当前档位对应的基准滚动速度（像素/秒，鼠标位于屏幕中部时） */
-export function speedPx(): number {
-  return Math.round(speed * 45);
+/** 设置滚屏基准速度（像素/秒，10–2000） */
+export function setSpeed(px: number): void {
+  speed = Math.min(2000, Math.max(10, Math.round(px)));
 }
 
-export function setSpeed(n: number): void {
-  speed = Math.min(9, Math.max(1, Math.round(n * 2) / 2)); // 1..9，支持 0.5 步进
-}
-
+/** 加减速步进（±20 像素/秒，沿用原 0.5 档 ≈ 22.5px 的手感） */
 export function adjustSpeed(d: number): void {
-  setSpeed(speed + d);
+  setSpeed(speed + d * 20);
 }
 
 export function getPageInterval(): number {

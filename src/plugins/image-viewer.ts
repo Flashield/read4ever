@@ -1,8 +1,9 @@
 /* 图片查看插件：查看常见图片格式（含 zip 内图片）。
-   支持：缩放（滚轮以鼠标为焦点）/旋转/适应窗口·适宽·适高/幻灯播放/
-   自动滚屏（向下·向右·向左，无缝拼接预加载，跨目录与跨压缩包接续）。 */
+   支持：缩放（滚轮以鼠标为焦点）/旋转/缩放模式下拉（适应窗口·适宽·适高·原始大小）/
+   幻灯播放/自动滚屏（向下·向右·向左，无缝拼接预加载，跨目录与跨压缩包接续）。 */
 import { api } from "../api";
 import * as app from "../app";
+import { showDropdown } from "../dropdown";
 import { deactivateActive, pluginSetting, setPluginSetting } from "./registry";
 import type { MenuItemDef } from "../dropdown";
 import type { PluginOpenContext, ReadBookPlugin } from "./types";
@@ -463,25 +464,21 @@ function updateLabels(): void {
   syncStatus();
 }
 
-/** 向宿主上报视图状态：右上角文件名/窗口标题与状态栏四格随当前图、缩放与播放状态更新。
+/** 向宿主上报视图状态：窗口标题/右上角显示打开的文件（zip 内图片显示 zip 名），
+ *  状态栏"文件"格显示当前查看的图片；其余各格随缩放与播放状态更新。
  *  宿主在插件视图关闭时自动恢复文本状态，这里无需处理退场。 */
 function syncStatus(): void {
   if (!ctx) return;
   const path = currentPath();
   const cur = tape[tapeCur];
-  const fitLabel =
-    fitMode === "contain"
-      ? "适应窗口"
-      : fitMode === "width"
-        ? "适合宽度"
-        : fitMode === "height"
-          ? "适合高度"
-          : `${Math.round((cur?.ratio ?? zoom) * 100)}%`;
+  const m = path.match(/^(.+\.zip)::/i);
+  const opened = baseName(m ? m[1] : path); // 打开的文件：zip 自身或独立图片
   ctx.setStatus({
-    title: baseName(path),
+    title: opened,
+    file: baseName(path),
     encoding: cur ? `${ctx.ext.replace(".", "").toUpperCase()} ${cur.w}×${cur.h}` : undefined,
     position: ctx.siblings.length > 1 && globalIdx >= 0 ? `第 ${globalIdx + 1}/${ctx.siblings.length} 张` : undefined,
-    mode: `模式: ${fitLabel}`,
+    mode: `模式: ${fitLabel()}`,
     display: slideOn ? `幻灯 ${slideSeconds}s` : scrollOn ? `滚屏·${dirLabel(direction)}` : "查看图片",
   });
 }
@@ -586,22 +583,63 @@ function applyLayout(): void {
 
   zoomEl.textContent = `${cur.w}×${cur.h} · ${Math.round(cur.ratio * 100)}%`;
   layoutRetry = 0;
-  syncModeButtons();
+  syncFitButton();
   syncStatus(); // 缩放比例/适应模式变化 → 状态栏"模式"格随之更新
 }
 
-function syncModeButtons(): void {
-  const map: Record<FitMode, string> = { contain: "fit", width: "fitw", height: "fith", custom: "" };
-  const act = map[fitMode];
-  // 只调整三个适应模式按钮——幻灯/滚屏按钮的状态由 syncButtons 管理，不能误清
-  for (const a of ["fit", "fitw", "fith"]) {
-    q<HTMLElement>(`button[data-act="${a}"]`)?.classList.toggle("active", a === act);
+/** 当前缩放模式/比例的显示文案（下拉按钮与状态栏"模式"格共用） */
+function fitLabel(): string {
+  const cur = tape[tapeCur];
+  switch (fitMode) {
+    case "contain":
+      return "适应窗口";
+    case "width":
+      return "适合宽度";
+    case "height":
+      return "适合高度";
+    default: {
+      const r = cur?.ratio ?? zoom;
+      return r === 1 ? "1:1" : `${Math.round(r * 100)}%`;
+    }
+  }
+}
+
+function syncFitButton(): void {
+  const btn = q<HTMLElement>(`button[data-act="fitmenu"]`);
+  if (btn) {
+    btn.textContent = fitLabel();
+    btn.title = "缩放模式：适应窗口 / 适合宽度 / 适合高度 / 原始大小";
   }
 }
 
 function setFit(mode: FitMode): void {
   fitMode = mode;
   applyLayout();
+}
+
+/** 缩放模式下拉（适应窗口/适宽/适高/原始大小） */
+function showFitMenu(anchor: HTMLElement): void {
+  const r = anchor.getBoundingClientRect();
+  showDropdown(
+    [
+      { label: "缩放模式", disabled: true },
+      { sep: true },
+      { label: "适应窗口", checked: () => fitMode === "contain", action: () => setFit("contain") },
+      { label: "适合宽度", checked: () => fitMode === "width", action: () => setFit("width") },
+      { label: "适合高度", checked: () => fitMode === "height", action: () => setFit("height") },
+      {
+        label: "原始大小 (1:1)",
+        checked: () => fitMode === "custom" && (tape[tapeCur]?.ratio ?? zoom) === 1,
+        action: () => {
+          fitMode = "custom";
+          zoom = 1;
+          applyLayout();
+        },
+      },
+    ],
+    r.left,
+    r.bottom + 4
+  );
 }
 
 /* ========== 焦点缩放 ========== */
@@ -997,11 +1035,6 @@ function menu(): MenuItemDef[] {
           },
         })),
     },
-    { sep: true },
-    {
-      label: "打开插件管理…",
-      action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "plugin-panel" })),
-    },
   ];
 }
 
@@ -1019,10 +1052,7 @@ function buildView(host: HTMLElement): void {
         <button data-act="next" title="下一张">▶</button>
         <button data-act="zoomin" title="放大">＋</button>
         <button data-act="zoomout" title="缩小">－</button>
-        <button data-act="fit" title="适应窗口">适应窗口</button>
-        <button data-act="fitw" title="适合宽度">适宽</button>
-        <button data-act="fith" title="适合高度">适高</button>
-        <button data-act="orig" title="原始大小 (100%)">1:1</button>
+        <button data-act="fitmenu" title="缩放模式">适应窗口</button>
         <button data-act="rotate" title="旋转 90°">↻</button>
         <span class="imgv-sep"></span>
         <button data-act="slide" title="幻灯播放：按间隔自动换下一张，播完接续下一目录/压缩包">幻灯</button>
@@ -1060,10 +1090,7 @@ function buildView(host: HTMLElement): void {
         break;
       case "zoomin": zoomAt(1.25, stageCenter().x, stageCenter().y); break;
       case "zoomout": zoomAt(1 / 1.25, stageCenter().x, stageCenter().y); break;
-      case "fit": setFit("contain"); break;
-      case "fitw": setFit("width"); break;
-      case "fith": setFit("height"); break;
-      case "orig": fitMode = "custom"; zoom = 1; applyLayout(); break;
+      case "fitmenu": showFitMenu(btn); break;
       case "rotate": rotation = (rotation + 90) % 360; applyLayout(); break;
       case "slide": setSlideshow(!slideOn); break;
       case "autoscroll": setAutoScroll(!scrollOn); break;
@@ -1116,9 +1143,9 @@ function onResize(): void {
 export const imageViewerPlugin: ReadBookPlugin = {
   id: PID,
   name: "图片查看",
-  version: "1.3.1",
+  version: "1.4.0",
   description:
-    "查看常见图片格式：缩放（滚轮以鼠标为焦点）/旋转/适应窗口·适宽·适高，幻灯播放，自动滚屏（向下/向右/向左，无缝拼接预加载，跨目录与跨压缩包接续）",
+    "查看常见图片格式：缩放（滚轮以鼠标为焦点）/旋转/缩放模式下拉（适应窗口·适宽·适高·原始大小），幻灯播放，自动滚屏（向下/向右/向左，无缝拼接预加载，跨目录与跨压缩包接续）",
   extensions: EXTENSIONS,
   menu,
   open(c: PluginOpenContext): void {

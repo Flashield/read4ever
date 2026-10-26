@@ -32,6 +32,8 @@ trash = "5"
 # SMB 远程浏览：纯 Rust 客户端（tokio 异步），无 FFI——保证 iOS/Windows 目标可编译。
 # 局限：仅 SMB2/3（不支持 SMB1）；0.x API 可能变动，升级需单独评估。
 smb2 = "0.35"
+# 流式播放协议 URL 路径的 percent 编解码（tauri 传递依赖，显式声明以直接使用）
+percent-encoding = "2"
 # 直用其 time（超时包装）；tokio 已随 tauri 在依赖树中，仅显式声明
 tokio = { version = "1", features = ["time"] }
 

@@ -7,6 +7,10 @@ import { convertDisplay, type DisplayMode } from "./simp_trad";
 import { showDropdown, initDropdown } from "./dropdown";
 import type { FileContent, StoreData } from "./types";
 
+/* 路径文件名（含 smb:// 的 / 分隔）；viewName 额外剥掉 zip 复合路径的条目部分 */
+const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
+const viewName = (path: string): string => baseName(path.split("::").pop() || path);
+
 export const state = {
   store: null as unknown as StoreData,
   filePath: "", // 后端返回的 filePath（zip 形式为 zip::entry）
@@ -33,7 +37,7 @@ export function defaultStore(): StoreData {
       fontFamily: FONT_SONG,
       fontSize: 18,
       lineSpacing: 1.8,
-      scrollSpeed: 3,
+      scrollSpeed: 135, // 滚屏基准速度（像素/秒）
       scrollMode: "continuous",
       pageInterval: 10,
       displayMode: "auto",
@@ -61,6 +65,10 @@ export function defaultStore(): StoreData {
 function mergeDefaults(data: StoreData): StoreData {
   const def = defaultStore();
   const merged: StoreData = { ...def, ...data, settings: { ...def.settings, ...data.settings } };
+  // 旧配置的 scrollSpeed 是 1–9 档位；速度模型改为像素/秒后按 ×45 迁移
+  // （新模型下限 10 像素/秒，不会把新值误判为档位）
+  const sp = merged.settings.scrollSpeed;
+  if (sp > 0 && sp <= 9) merged.settings.scrollSpeed = sp * 45;
   merged.settings.fontFamily = normalizeFontFamily(merged.settings.fontFamily);
   merged.settings.customThemes = (merged.settings.customThemes || []).map((t) => ({
     ...t,
@@ -403,6 +411,7 @@ function upsertHistory(filePath: string, fileName: string, encoding: string, pos
 /* 切换文件前保存当前进度 */
 function saveCurrentProgress(): void {
   if (!state.filePath) return;
+  if (plugins.isActive()) return; // 插件视图没有文本位置，避免把旧比例写进记录
   const pos = reader.getRatio();
   const h = state.store.history.find((x) => x.filePath === state.filePath);
   if (h) h.position = pos;
@@ -449,7 +458,7 @@ export function toggleScroll(): void {
   const on = reader.toggleScroll();
   if (on)
     toast(
-      `开始${reader.getMode() === "page" ? "页模式翻页" : "滚屏"}（当前 ${reader.getSpeed()} 档 ≈ ${reader.speedPx()} 像素/秒，鼠标上下移动可调速）`
+      `开始${reader.getMode() === "page" ? "页模式翻页" : "滚屏"}（当前 ${reader.getSpeed()} 像素/秒，鼠标上下移动可调速）`
     );
   updateUI();
 }
@@ -476,10 +485,11 @@ export function adjustSpeed(d: number): void {
   persist();
   updateUI();
   emitSpeedChanged();
+  toast(`速度: ${reader.getSpeed()} 像素/秒`);
 }
 
-export function setSpeed(n: number): void {
-  reader.setSpeed(n);
+export function setSpeed(px: number): void {
+  reader.setSpeed(px);
   state.store.settings.scrollSpeed = reader.getSpeed();
   persist();
   updateUI();
@@ -497,20 +507,38 @@ export function showSpeedPicker(): void {
   row.className = "speed-picker";
   const slider = document.createElement("input");
   slider.type = "range";
-  slider.min = "1";
-  slider.max = "9";
-  slider.step = "0.5";
-  slider.value = String(reader.getSpeed());
+  slider.min = "10";
+  slider.max = "1000";
+  slider.step = "5";
   const val = document.createElement("span");
   val.className = "speed-picker-value";
+
+  // 手工输入任意像素值（不局限于预设档位）
+  const numRow = document.createElement("div");
+  numRow.className = "speed-picker";
+  const num = document.createElement("input");
+  num.type = "number";
+  num.min = "10";
+  num.max = "2000";
+  num.step = "10";
+  num.title = "输入滚屏速度（像素/秒，10–2000）";
+  const unit = document.createElement("span");
+  unit.className = "speed-picker-value";
+  unit.textContent = "像素/秒";
+  numRow.append(num, unit);
+  num.addEventListener("change", () => {
+    const v = Number(num.value);
+    if (Number.isFinite(v) && v >= 10) setSpeed(Math.min(2000, Math.round(v)));
+  });
+
   const sync = () => {
     slider.value = String(reader.getSpeed());
-    val.textContent = `${reader.getSpeed()} 档 ≈ ${reader.speedPx()} 像素/秒`;
+    val.textContent = `${reader.getSpeed()} 像素/秒`;
+    if (document.activeElement !== num) num.value = String(reader.getSpeed());
   };
   sync();
+  row.append(slider, val);
   slider.addEventListener("input", () => setSpeed(Number(slider.value)));
-  row.appendChild(slider);
-  row.appendChild(val);
 
   const onSpeedChanged = () => sync();
   document.addEventListener("rb-speed-changed", onSpeedChanged);
@@ -519,11 +547,12 @@ export function showSpeedPicker(): void {
     [
       { label: "滚屏速度（鼠标上下位置仍可临时调速）", disabled: true },
       { customEl: row },
+      { customEl: numRow },
       { sep: true },
       ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
-        label: `${n} 档 · 约 ${n * 45} 像素/秒`,
-        checked: () => reader.getSpeed() === n,
-        action: () => setSpeed(n),
+        label: `${n} 档 · ${n * 45} 像素/秒`,
+        checked: () => reader.getSpeed() === n * 45,
+        action: () => setSpeed(n * 45),
       })),
     ],
     x,
@@ -536,6 +565,10 @@ export function showSpeedPicker(): void {
 
 export function addBookmark(desc?: string): void {
   if (!state.filePath) return;
+  if (plugins.isActive()) {
+    toast("插件视图中不支持添加书签");
+    return;
+  }
   const pos = reader.getRatio();
   const text = currentDisplayText();
   const snippet =
@@ -571,14 +604,16 @@ export function deleteBookmarkAt(idx: number): void {
 /* ========== 收藏书架 ========== */
 
 export function addToBookshelf(name?: string): void {
-  if (!state.filePath) return;
-  if (state.store.bookshelf.some((b) => b.filePath === state.filePath)) {
+  // 插件视图（如图片查看）中收藏当前查看的文件（跨容器推进后取当前路径）
+  const path = plugins.isActive() ? plugins.activeFilePath() : state.filePath;
+  if (!path) return;
+  if (state.store.bookshelf.some((b) => b.filePath === path)) {
     toast("已在书架中");
     return;
   }
   state.store.bookshelf.unshift({
-    filePath: state.filePath,
-    name: name || state.fileName.replace(/\.txt$/i, ""),
+    filePath: path,
+    name: name || viewName(path).replace(/\.txt$/i, ""),
     added: new Date().toISOString(),
   });
   persist();
@@ -863,21 +898,22 @@ export function handleEscape(): void {
 /* ========== UI 更新 ========== */
 
 export function updateUI(): void {
-  // 插件视图激活期间：标题与右上角文件名以插件上报为准（未上报则退回文件名）
+  // 右上角文件名与窗口标题 = 打开的文件（zip 内条目显示 zip 自身文件名）
+  // 插件视图激活期间以插件上报为准（未上报则退回打开的文件名）
   const pst = plugins.getActiveStatus();
+  const fileInfo = document.getElementById("file-info");
   if (pst) {
-    const title = pst.title ?? plugins.getActiveFile();
-    api.setTitle(`ReadBook - ${title || "未打开文件"}`);
-    const fileInfo = document.getElementById("file-info");
-    if (fileInfo) fileInfo.textContent = title || "未打开文件";
+    const name = pst.title ?? plugins.getActiveOpenedName();
+    api.setTitle(`ReadBook - ${name || "未打开文件"}`);
+    if (fileInfo) fileInfo.textContent = name || "未打开文件";
   } else {
     const modifiedMark = state.modified ? " *" : "";
-    api.setTitle(`ReadBook - ${state.fileName || "未打开文件"}${modifiedMark}`);
-    const fileInfo = document.getElementById("file-info");
-    if (fileInfo) fileInfo.textContent = state.fileName ? `${state.fileName}${modifiedMark}` : "未打开文件";
+    const topName = state.realPath ? baseName(state.realPath) : "";
+    api.setTitle(`ReadBook - ${topName || "未打开文件"}${modifiedMark}`);
+    if (fileInfo) fileInfo.textContent = topName ? `${topName}${modifiedMark}` : "未打开文件";
   }
   const speedLabel = document.getElementById("speed-label");
-  if (speedLabel) speedLabel.textContent = `速度:${reader.getSpeed()} · ${reader.speedPx()}px/s`;
+  if (speedLabel) speedLabel.textContent = `速度:${reader.getSpeed()}px/s`;
   const setBtn = (id: string, active: boolean) => {
     const b = document.getElementById(id);
     if (b) b.classList.toggle("active", active);
@@ -892,8 +928,13 @@ export function updateUI(): void {
 }
 
 export function updateStatus(): void {
-  // 插件视图激活期间：四格显示插件上报的原文（含其自定义前缀），未上报为 "-"
+  // 插件视图激活期间：各格显示插件上报的原文（未上报回退宿主默认），未上报为 "-"
   const pst = plugins.getActiveStatus();
+  const file = document.getElementById("status-file");
+  if (file)
+    file.textContent = pst
+      ? `文件: ${(pst.file ?? plugins.getActiveFile()) || "-"}`
+      : `文件: ${state.fileName || "-"}`;
   const enc = document.getElementById("status-encoding");
   if (enc) enc.textContent = pst ? (pst.encoding ?? "-") : `编码: ${state.encoding || "-"}`;
   const pos = document.getElementById("status-position");
@@ -978,6 +1019,8 @@ export async function boot(): Promise<void> {
   const { initSmbPanel } = await import("./smb");
   const { imageViewerPlugin } = await import("./plugins/image-viewer");
   plugins.register(imageViewerPlugin);
+  const { videoViewerPlugin } = await import("./plugins/video-viewer");
+  plugins.register(videoViewerPlugin);
   plugins.setEnabledMap(s.plugins);
   // 外部插件（.rbplugin 包）在内置插件注册完成后加载；失败只记入插件面板
   const { loadExternalPlugins, initPluginLoader } = await import("./plugins/loader");

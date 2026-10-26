@@ -2988,6 +2988,7 @@ dependencies = [
  "encoding_rs",
  "flate2",
  "glob",
+ "percent-encoding",
  "serde",
  "serde_json",
  "smb2",

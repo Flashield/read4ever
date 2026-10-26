@@ -4,6 +4,7 @@ mod plugin_pkg;
 mod reorder;
 mod seqfile;
 mod smb;
+mod stream;
 mod store;
 pub mod zipfile; // pub：src-tauri/tests 集成测试访问
 
@@ -15,10 +16,12 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+    let builder = stream::register(builder);
+    builder
         .setup(|app| {
             // 系统托盘
             let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
@@ -31,13 +34,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => commands::show_main_from_tray(app),
                     "quit" => {
                         app.exit(0);
                     }
@@ -83,7 +80,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             // 关闭窗口时隐藏到托盘而非退出
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
+                commands::hide_main_to_tray(window.app_handle());
                 api.prevent_close();
             }
         })

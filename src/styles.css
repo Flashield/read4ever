@@ -221,6 +221,16 @@ body {
   accent-color: var(--accent);
 }
 
+.speed-picker input[type="number"] {
+  width: 76px;
+  padding: 2px 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 3px;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-size: 12px;
+}
+
 .speed-picker-value {
   font-size: 12px;
   color: #999;
@@ -1037,6 +1047,150 @@ body.folder-open #reader-container {
   color: var(--ui-text);
   border-radius: 3px;
   font-size: 12px;
+}
+
+/* ========== 视频查看插件 ========== */
+.vv {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.vv-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+}
+
+.vv-name {
+  color: var(--ui-text);
+  font-size: 12px;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vv-page {
+  color: #999;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.vv-spacer {
+  flex: 1;
+}
+
+.vv-bar button {
+  padding: 4px 9px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-hover);
+  color: var(--ui-text);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.vv-bar button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.vv-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--ui-border);
+  flex-shrink: 0;
+}
+
+.vv-rate {
+  padding: 2px 4px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.vv-volume {
+  width: 70px;
+  accent-color: var(--accent);
+}
+
+.vv-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #141414;
+  position: relative;
+  overflow: hidden;
+}
+
+.vv-video {
+  max-width: 100%;
+  max-height: 100%;
+  outline: none;
+  background: #000;
+}
+
+.vv-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: #f66;
+  font-size: 13px;
+  text-align: center;
+  background: #141414;
+}
+
+.vv-seekrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #999;
+}
+
+.vv-seekrow input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+/* 触屏/窄屏（iOS移植方案 D3）：控制条允许换行；
+   音量控件仅触屏隐藏——iOS WKWebView 的音量由系统控制，页内滑杆无效 */
+@media ((hover: none) and (pointer: coarse)), (max-width: 760px) {
+  .vv-bar {
+    flex-wrap: wrap;
+  }
+}
+
+@media ((hover: none) and (pointer: coarse)) {
+  .vv-volume,
+  .vv-bar button[data-act="mute"] {
+    display: none;
+  }
+}
+
+/* 移动端沉浸全屏（docs/iOS移植方案.md D4）：视频插件全屏按钮与 Phase 3 沉浸模式共用 */
+body.immersive #menu-bar,
+body.immersive #toolbar,
+body.immersive #status-bar {
+  display: none;
 }
 
 .panel-header {

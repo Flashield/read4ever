@@ -3,18 +3,20 @@
    宿主能力（读字节/设置/提示/状态上报）全部经由 PluginOpenContext 递入。 */
 import type { MenuItemDef } from "../dropdown";
 
-/** 插件视图状态：接管主窗口标题栏/右上角文件名与状态栏四格。
+/** 插件视图状态：接管主窗口标题栏/右上角文件名与状态栏各格。
  *  插件视图关闭时宿主自动恢复文本阅读的状态，无需插件处理。 */
 export interface PluginViewStatus {
-  /** 右上角文件名与窗口标题（如 "插图01.png"）；未上报时宿主显示文件名 */
+  /** 打开的文件名与窗口标题（如 "画册.zip"）；未上报时宿主显示打开的文件名 */
   title?: string;
-  /** 状态栏第一格原文（如 "PNG 1280×720"），未上报显示 "-" */
+  /** 状态栏"文件"格：当前查看的文件名（如 zip 内当前条目 "插图01.png"）；未上报时显示打开的文件名 */
+  file?: string;
+  /** 状态栏"编码"格原文（如 "PNG 1280×720"），未上报显示 "-" */
   encoding?: string;
-  /** 状态栏第二格原文（如 "第 2/35 张"） */
+  /** 状态栏"位置"格原文（如 "第 2/35 张"） */
   position?: string;
-  /** 状态栏第三格原文（如 "模式: 适应窗口"） */
+  /** 状态栏"模式"格原文（如 "模式: 适应窗口"） */
   mode?: string;
-  /** 状态栏第四格原文（如 "滚屏中·向下"） */
+  /** 状态栏"显示"格原文（如 "滚屏中·向下"） */
   display?: string;
 }
 
@@ -37,6 +39,10 @@ export interface PluginOpenContext {
   /** 读取文件字节（自动区分磁盘文件与 zip 条目）。
    *  安全边界：仅允许当前打开文件所在目录/压缩包内的路径，越界路径拒绝。 */
   loadBytes(path: string): Promise<Uint8Array>;
+  /** 本地文件（含本地 zip 存储型条目）的流式播放 URL（readbook-stream://，宿主按
+   *  HTTP Range 分块响应）——声明 wantsStream 的插件播放大文件用。
+   *  SMB / 浏览器演示环境返回 null，调用方回退 loadBytes 整读。 */
+  streamUrlFor?(path: string): string | null;
   /** 列出当前文件所在容器（目录或 zip）的全部条目：
    *  zip 返回条目名（含子路径），目录返回文件完整路径（含子目录文件）。 */
   listContainer(): Promise<string[]>;
@@ -58,6 +64,9 @@ export interface ReadBookPlugin {
   description: string;
   /** 可接管的扩展名（小写、含点），如 ".png" */
   extensions: string[];
+  /** 声明后宿主跳过整文件字节预读，改经 ctx.streamUrlFor 提供本地文件的流式 URL
+   *  （2GB+ 媒体必需；zip 条目为存储型时同样支持，压缩条目由插件自行回退整读） */
+  wantsStream?: boolean;
   /** 打开文件：把视图渲染到 ctx.host */
   open(ctx: PluginOpenContext): void | Promise<void>;
   /** 视图被关闭/切走时的清理（如 revoke Blob URL） */

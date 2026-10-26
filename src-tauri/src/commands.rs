@@ -178,22 +178,39 @@ pub fn set_window_title(app: AppHandle, title: String) {
     }
 }
 
-/// 最小化到托盘（隐藏窗口）
-#[tauri::command]
-pub fn hide_to_tray(app: AppHandle) {
+/// 最小化到托盘（隐藏窗口）。
+/// macOS 必须用应用级隐藏（NSApp.hide）：对窗口单独 orderOut 再 show 时
+/// WKWebView 可能不重绘而整窗黑屏；应用级 hide/unhide 由 AppKit 负责恢复，无此问题。
+pub fn hide_main_to_tray(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.hide();
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
 }
 
-/// 从托盘恢复
-#[tauri::command]
-pub fn show_from_tray(app: AppHandle) {
+/// 从托盘恢复显示主窗口（macOS 先应用级 unhide 再聚焦窗口）
+pub fn show_main_from_tray(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// 最小化到托盘（隐藏窗口）
+#[tauri::command]
+pub fn hide_to_tray(app: AppHandle) {
+    hide_main_to_tray(&app);
+}
+
+/// 从托盘恢复
+#[tauri::command]
+pub fn show_from_tray(app: AppHandle) {
+    show_main_from_tray(&app);
 }
 
 /// 退出程序

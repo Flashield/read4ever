@@ -92,13 +92,17 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { sep: true },
     { label: "插件管理…", action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "plugin-panel" })) },
     { sep: true },
-    { label: "加入收藏书架", shortcut: "Ctrl+Shift+S", action: () => app.addToBookshelf(), disabled: !app.state.filePath },
+    { label: "加入收藏书架", shortcut: "Ctrl+Shift+S", action: () => app.addToBookshelf(), disabled: !app.state.filePath && !registry.isActive() },
     { label: "收藏书架…", action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "bookshelf-panel" })) },
     { label: "历史记录…", action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "history-panel" })) },
     { sep: true },
     { label: "清除历史记录", action: () => app.clearHistory() },
   ],
-  plugin: () => registry.pluginMenuItems(),
+  plugin: () => [
+    { label: "打开插件管理…", action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "plugin-panel" })) },
+    { sep: true },
+    ...registry.pluginMenuItems(),
+  ],
   help: () => [
     { label: "快捷键列表…", shortcut: "F1", action: showShortcuts },
     { label: "关于 ReadBook…", action: showAbout },
@@ -114,7 +118,7 @@ function showShortcuts(): void {
       "Ctrl+Alt+O    浏览 SMB 远程共享（左侧栏远程标签）",
       "Ctrl+PgUp/Dn  上一个/下一个文件（按序号）",
       "Space         开始/停止滚屏（鼠标上下位置调速）",
-      "1-9 / + / -   滚屏速度档位（点工具栏速度标签精确设置）",
+      "1-9 / + / -   滚屏速度（点工具栏速度标签可输入任意像素值）",
       "P             切换连续滚屏 / 页模式翻页",
       "PgUp / PgDn   翻上一页 / 下一页",
       "Ctrl+Z        回到上次位置",
@@ -167,15 +171,7 @@ function openMenu(key: string): void {
   showDropdown(MENUS[key](), menuX(key), 30);
 }
 
-function updatePluginMenuVisibility(): void {
-  document
-    .querySelector('.menu-item[data-menu="plugin"]')
-    ?.classList.toggle("hidden", registry.pluginMenuItems().length === 0);
-}
-
 export function initMenubar(): void {
-  updatePluginMenuVisibility();
-  document.addEventListener("rb-plugins-changed", updatePluginMenuVisibility);
   const items = document.querySelectorAll<HTMLElement>("#menu-bar .menu-item");
   items.forEach((el) => {
     const key = el.dataset.menu || "";
@@ -209,8 +205,6 @@ export function initMenubar(): void {
   bind("btn-prev-file", () => app.gotoPrevFile());
   bind("btn-next-file", () => app.gotoNextFile());
   bind("btn-scroll", () => app.toggleScroll());
-  bind("btn-speed-down", () => app.adjustSpeed(-1));
-  bind("btn-speed-up", () => app.adjustSpeed(1));
   bind("btn-page-mode", () => app.toggleScrollMode());
   bind("btn-find", () => document.dispatchEvent(new CustomEvent("rb-open-find")));
   bind("btn-keyword", () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "keyword-panel" })));

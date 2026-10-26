@@ -115,7 +115,7 @@ impl Default for Settings {
             font_family: "SimSun".to_string(),
             font_size: 18.0,
             line_spacing: 1.8,
-            scroll_speed: 3.0,
+            scroll_speed: 135.0, // 滚屏基准速度（像素/秒）
             scroll_mode: "continuous".to_string(),
             page_interval: 10.0,
             display_mode: "auto".to_string(),

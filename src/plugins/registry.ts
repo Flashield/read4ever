@@ -2,12 +2,33 @@
    内置插件由 boot 编译期注册；外部插件（.rbplugin 包）由 loader 动态注册，
    两者共用 ReadBookPlugin 接口，本模块不做区分。 */
 import { api } from "../api";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import * as app from "../app";
 import type { MenuItemDef } from "../dropdown";
 import type { FileEntry, PluginPkgInfo } from "../types";
 import type { PluginOpenContext, PluginViewStatus, ReadBookPlugin } from "./types";
 
 const TEXT_RE = /\.(txt|zip)$/i;
+
+/** 流式播放协议（src-tauri/src/stream.rs）：按 HTTP Range 分块响应本地文件/本地 zip 存储型条目 */
+const STREAM_SCHEME = "readbook-stream";
+
+/** 真 Tauri 环境判定：mock_backend 会伪造 __TAURI_INTERNALS__（仅供 invoke），
+ *  但没有真运行时注入的 convertFileSrc——以它为准 */
+const isTauri = (): boolean =>
+  typeof window !== "undefined" &&
+  typeof (window as unknown as { __TAURI_INTERNALS__?: { convertFileSrc?: unknown } })
+    .__TAURI_INTERNALS__?.convertFileSrc === "function";
+
+/** 本地文件的流式播放 URL；SMB 与浏览器演示环境返回 null（回退字节整读）。
+ *  zip 条目保持「zip路径::条目名」复合形式整体编码，协议侧自行拆分。 */
+function streamUrlFor(path: string): string | null {
+  if (!isTauri()) return null;
+  const t = splitTarget(path);
+  if (t.base.startsWith("smb://")) return null;
+  const target = t.entry ? `${t.zipPath}::${t.entry}` : t.base;
+  return convertFileSrc(target, STREAM_SCHEME);
+}
 
 const plugins: ReadBookPlugin[] = [];
 /** 外部插件 id → 包信息（内置插件不在此列） */
@@ -28,6 +49,10 @@ let active: ReadBookPlugin | null = null;
 /** 激活插件上报的视图状态与当前文件名；视图关闭时清空（宿主随之恢复文本状态） */
 let activeStatus: PluginViewStatus | null = null;
 let activeFile = "";
+/** 打开的文件名（zip 内条目为 zip 自身文件名） */
+let activeOpenedName = "";
+/** 激活插件的打开上下文：activeFilePath 取其 path（插件跨容器推进时会自行更新） */
+let activeCtx: PluginOpenContext | null = null;
 
 export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {
   if (plugins.some((x) => x.id === p.id)) return false;
@@ -105,6 +130,16 @@ export function getActiveFile(): string {
   return activeFile;
 }
 
+/** 插件视图打开的文件名（zip 内条目为 zip 自身文件名；未上报 title 时的兜底） */
+export function getActiveOpenedName(): string {
+  return activeOpenedName;
+}
+
+/** 插件视图当前查看的文件路径（跨容器推进后随之变化；未激活为 ""）。收藏书架等以它为准 */
+export function activeFilePath(): string {
+  return activeCtx ? activeCtx.path : "";
+}
+
 function splitTarget(path: string): { zipPath: string; entry: string; base: string } {
   const m = path.match(/^(.+\.zip)::(.+)$/i);
   if (m) return { zipPath: m[1], entry: m[2], base: m[2] };
@@ -115,6 +150,8 @@ const parentOf = (p: string): string => {
   const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
   return i > 0 ? p.slice(0, i) : p;
 };
+
+const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 /** 本次打开的容器（zip 路径或文件所在目录）——ctx.loadBytes/listContainer 的安全边界 */
 let scopeZip = "";
@@ -171,6 +208,8 @@ export function deactivateActive(): void {
   active = null;
   activeStatus = null;
   activeFile = "";
+  activeOpenedName = "";
+  activeCtx = null;
   try {
     p.deactivate?.();
   } catch (e) {
@@ -194,9 +233,13 @@ export async function openFile(path: string): Promise<void> {
   if (!plugin) return;
   const prev = active;
   try {
-    const buf = entry
-      ? await api.readZipBytes(zipPath, entry)
-      : await api.readFileBytes(path);
+    // wantsStream 的插件：本地文件跳过整文件预读（2GB+ 视频必需），改由流式协议按需分块
+    const wantStream = !!plugin.wantsStream && isTauri() && !path.startsWith("smb://");
+    const bytes = wantStream
+      ? new Uint8Array(0)
+      : new Uint8Array(
+          entry ? await api.readZipBytes(zipPath, entry) : await api.readFileBytes(path)
+        );
     const { siblings, index } = await computeSiblings(path, ext);
     const host = document.getElementById("plugin-view-host")!;
     // 就绪后才切换：清旧 DOM、建新视图（旧插件资源随后清理）
@@ -205,7 +248,8 @@ export async function openFile(path: string): Promise<void> {
     document.getElementById("reader-content")?.classList.add("hidden");
     active = plugin;
     activeStatus = {};
-    activeFile = base.split(/[\\/]/).filter(Boolean).pop() || base;
+    activeFile = baseName(base);
+    activeOpenedName = baseName(zipPath || path);
     scopeZip = zipPath;
     scopeDir = zipPath ? "" : parentOf(base);
     const status: PluginViewStatus = {};
@@ -214,12 +258,13 @@ export async function openFile(path: string): Promise<void> {
       path,
       name: activeFile,
       ext,
-      bytes: new Uint8Array(buf),
+      bytes,
       host,
       siblings,
       siblingIndex: index,
       loadBytes: (p) => loadBytes(p),
       listContainer,
+      streamUrlFor: wantStream ? streamUrlFor : undefined,
       setStatus: (s) => {
         if (active !== owner) return; // 视图已切走/关闭：丢弃过期上报
         Object.assign(status, s);
@@ -230,6 +275,7 @@ export async function openFile(path: string): Promise<void> {
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
     };
+    activeCtx = ctx;
     await plugin.open(ctx);
     if (prev && prev !== plugin) {
       try {
