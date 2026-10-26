@@ -966,12 +966,16 @@ export async function boot(): Promise<void> {
 
   applyAppearance();
 
+  // SMB 服务器表推给后端（会话建立/失效的依据；避免读到防抖 save_store 的旧数据）
+  void api.smbPutServers(state.store.smbServers).catch(() => {});
+
   const { initMenubar } = await import("./menubar");
   const { initPanels } = await import("./panels");
   const { initFindbar } = await import("./findbar");
   const { initShortcuts } = await import("./shortcut");
   const { initKeywords } = await import("./keywords");
   const { initFolderPanel, openFolderPanel } = await import("./folder");
+  const { initSmbPanel } = await import("./smb");
   const { imageViewerPlugin } = await import("./plugins/image-viewer");
   plugins.register(imageViewerPlugin);
   plugins.setEnabledMap(s.plugins);
@@ -995,6 +999,7 @@ export async function boot(): Promise<void> {
   initShortcuts();
   initKeywords();
   initFolderPanel();
+  initSmbPanel();
   initDropdown();
   initEditModal();
   initDblClickEdit();

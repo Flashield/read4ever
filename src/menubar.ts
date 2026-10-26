@@ -190,6 +190,12 @@ export function initMenubar(): void {
   };
   bind("btn-open", () => app.openFileDialog());
   bind("btn-folder", () => void folder.pickFolder());
+  bind("btn-smb", () =>
+    void (async () => {
+      await folder.openFolderPanel();
+      await folder.switchSideTab("smb");
+    })()
+  );
   bind("btn-prev-file", () => app.gotoPrevFile());
   bind("btn-next-file", () => app.gotoNextFile());
   bind("btn-scroll", () => app.toggleScroll());

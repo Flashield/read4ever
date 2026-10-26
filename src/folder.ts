@@ -20,6 +20,21 @@ let filterText = "";
 
 const panelEl = () => $("folder-panel");
 
+/* ========== 本地 / 远程标签页 ========== */
+
+/** 切换左侧面板标签（本地/远程）；远程首切时渲染服务器树。持久化到 settings.folderTab */
+export async function switchSideTab(tab: "local" | "smb"): Promise<void> {
+  $("lptab-local").classList.toggle("active", tab === "local");
+  $("lptab-smb").classList.toggle("active", tab === "smb");
+  $("folder-local").classList.toggle("hidden", tab !== "local");
+  $("folder-smb").classList.toggle("hidden", tab !== "smb");
+  app.state.store.settings.folderTab = tab === "smb" ? "smb" : "";
+  app.persist();
+  if (tab === "smb") {
+    await import("./smb").then((m) => m.ensureRendered());
+  }
+}
+
 /* ========== 打开 / 关闭 ========== */
 
 export function isFolderPanelOpen(): boolean {
@@ -38,6 +53,8 @@ export async function openFolderPanel(): Promise<void> {
   const s = app.state.store.settings;
   listRecursive = !!s.folderListRecursive;
   ($("folder-recursive") as HTMLInputElement).checked = listRecursive;
+  // 恢复上次使用的标签（本地/远程）
+  await switchSideTab(s.folderTab === "smb" ? "smb" : "local");
   if (!root && s.lastFolderPath) {
     await setRoot(s.lastFolderPath);
   } else {
@@ -78,6 +95,12 @@ async function refresh(): Promise<void> {
 export async function revealFile(path: string): Promise<void> {
   if (!path) return;
   await openFolderPanel();
+  if (path.startsWith("smb://")) {
+    // 远程路径：切远程标签，由 smb 模块展开定位
+    await switchSideTab("smb");
+    await import("./smb").then((m) => m.revealRemote(path));
+    return;
+  }
   const sep = path.includes("\\") ? "\\" : "/";
   const dirPath = path.slice(0, Math.max(path.lastIndexOf(sep), 0));
   if (!root || !path.startsWith(root)) {
@@ -534,6 +557,8 @@ function bindRowEvents(container: HTMLElement): void {
 
 export function initFolderPanel(): void {
   initPanelResize(panelEl(), "left");
+  $("lptab-local").addEventListener("click", () => void switchSideTab("local"));
+  $("lptab-smb").addEventListener("click", () => void switchSideTab("smb"));
   $("folder-pick").addEventListener("click", () => void pickFolder());
   $("folder-refresh").addEventListener("click", () => void refresh());
   $("folder-recursive").addEventListener("change", () => {

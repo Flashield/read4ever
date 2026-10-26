@@ -22,6 +22,7 @@
     <div id="toolbar">
       <button class="tb-btn" id="btn-open" title="打开文件 (Ctrl+O)">📖</button>
       <button class="tb-btn" id="btn-folder" title="打开文件夹 (Ctrl+Shift+O)">📁</button>
+      <button class="tb-btn" id="btn-smb" title="浏览 SMB 远程共享 (Ctrl+Alt+O)">🌐</button>
       <button class="tb-btn" id="btn-prev-file" title="上一个文件">◀</button>
       <button class="tb-btn" id="btn-next-file" title="下一个文件">▶</button>
       <span class="tb-sep"></span>
@@ -83,26 +84,45 @@
       <button id="find-close">✕</button>
     </div>
 
-    <!-- 文件夹侧栏（左侧） -->
+    <!-- 文件夹侧栏（左侧）：本地 / SMB 远程 两个标签页 -->
     <div id="folder-panel" class="side-panel panel-left hidden">
       <div class="panel-header">
         <span>文件夹</span>
         <button class="panel-close">✕</button>
       </div>
-      <div class="folder-toolbar">
-        <button id="folder-pick">📂 选择文件夹</button>
-        <span id="folder-path" title="">未选择文件夹</span>
+      <div class="lp-tabs">
+        <button id="lptab-local" class="lp-tab active" type="button">本地</button>
+        <button id="lptab-smb" class="lp-tab" type="button">远程</button>
       </div>
-      <div id="folder-tree" class="folder-tree"></div>
-      <div class="folder-listbar">
-        <label class="folder-recursive" title="同时列出所有子目录中的文件">
-          <input type="checkbox" id="folder-recursive" /> 含子目录
-        </label>
-        <input type="text" id="folder-filter" placeholder="过滤文件名…" />
-        <button id="folder-refresh" title="刷新">🔄</button>
+      <div id="folder-local" class="lp-pane">
+        <div class="folder-toolbar">
+          <button id="folder-pick">📂 选择文件夹</button>
+          <span id="folder-path" title="">未选择文件夹</span>
+        </div>
+        <div id="folder-tree" class="folder-tree"></div>
+        <div class="folder-listbar">
+          <label class="folder-recursive" title="同时列出所有子目录中的文件">
+            <input type="checkbox" id="folder-recursive" /> 含子目录
+          </label>
+          <input type="text" id="folder-filter" placeholder="过滤文件名…" />
+          <button id="folder-refresh" title="刷新">🔄</button>
+        </div>
+        <div id="folder-list-head"><span id="folder-list-count"></span></div>
+        <div id="folder-list" class="folder-list"></div>
       </div>
-      <div id="folder-list-head"><span id="folder-list-count"></span></div>
-      <div id="folder-list" class="folder-list"></div>
+      <div id="folder-smb" class="lp-pane hidden">
+        <div class="folder-toolbar">
+          <button id="smb-add">＋ 服务器</button>
+          <span id="smb-status" title="">未添加服务器</span>
+        </div>
+        <div id="smb-tree" class="folder-tree"></div>
+        <div class="folder-listbar">
+          <input type="text" id="smb-filter" placeholder="过滤文件名…" />
+          <button id="smb-refresh" title="刷新">🔄</button>
+        </div>
+        <div id="smb-list-head"><span id="smb-list-count"></span></div>
+        <div id="smb-list" class="folder-list"></div>
+      </div>
     </div>
 
     <!-- 插件管理面板 -->

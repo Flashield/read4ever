@@ -636,7 +636,7 @@ body.folder-open #reader-container {
   accent-color: var(--accent);
 }
 
-#folder-filter {
+.folder-listbar input[type="text"] {
   flex: 1;
   min-width: 0;
   padding: 3px 8px;
@@ -647,7 +647,7 @@ body.folder-open #reader-container {
   font-size: 12px;
 }
 
-#folder-refresh {
+.folder-listbar button {
   padding: 3px 8px;
   border: 1px solid var(--ui-border);
   background: var(--ui-hover);
@@ -657,7 +657,7 @@ body.folder-open #reader-container {
   font-size: 12px;
 }
 
-#folder-refresh:hover {
+.folder-listbar button:hover {
   background: var(--accent);
   color: #fff;
 }
@@ -700,6 +700,94 @@ body.folder-open #reader-container {
   flex-shrink: 0;
   color: #888;
   font-size: 11px;
+}
+
+/* ========== SMB 远程标签（左侧文件夹面板内） ========== */
+.lp-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.lp-tab {
+  flex: 1;
+  padding: 6px 0 5px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--ui-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.lp-tab:hover {
+  background: var(--ui-hover);
+}
+
+.lp-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.lp-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.lp-pane.hidden {
+  display: none;
+}
+
+.ft-row.smb-server .ft-name {
+  font-weight: 600;
+}
+
+.smb-cached-badge {
+  flex-shrink: 0;
+  color: #7ec97e;
+  font-size: 11px;
+}
+
+.smb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.smb-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ui-text);
+}
+
+.smb-form input {
+  padding: 5px 8px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.smb-form input:disabled {
+  opacity: 0.45;
+}
+
+.smb-form .smb-form-anon {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.smb-form .smb-form-anon input {
+  accent-color: var(--accent);
 }
 
 /* ========== 插件系统 ========== */
