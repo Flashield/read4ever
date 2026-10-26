@@ -1,9 +1,10 @@
 mod commands;
-mod encoding;
+pub mod encoding; // pub：src-tauri/tests 集成测试访问
+mod plugin_pkg;
 mod reorder;
 mod seqfile;
 mod store;
-mod zipfile;
+pub mod zipfile; // pub：src-tauri/tests 集成测试访问
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -67,6 +68,10 @@ pub fn run() {
             commands::make_dir,
             commands::read_file_bytes,
             commands::read_zip_entry_bytes,
+            commands::list_plugins,
+            commands::install_plugin,
+            commands::uninstall_plugin,
+            commands::read_plugin_file,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时隐藏到托盘而非退出

@@ -856,10 +856,19 @@ export function handleEscape(): void {
 /* ========== UI 更新 ========== */
 
 export function updateUI(): void {
-  const modifiedMark = state.modified ? " *" : "";
-  api.setTitle(`ReadBook - ${state.fileName || "未打开文件"}${modifiedMark}`);
-  const fileInfo = document.getElementById("file-info");
-  if (fileInfo) fileInfo.textContent = state.fileName ? `${state.fileName}${modifiedMark}` : "未打开文件";
+  // 插件视图激活期间：标题与右上角文件名以插件上报为准（未上报则退回文件名）
+  const pst = plugins.getActiveStatus();
+  if (pst) {
+    const title = pst.title ?? plugins.getActiveFile();
+    api.setTitle(`ReadBook - ${title || "未打开文件"}`);
+    const fileInfo = document.getElementById("file-info");
+    if (fileInfo) fileInfo.textContent = title || "未打开文件";
+  } else {
+    const modifiedMark = state.modified ? " *" : "";
+    api.setTitle(`ReadBook - ${state.fileName || "未打开文件"}${modifiedMark}`);
+    const fileInfo = document.getElementById("file-info");
+    if (fileInfo) fileInfo.textContent = state.fileName ? `${state.fileName}${modifiedMark}` : "未打开文件";
+  }
   const speedLabel = document.getElementById("speed-label");
   if (speedLabel) speedLabel.textContent = `速度:${reader.getSpeed()} · ${reader.speedPx()}px/s`;
   const setBtn = (id: string, active: boolean) => {
@@ -876,17 +885,23 @@ export function updateUI(): void {
 }
 
 export function updateStatus(): void {
+  // 插件视图激活期间：四格显示插件上报的原文（含其自定义前缀），未上报为 "-"
+  const pst = plugins.getActiveStatus();
   const enc = document.getElementById("status-encoding");
-  if (enc) enc.textContent = `编码: ${state.encoding || "-"}`;
+  if (enc) enc.textContent = pst ? (pst.encoding ?? "-") : `编码: ${state.encoding || "-"}`;
   const pos = document.getElementById("status-position");
-  if (pos) pos.textContent = `位置: ${Math.round(reader.getRatio() * 100)}%`;
+  if (pos) pos.textContent = pst ? (pst.position ?? "-") : `位置: ${Math.round(reader.getRatio() * 100)}%`;
   const mode = document.getElementById("status-mode");
   if (mode) {
-    const m = reader.getMode() === "page" ? "页模式" : "连续";
-    mode.textContent = `模式: ${reader.isScrolling() ? m + "滚屏中" : m}`;
+    if (pst) {
+      mode.textContent = pst.mode ?? "-";
+    } else {
+      const m = reader.getMode() === "page" ? "页模式" : "连续";
+      mode.textContent = `模式: ${reader.isScrolling() ? m + "滚屏中" : m}`;
+    }
   }
   const disp = document.getElementById("status-display");
-  if (disp) disp.textContent = `显示: ${displayModeLabel()}`;
+  if (disp) disp.textContent = pst ? (pst.display ?? "-") : `显示: ${displayModeLabel()}`;
 }
 
 /* ========== 提示 ========== */
@@ -953,6 +968,10 @@ export async function boot(): Promise<void> {
   const { imageViewerPlugin } = await import("./plugins/image-viewer");
   plugins.register(imageViewerPlugin);
   plugins.setEnabledMap(s.plugins);
+  // 外部插件（.rbplugin 包）在内置插件注册完成后加载；失败只记入插件面板
+  const { loadExternalPlugins, initPluginLoader } = await import("./plugins/loader");
+  await loadExternalPlugins();
+  initPluginLoader();
   plugins.initPluginSystem((id, on) => {
     const map = { ...(state.store.settings.plugins || {}) };
     map[id] = on;

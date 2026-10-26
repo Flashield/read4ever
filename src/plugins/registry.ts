@@ -1,23 +1,60 @@
-/* 插件注册表与中央打开管线：按扩展名路由到启用的插件 */
+/* 插件注册表与中央打开管线：按扩展名路由到启用的插件。
+   内置插件由 boot 编译期注册；外部插件（.rbplugin 包）由 loader 动态注册，
+   两者共用 ReadBookPlugin 接口，本模块不做区分。 */
 import { api } from "../api";
 import * as app from "../app";
 import type { MenuItemDef } from "../dropdown";
-import type { FileEntry } from "../types";
-import type { PluginOpenContext, ReadBookPlugin } from "./types";
+import type { FileEntry, PluginPkgInfo } from "../types";
+import type { PluginOpenContext, PluginViewStatus, ReadBookPlugin } from "./types";
 
 const TEXT_RE = /\.(txt|zip)$/i;
 
 const plugins: ReadBookPlugin[] = [];
+/** 外部插件 id → 包信息（内置插件不在此列） */
+const externalPkgs = new Map<string, PluginPkgInfo>();
+
+/** 外部插件加载失败记录（插件管理面板展示） */
+export interface PluginLoadError {
+  id: string;
+  name: string;
+  version: string;
+  error: string;
+}
+let loadErrors: PluginLoadError[] = [];
+
 /** 插件 id → 是否启用；未列出的默认启用 */
 let enabledMap: Record<string, boolean> = {};
 let active: ReadBookPlugin | null = null;
+/** 激活插件上报的视图状态与当前文件名；视图关闭时清空（宿主随之恢复文本状态） */
+let activeStatus: PluginViewStatus | null = null;
+let activeFile = "";
 
-export function register(p: ReadBookPlugin): void {
-  if (!plugins.some((x) => x.id === p.id)) plugins.push(p);
+export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {
+  if (plugins.some((x) => x.id === p.id)) return false;
+  plugins.push(p);
+  if (pkg) externalPkgs.set(p.id, pkg);
+  return true;
+}
+
+/** 移除插件注册（外部插件卸载时）；若正是激活视图则先关闭 */
+export function unregister(id: string): boolean {
+  const i = plugins.findIndex((x) => x.id === id);
+  if (i === -1) return false;
+  if (active?.id === id) deactivateActive();
+  plugins.splice(i, 1);
+  externalPkgs.delete(id);
+  return true;
 }
 
 export function list(): ReadBookPlugin[] {
   return [...plugins];
+}
+
+export const isExternal = (id: string): boolean => externalPkgs.has(id);
+export const externalPkg = (id: string): PluginPkgInfo | undefined => externalPkgs.get(id);
+
+export function setLoadErrors(errs: PluginLoadError[]): void {
+  loadErrors = errs;
 }
 
 export function setEnabledMap(map: Record<string, boolean> | undefined): void {
@@ -53,18 +90,60 @@ export function pluginExts(): string[] {
   return out;
 }
 
+/* ========== 插件视图状态（右上角文件名/状态栏的上报与查询） ========== */
+
+export function isActive(): boolean {
+  return !!active;
+}
+
+export function getActiveStatus(): PluginViewStatus | null {
+  return activeStatus;
+}
+
+/** 激活插件视图期间右上角显示的文件名（未上报 title 时的兜底） */
+export function getActiveFile(): string {
+  return activeFile;
+}
+
 function splitTarget(path: string): { zipPath: string; entry: string; base: string } {
   const m = path.match(/^(.+\.zip)::(.+)$/i);
   if (m) return { zipPath: m[1], entry: m[2], base: m[2] };
   return { zipPath: "", entry: "", base: path };
 }
 
+const parentOf = (p: string): string => {
+  const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+  return i > 0 ? p.slice(0, i) : p;
+};
+
+/** 本次打开的容器（zip 路径或文件所在目录）——ctx.loadBytes/listContainer 的安全边界 */
+let scopeZip = "";
+let scopeDir = "";
+
+function inScope(path: string): boolean {
+  const t = splitTarget(path);
+  if (t.entry) return t.zipPath === scopeZip;
+  if (scopeZip) return false; // 打开的是 zip 条目：不允许借道读外部磁盘文件
+  return parentOf(t.base) === scopeDir;
+}
+
 async function loadBytes(path: string): Promise<Uint8Array> {
+  if (!inScope(path)) throw new Error(`插件只能访问当前文件所在目录/压缩包内的文件: ${path}`);
   const { zipPath, entry } = splitTarget(path);
   const buf = entry
     ? await api.readZipBytes(zipPath, entry)
     : await api.readFileBytes(path);
   return new Uint8Array(buf);
+}
+
+async function listContainer(): Promise<string[]> {
+  try {
+    if (scopeZip) return api.listZip(scopeZip);
+    const entries: FileEntry[] = await api.listDir(scopeDir);
+    return entries.filter((e) => !e.isDir).map((e) => e.path);
+  } catch {
+    return [];
+  }
 }
 
 async function computeSiblings(path: string, ext: string): Promise<{ siblings: string[]; index: number }> {
@@ -90,6 +169,8 @@ export function deactivateActive(): void {
   if (!active) return;
   const p = active;
   active = null;
+  activeStatus = null;
+  activeFile = "";
   try {
     p.deactivate?.();
   } catch (e) {
@@ -123,15 +204,31 @@ export async function openFile(path: string): Promise<void> {
     host.classList.remove("hidden");
     document.getElementById("reader-content")?.classList.add("hidden");
     active = plugin;
+    activeStatus = {};
+    activeFile = base.split(/[\\/]/).filter(Boolean).pop() || base;
+    scopeZip = zipPath;
+    scopeDir = zipPath ? "" : parentOf(base);
+    const status: PluginViewStatus = {};
+    const owner = plugin;
     const ctx: PluginOpenContext = {
       path,
-      name: base.split(/[\\/]/).filter(Boolean).pop() || base,
+      name: activeFile,
       ext,
       bytes: new Uint8Array(buf),
       host,
       siblings,
       siblingIndex: index,
       loadBytes: (p) => loadBytes(p),
+      listContainer,
+      setStatus: (s) => {
+        if (active !== owner) return; // 视图已切走/关闭：丢弃过期上报
+        Object.assign(status, s);
+        activeStatus = status;
+        app.updateUI();
+      },
+      getSetting: <T>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
+      setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
+      toast: (t) => app.toast(t),
     };
     await plugin.open(ctx);
     if (prev && prev !== plugin) {
@@ -176,25 +273,33 @@ export function pluginMenuItems(): MenuItemDef[] {
 
 /* ========== 插件管理面板 ========== */
 
+let toggleFn: (id: string, on: boolean) => void = () => {};
+
 export function initPluginSystem(toggle: (id: string, on: boolean) => void): void {
+  toggleFn = toggle;
   document.addEventListener("rb-open-panel", (e) => {
     if ((e as CustomEvent).detail !== "plugin-panel") return;
-    renderPluginPanel(toggle);
+    renderPluginPanel();
+  });
+  // 安装/卸载后外部插件集合变化：面板开着时即时刷新
+  document.addEventListener("rb-plugins-changed", () => {
+    if (!document.getElementById("plugin-panel")?.classList.contains("hidden")) renderPluginPanel();
   });
   document.addEventListener("rb-escape", () => {
     if (active) deactivateActive();
   });
 }
 
-function renderPluginPanel(toggle: (id: string, on: boolean) => void): void {
+function renderPluginPanel(): void {
   const box = document.getElementById("plugin-list");
   if (!box) return;
   box.innerHTML = "";
-  if (plugins.length === 0) {
+  if (plugins.length === 0 && loadErrors.length === 0) {
     box.innerHTML = '<div style="padding:16px;font-size:12px;color:#888">暂无已安装插件。</div>';
     return;
   }
   for (const p of plugins) {
+    const pkg = externalPkgs.get(p.id);
     const row = document.createElement("div");
     row.className = "plugin-row";
     const info = document.createElement("div");
@@ -206,6 +311,13 @@ function renderPluginPanel(toggle: (id: string, on: boolean) => void): void {
     ver.className = "plugin-ver";
     ver.textContent = `v${p.version}`;
     nameLine.appendChild(ver);
+    if (pkg) {
+      const badge = document.createElement("span");
+      badge.className = "plugin-badge";
+      badge.textContent = "外部";
+      badge.title = pkg.dir ? `安装于 ${pkg.dir}` : "外部插件包";
+      nameLine.appendChild(badge);
+    }
     const desc = document.createElement("div");
     desc.className = "plugin-desc";
     desc.textContent = p.description;
@@ -213,17 +325,63 @@ function renderPluginPanel(toggle: (id: string, on: boolean) => void): void {
     exts.className = "plugin-exts";
     exts.textContent = `支持格式：${p.extensions.join(" ")}`;
     info.append(nameLine, desc, exts);
+    row.append(info);
+
+    const ops = document.createElement("div");
+    ops.className = "plugin-ops";
     const toggleLabel = document.createElement("label");
     toggleLabel.className = "plugin-toggle";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isEnabled(p);
     cb.addEventListener("change", () => {
-      toggle(p.id, cb.checked);
+      toggleFn(p.id, cb.checked);
       if (!cb.checked && active?.id === p.id) deactivateActive();
     });
     toggleLabel.append(cb, document.createTextNode("启用"));
-    row.append(info, toggleLabel);
+    ops.appendChild(toggleLabel);
+    if (pkg) {
+      const del = document.createElement("button");
+      del.className = "plugin-uninstall";
+      del.textContent = "卸载";
+      del.title = "卸载插件包（目录移入回收站，可恢复）";
+      del.addEventListener("click", () => {
+        del.disabled = true;
+        document.dispatchEvent(new CustomEvent("rb-uninstall-plugin", { detail: p.id }));
+      });
+      ops.appendChild(del);
+    }
+    row.appendChild(ops);
+    box.appendChild(row);
+  }
+  for (const err of loadErrors) {
+    const row = document.createElement("div");
+    row.className = "plugin-row plugin-error";
+    const info = document.createElement("div");
+    info.className = "plugin-info";
+    const nameLine = document.createElement("div");
+    nameLine.className = "plugin-name";
+    nameLine.textContent = `${err.name} v${err.version}`;
+    const badge = document.createElement("span");
+    badge.className = "plugin-badge";
+    badge.textContent = "外部";
+    nameLine.appendChild(badge);
+    const desc = document.createElement("div");
+    desc.className = "plugin-desc";
+    desc.textContent = `加载失败：${err.error}`;
+    info.append(nameLine, desc);
+    row.append(info);
+    const ops = document.createElement("div");
+    ops.className = "plugin-ops";
+    const del = document.createElement("button");
+    del.className = "plugin-uninstall";
+    del.textContent = "卸载";
+    del.addEventListener("click", () => {
+      del.disabled = true;
+      document.dispatchEvent(new CustomEvent("rb-uninstall-plugin", { detail: err.id }));
+    });
+    ops.appendChild(del);
+    row.appendChild(ops);
     box.appendChild(row);
   }
 }

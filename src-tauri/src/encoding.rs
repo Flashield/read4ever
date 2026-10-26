@@ -141,34 +141,3 @@ pub fn encode_text(text: &str, encoding: &str) -> Vec<u8> {
     bytes.into_owned()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// GBK 无 BOM 的中文小说样本：chardetng 会误判为 windows-1252，
-    /// 所有非 GB18030 编码都无法完整解码
-    const SAMPLE_ZIP: &str =
-        "C:/Users/ZhuangBin.FLASHIELD/Env/SyncProjects/20261008/佛系少女升职记_佛系少女升职记.zip";
-
-    #[test]
-    fn detects_gbk_novel_in_zip() {
-        if !std::path::Path::new(SAMPLE_ZIP).exists() {
-            return; // 样本不在时跳过
-        }
-        let entries = crate::zipfile::list_zip_txt(SAMPLE_ZIP).expect("应能列出条目");
-        let (text, label) =
-            crate::zipfile::read_zip_entry(SAMPLE_ZIP, &entries[0], None).expect("应能读取");
-        println!("检测编码: {}, 开头: {}", label, text.chars().take(30).collect::<String>());
-        assert_eq!(label, "GB18030", "GBK 小说应判为 GB18030");
-        assert!(text.contains("佛系少女升职记"), "解码内容应当正确");
-    }
-
-    #[test]
-    fn forced_encoding_decodes_directly() {
-        let gbk_bytes = [0xa1, 0xb6, 0xb2, 0xe2, 0xca, 0xd4, 0xa1, 0xb7]; // 《测试》
-        let (text, label) = decode_with(&gbk_bytes, "GB18030").unwrap();
-        assert_eq!(label, "GB18030");
-        assert_eq!(text, "《测试》");
-        assert!(decode_with(&gbk_bytes, "not-an-encoding").is_err());
-    }
-}

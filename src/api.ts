@@ -1,7 +1,7 @@
 /* Tauri 后端命令封装 */
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { FileContent, FileEntry, StoreData } from "./types";
+import type { FileContent, FileEntry, PluginPkgInfo, StoreData } from "./types";
 
 export const api = {
   openText: (path: string, encoding?: string) =>
@@ -35,6 +35,13 @@ export const api = {
   readZipBytes: (path: string, entryName: string) =>
     invoke<ArrayBuffer>("read_zip_entry_bytes", { path, entryName }),
 
+  /* 外部插件包（.rbplugin） */
+  listPlugins: () => invoke<PluginPkgInfo[]>("list_plugins"),
+  installPlugin: (zipPath: string) => invoke<PluginPkgInfo>("install_plugin", { zipPath }),
+  uninstallPlugin: (id: string) => invoke<void>("uninstall_plugin", { id }),
+  readPluginFile: (id: string, name: string) =>
+    invoke<ArrayBuffer>("read_plugin_file", { id, name }),
+
   /* 文件对话框 */
   pickOpenFile: async (extraExts: string[] = []): Promise<string | null> => {
     const f = await open({
@@ -51,6 +58,13 @@ export const api = {
     const f = await save({
       defaultPath: defaultName,
       filters: [{ name: "文本文件", extensions: ["txt"] }],
+    });
+    return typeof f === "string" ? f : null;
+  },
+  pickPluginFile: async (): Promise<string | null> => {
+    const f = await open({
+      multiple: false,
+      filters: [{ name: "ReadBook 插件包", extensions: ["rbplugin", "zip"] }],
     });
     return typeof f === "string" ? f : null;
   },

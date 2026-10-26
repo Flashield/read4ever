@@ -97,3 +97,20 @@ export interface OpenFile {
 export interface DragFilePayload {
   paths: string[];
 }
+
+/* 外部插件包（.rbplugin）的 manifest 信息（对应后端 PluginPkgInfo） */
+export interface PluginPkgInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  /** 要求的宿主插件 API 大版本（当前为 1） */
+  api: number;
+  /** 入口文件（包内相对路径，默认 main.js） */
+  entry: string;
+  /** 可接管的扩展名（小写、含点） */
+  extensions: string[];
+  /** 安装目录 */
+  dir: string;
+}

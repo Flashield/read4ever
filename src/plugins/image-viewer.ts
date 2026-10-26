@@ -47,7 +47,8 @@ let bottomSince = 0;
 let slideTimer = 0;
 let slideOn = false;
 let scrollOn = false;
-let scrollSuspended = false;
+let scrollSuspended = false; // 用户滚轮缩放时置位；停止操作 2 秒后自动恢复（否则会永久卡停）
+let suspendedAt = 0;
 let scrollRaf = 0; // rAF 循环 id
 let scrollFallback = 0; // rAF 停摆时的兜底定时器 id
 let lastFrameTs = 0;
@@ -91,20 +92,38 @@ async function loadBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
+/** 同路径并发加载去重：appendTapeFrame 的延迟补齐会在滚动循环里反复触发，
+ *  不去重会重复读字节、重复建 Blob URL 且泄漏（urlCache 只留最后一个） */
+const urlInflight = new Map<string, Promise<string>>();
+
 async function ensureUrl(path: string): Promise<string> {
   const hit = urlCache.get(path);
   if (hit) return hit;
-  const bytes = await loadBytes(path);
-  const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: extMime(path) });
-  const url = URL.createObjectURL(blob);
-  urlCache.set(path, url);
-  if (urlCache.size > 8) {
-    const oldest = urlCache.keys().next().value as string;
-    const u = urlCache.get(oldest);
-    urlCache.delete(oldest);
-    if (u) URL.revokeObjectURL(u);
+  const flying = urlInflight.get(path);
+  if (flying) return flying;
+  const task = (async () => {
+    const bytes = await loadBytes(path);
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: extMime(path) });
+    const url = URL.createObjectURL(blob);
+    urlCache.set(path, url);
+    if (urlCache.size > 8) {
+      // 淘汰最旧的非当前胶片带条目：带内帧的 URL 被 revoke 会导致未解码帧显示失败
+      const inTape = new Set(tape.map((t) => t.path));
+      const oldest = [...urlCache.keys()].find((k) => !inTape.has(k));
+      if (oldest) {
+        const u = urlCache.get(oldest);
+        urlCache.delete(oldest);
+        if (u) URL.revokeObjectURL(u);
+      }
+    }
+    return url;
+  })();
+  urlInflight.set(path, task);
+  try {
+    return await task;
+  } finally {
+    urlInflight.delete(path);
   }
-  return url;
 }
 
 async function ensureDims(path: string, url: string): Promise<{ w: number; h: number }> {
@@ -207,6 +226,25 @@ function frameEl(url: string): { el: HTMLElement; img: HTMLImageElement } {
   return { el, img };
 }
 
+/** 帧图片实际加载完成后校正尺寸：ensureDims 超时/失败时的 600×400 兜底值
+ *  会永久驻留 dimCache（布局持续错误），此处按 naturalWidth 自愈并重排 */
+function watchFrameDims(path: string, img: HTMLImageElement): void {
+  img.addEventListener("load", () => {
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (!w || !h) return;
+    const d = dimCache.get(path);
+    if (d && d.w === w && d.h === h) return;
+    dimCache.set(path, { w, h });
+    const item = tape.find((t) => t.path === path);
+    if (item) {
+      item.w = w;
+      item.h = h;
+      applyLayout();
+    }
+  });
+}
+
 /** 重建视图：以 globalIdx 为当前帧；拼接+滚屏时窗口三帧（预加载下一张），否则单帧 */
 async function renderWindow(g: number): Promise<void> {
   if (!ctx) return;
@@ -237,6 +275,7 @@ async function renderWindow(g: number): Promise<void> {
     const fe = frameEl(urls[k]);
     strip.appendChild(fe.el);
     tape.push({ path: paths[k], url: urls[k], w: dims[k].w, h: dims[k].h, ratio: 1, el: fe.el });
+    watchFrameDims(paths[k], fe.img);
     if (paths[k] === ctx!.siblings[globalIdx]) curDom = domIdx;
   });
   tapeCur = curDom;
@@ -248,8 +287,10 @@ async function renderWindow(g: number): Promise<void> {
   for (const item of tape) {
     (item.el.querySelector(".imgv-img") as HTMLImageElement | null)?.decode?.().catch(() => {});
   }
-  if (useTape) void preloadAhead(globalIdx + 2);
-  else {
+  if (useTape) {
+    ensureTapeAhead(); // 窄帧同显多张时初始三帧装不满滚动空间，扩带到覆盖视口
+    void preloadAhead(globalIdx + 2);
+  } else {
     void preloadAhead(globalIdx + 1);
     void preloadAhead(globalIdx - 1);
   }
@@ -266,15 +307,51 @@ function alignCurrent(): void {
   else stage.scrollLeft += fr.right - sr.right;
 }
 
-/** 摘除观看顺序最前的帧（含各方向的滚动位置补偿） */
+/** 摘除观看顺序最前的帧（down/ltr：DOM 头部已滚出视口，摘除后补偿滚动位置） */
 function dropTapeHead(): void {
   const dropped = tape.shift()!;
   tapeCur = Math.max(0, tapeCur - 1);
   const stage = q<HTMLElement>(".imgv-stage")!;
   if (direction === "down") stage.scrollTop -= dropped.el.offsetHeight + TAPE_GAP;
-  else if (direction === "ltr") stage.scrollLeft -= dropped.el.offsetWidth + TAPE_GAP;
-  else dropped.el.remove(); // rtl：尾帧移除不影响左侧视口
-  if (direction !== "rtl") dropped.el.remove();
+  else stage.scrollLeft -= dropped.el.offsetWidth + TAPE_GAP;
+  dropped.el.remove();
+}
+
+/** 摘除观看顺序最前的帧（rtl 专用）：rtl 的 tape 为 DOM 序（观看序反转），
+ *  已看过的旧帧在 DOM 最右 = tape 尾；摘尾不影响左侧内容位置，无需补偿 */
+function dropTapeTail(): void {
+  const dropped = tape.pop()!;
+  dropped.el.remove();
+}
+
+/** 动态补帧：保证前进方向带内未进入视口的冗余 ≥ 视口尺寸。
+ *  竖版图横向滚（或横版图向下滚）时单帧小于视口、视口能同显多帧，
+ *  固定三帧窗口会让胶片带毫无溢出（滚不动）或溢出不足一帧（边界补偿被钳位），
+ *  只有冗余 ≥ 视口时"下一帧前缘到达视口前缘"的推进条件才能在正确时机触发，
+ *  摘帧补偿也才始终有效。幂等：帧已在带中/无下一张时直接返回。 */
+function ensureTapeAhead(): void {
+  const stage = q<HTMLElement>(".imgv-stage");
+  if (!ctx || !stage || !tape.length) return;
+  const horizontal = direction !== "down";
+  for (let guard = 0; guard < 12; guard++) {
+    // 前进方向带内最远帧：down/ltr 在 DOM 尾部；rtl 在 DOM 头部（观看序反转）
+    const edge = direction === "rtl" ? tape[0] : tape[tape.length - 1];
+    const sr = stage.getBoundingClientRect();
+    const r = edge.el.getBoundingClientRect();
+    const ahead =
+      direction === "down"
+        ? r.bottom - sr.bottom
+        : direction === "ltr"
+          ? r.right - sr.right
+          : sr.left - r.left;
+    if (ahead >= (horizontal ? stage.clientWidth : stage.clientHeight)) return;
+    const idx = ctx.siblings.indexOf(edge.path);
+    const p = siblingPath(idx + 1);
+    if (!p) return; // 容器已无下一张：剩余溢出不足属容器尾部正常状态（停留后跨容器）
+    const before = tape.length;
+    appendTapeFrame(p);
+    if (tape.length === before) return; // 字节还在后台补齐，等滚动循环下轮再查
+  }
 }
 
 /** 追加一帧到胶片带尾部（url/尺寸应已预加载缓存；未就绪时后台补齐后再追加） */
@@ -305,6 +382,7 @@ function appendTapeFrameReady(path: string, url: string, d: { w: number; h: numb
   if (direction === "rtl") {
     strip.insertBefore(fe.el, strip.firstChild);
     tape.unshift(item);
+    tapeCur++; // 头部插入使既有帧索引整体 +1，当前帧指针同步右移
   } else {
     strip.appendChild(fe.el);
     tape.push(item);
@@ -315,11 +393,13 @@ function appendTapeFrameReady(path: string, url: string, d: { w: number; h: numb
     const stage = q<HTMLElement>(".imgv-stage")!;
     stage.scrollLeft += fe.el.offsetWidth + TAPE_GAP;
   }
+  watchFrameDims(path, fe.img);
   fe.img.decode?.().catch(() => {});
 }
 
 /** 拼接滚屏：滚过边界增量推进——当前帧元素不动，仅摘除滚出帧、追加预加载帧。
- *  全程同步无网络等待，边界无卡顿。 */
+ *  全程同步无网络等待，边界无卡顿。tape 为 DOM 序：down/ltr 与观看序相同
+ *  （下一帧在 tapeCur+1，摘头）；rtl 观看序反转（下一帧在 tapeCur-1，摘尾）。 */
 function promoteStep(): void {
   if (!ctx || !siblingPath(globalIdx + 1)) return;
   const nextPath = siblingPath(globalIdx + 1);
@@ -329,28 +409,81 @@ function promoteStep(): void {
     return;
   }
   globalIdx++;
-  tapeCur++;
   // 追加新的下一帧（预加载缓存命中时同步完成）
   const p = siblingPath(globalIdx + 1);
   if (p) appendTapeFrame(p);
-  // 摘除完全滚出的头部帧（保留当前帧前最多 1 张）并补偿滚动位置
-  while (tapeCur > 1) dropTapeHead();
+  ensureTapeAhead();
+  // 按路径重定位当前帧下标：rtl 头部插入会使整体索引偏移，直接查找最稳
+  const cur2 = siblingPath(globalIdx);
+  const ci = cur2 ? tape.findIndex((t) => t.path === cur2) : -1;
+  if (ci >= 0) tapeCur = ci;
+  // 摘除已完全滚出视口的旧帧：多帧同显时带内帧可能仍在视口中，摘除可见帧
+  // 会产生无法补偿的位移突变（滚动余量不足时补偿被钳位）。只在完全不可见时摘，
+  // 容器尾部退化为纯标签推进（无 DOM 变化，视口稳定）。down/ltr 摘头（补偿滚动）；rtl 摘尾。
+  const stage = q<HTMLElement>(".imgv-stage");
+  if (stage) {
+    const sr = stage.getBoundingClientRect();
+    if (direction === "rtl") {
+      while (tape.length - 1 - tapeCur > 1) {
+        if (tape[tape.length - 1].el.getBoundingClientRect().left <= sr.right + 1) break; // 仍可见
+        dropTapeTail();
+      }
+    } else {
+      while (tapeCur > 1) {
+        const r = tape[0].el.getBoundingClientRect();
+        const visible = direction === "down" ? r.bottom > sr.top + 1 : r.right > sr.left + 1;
+        if (visible) break; // 仍可见
+        dropTapeHead();
+      }
+    }
+  }
   updateLabels();
   void preloadAhead(globalIdx + 2);
   syncButtons();
 }
 
+/** 当前帧路径：globalIdx=-1 为跨容器过渡态（视口仍是旧容器尾帧），取胶片带当前帧兜底 */
+function currentPath(): string {
+  if (!ctx) return "";
+  return ctx.siblings[globalIdx] || tape[tapeCur]?.path || ctx.path;
+}
+
 function updateLabels(): void {
   if (!ctx) return;
-  const path = ctx.siblings[globalIdx];
+  const path = currentPath();
   const nameEl = q<HTMLElement>(".imgv-name");
   if (nameEl) {
     nameEl.textContent = baseName(path);
     nameEl.title = path;
   }
   const pageEl = q<HTMLElement>(".imgv-page");
-  if (pageEl) pageEl.textContent = ctx.siblings.length > 1 ? `${globalIdx + 1}/${ctx.siblings.length}` : "";
-  api.setTitle(`ReadBook - ${baseName(path)}（图片）`);
+  if (pageEl)
+    pageEl.textContent =
+      ctx.siblings.length > 1 && globalIdx >= 0 ? `${globalIdx + 1}/${ctx.siblings.length}` : "";
+  syncStatus();
+}
+
+/** 向宿主上报视图状态：右上角文件名/窗口标题与状态栏四格随当前图、缩放与播放状态更新。
+ *  宿主在插件视图关闭时自动恢复文本状态，这里无需处理退场。 */
+function syncStatus(): void {
+  if (!ctx) return;
+  const path = currentPath();
+  const cur = tape[tapeCur];
+  const fitLabel =
+    fitMode === "contain"
+      ? "适应窗口"
+      : fitMode === "width"
+        ? "适合宽度"
+        : fitMode === "height"
+          ? "适合高度"
+          : `${Math.round((cur?.ratio ?? zoom) * 100)}%`;
+  ctx.setStatus({
+    title: baseName(path),
+    encoding: cur ? `${ctx.ext.replace(".", "").toUpperCase()} ${cur.w}×${cur.h}` : undefined,
+    position: ctx.siblings.length > 1 && globalIdx >= 0 ? `第 ${globalIdx + 1}/${ctx.siblings.length} 张` : undefined,
+    mode: `模式: ${fitLabel}`,
+    display: slideOn ? `幻灯 ${slideSeconds}s` : scrollOn ? `滚屏·${dirLabel(direction)}` : "查看图片",
+  });
 }
 
 let preheatedFor: string | null = null; // 已为其预热"下一容器"的容器路径
@@ -454,6 +587,7 @@ function applyLayout(): void {
   zoomEl.textContent = `${cur.w}×${cur.h} · ${Math.round(cur.ratio * 100)}%`;
   layoutRetry = 0;
   syncModeButtons();
+  syncStatus(); // 缩放比例/适应模式变化 → 状态栏"模式"格随之更新
 }
 
 function syncModeButtons(): void {
@@ -516,10 +650,13 @@ function startScrollLoop(): void {
   lastFrameTs = last;
 
   const step = (now: number, dt: number): void => {
-    if (scrollSuspended) return;
+    if (scrollSuspended) {
+      // 缩放暂停期间不推进；距最后一次滚轮 2 秒后自动恢复滚屏
+      if (now - suspendedAt < 2000) return;
+      scrollSuspended = false;
+    }
     const noOverflowY = stage.scrollHeight <= stage.clientHeight + 2;
     const noOverflowX = stage.scrollWidth <= stage.clientWidth + 2;
-    const noOverflow = direction === "down" ? noOverflowY : noOverflowX;
     const atEnd =
       direction === "down"
         ? noOverflowY || stage.scrollTop + stage.clientHeight >= stage.scrollHeight - 2
@@ -527,20 +664,23 @@ function startScrollLoop(): void {
           ? noOverflowX || stage.scrollLeft + stage.clientWidth >= stage.scrollWidth - 2
           : noOverflowX || stage.scrollLeft <= 2;
     // 拼接模式：滚过边界增量推进——当前帧元素不动，仅摘除滚出帧、追加预加载帧。
-    // 下一帧顶边到达视口顶边（帧高大于视口）即推进；帧高≤视口时（适高/适应窗口）
-    // 顶边到不了顶边，滚动到底而下一帧仍在带中就立即推进。两种情况都不停留。
+    // 下一帧前缘到达视口前缘（帧大于视口）即推进；帧≤视口时（窄帧同显多张）
+    // 前缘到不了前缘，由 ensureTapeAhead 保证的溢出空间滚动推进。两种情况都不停留。
     if (stitch) {
-      const next = tape[tapeCur + 1];
+      ensureTapeAhead();
+      // 下一帧在观看顺序侧：down/ltr 为 tapeCur+1；rtl 的 tape 是 DOM 序反转，为 tapeCur-1
+      const next = direction === "rtl" ? tape[tapeCur - 1] : tape[tapeCur + 1];
       if (next) {
         const sr = stage.getBoundingClientRect();
         const r = next.el.getBoundingClientRect();
+        // 推进基准 = 下一帧前缘与视口前缘对齐（与 alignCurrent 同基准，任意帧宽下成立）
         const enter =
           direction === "down"
             ? r.top - sr.top <= 0
             : direction === "ltr"
               ? r.left - sr.left <= 0
-              : r.right - sr.left <= stage.clientWidth;
-        // 下一帧顶边开始进入视口就预热下下张：比边界推进再早一屏启动加载（幂等，已缓存自动跳过）
+              : r.right - sr.right >= 0;
+        // 下一帧开始进入视口就预热下下张：比边界推进再早一屏启动加载（幂等，已缓存自动跳过）
         const entering =
           direction === "down"
             ? r.top - sr.top <= stage.clientHeight
@@ -548,7 +688,10 @@ function startScrollLoop(): void {
               ? r.left - sr.left <= stage.clientWidth
               : r.right - sr.left >= 0;
         if (entering) void preloadAhead(globalIdx + 2);
-        if (enter || (atEnd && !noOverflow)) {
+        // 只认对齐基准推进：ensureTapeAhead 保证还有下一张时对齐必然可达；
+        // 此前"滚到底立即推进"（atEnd && !noOverflow）在多帧同显时会对可见帧连环
+        // promote + 摘除，产生跳帧与位移突变，容器尾部应交给下方 atEnd 停留逻辑。
+        if (enter) {
           promoteStep();
           return;
         }
@@ -676,13 +819,14 @@ async function advance(): Promise<void> {
       return;
     }
     if (stitch && scrollOn) {
-      // 拼接滚屏：增量衔接——当前帧元素不动，摘除旧容器帧（视口已不含它们），追加新容器首帧
+      // 拼接滚屏：只追加新容器首帧，当前帧与滚动位置都不动——旧容器尾帧占住 tapeCur
+      // （globalIdx=-1 过渡态），滚入新首帧时由 promoteStep 常规推进并摘除旧帧。
+      // 不能立即摘除旧帧：摘除使内容高度塌缩、scrollTop 钳到 0，视口跳回当前帧开头重滚一遍。
       ctx.siblings = imgs;
       ctx.path = imgs[0];
-      globalIdx = 0;
-      while (tapeCur > 0) dropTapeHead();
+      globalIdx = -1;
       appendTapeFrame(siblingPath(0)!);
-      updateLabels();
+      ensureTapeAhead(); // 新容器窄帧时同样要扩带，滚动空间才接得上
       void preloadAhead(1);
       return;
     }
@@ -790,6 +934,7 @@ function syncButtons(): void {
   if (speed) speed.value = String(scrollPxPerSec);
   const dir = q<HTMLSelectElement>(".imgv-dir");
   if (dir) dir.value = direction;
+  syncStatus(); // 幻灯/滚屏/方向等播放状态变化 → 状态栏"显示"格随之更新
 }
 
 const dirLabel = (d: Direction): string =>
@@ -945,7 +1090,10 @@ function buildView(host: HTMLElement): void {
 
   const stage = host.querySelector(".imgv-stage") as HTMLElement;
   stage.addEventListener("wheel", (e) => {
-    if (scrollOn) scrollSuspended = true; // 用户手动滚动时暂停自动滚屏，下一张恢复
+    if (scrollOn) {
+      scrollSuspended = true; // 用户手动操作时暂停自动滚屏，停止操作 2 秒后恢复
+      suspendedAt = performance.now();
+    }
     e.preventDefault();
     const rect = stage.getBoundingClientRect();
     zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top);

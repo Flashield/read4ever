@@ -6,6 +6,7 @@ use tauri::ipc::Response;
 use tauri::{AppHandle, Manager};
 
 use crate::encoding::encode_text;
+use crate::plugin_pkg;
 use crate::reorder::{looks_like_hard_lines, reorder_text};
 use crate::seqfile::{find_next_file, find_prev_file};
 use crate::store::{self, StoreData};
@@ -308,4 +309,31 @@ pub fn make_dir(parent: String, name: String) -> Result<String, String> {
     let dest = unique_child(Path::new(&parent), name);
     fs::create_dir_all(&dest).map_err(|e| format!("创建失败: {}", e))?;
     Ok(dest.to_string_lossy().to_string())
+}
+
+/* ========== 外部插件包（.rbplugin）基础能力 ========== */
+
+/// 列出已安装的外部插件（应用数据目录 plugins/ 下各包的 manifest）
+#[tauri::command]
+pub fn list_plugins(app: AppHandle) -> Result<Vec<plugin_pkg::PluginPkgInfo>, String> {
+    plugin_pkg::list_plugins(&app)
+}
+
+/// 从 .rbplugin（zip）安装插件（覆盖旧版），返回包信息
+#[tauri::command]
+pub fn install_plugin(app: AppHandle, zip_path: String) -> Result<plugin_pkg::PluginPkgInfo, String> {
+    plugin_pkg::install_plugin(&app, &zip_path)
+}
+
+/// 卸载插件（目录移入回收站）
+#[tauri::command]
+pub fn uninstall_plugin(app: AppHandle, id: String) -> Result<(), String> {
+    plugin_pkg::uninstall_plugin(&app, &id)
+}
+
+/// 读取插件包内文件字节（入口 main.js 与 assets 资源；禁止走出插件目录）
+#[tauri::command]
+pub fn read_plugin_file(app: AppHandle, id: String, name: String) -> Result<Response, String> {
+    let bytes = plugin_pkg::read_plugin_file(&app, &id, &name)?;
+    Ok(Response::new(bytes))
 }

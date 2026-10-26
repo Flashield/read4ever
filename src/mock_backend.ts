@@ -117,6 +117,62 @@ const ILLUSTRATION_2 = makeDemoPngDataUrl("#b0562b", "插图 02（演示）");
 const GROUP_A1 = makeDemoPngDataUrl("#6b2bb0", "第一组 图 A（横）", 480, 300);
 const GROUP_A2 = makeDemoPngDataUrl("#b02b8f", "第一组 图 B（竖）", 300, 480);
 const GROUP_B1 = makeDemoPngDataUrl("#2b8fb0", "第二组 图 C（横）", 480, 300);
+// 竖版窄图组：横向（从左至右/从右至左）滚屏演示——适高后单帧宽度小于视口，可同时看到多张
+const GROUP_P1 = makeDemoPngDataUrl("#8f2b2b", "竖图 P1", 200, 480);
+const GROUP_P2 = makeDemoPngDataUrl("#8f6e2b", "竖图 P2", 200, 480);
+const GROUP_P3 = makeDemoPngDataUrl("#7a8f2b", "竖图 P3", 200, 480);
+const GROUP_P4 = makeDemoPngDataUrl("#2b8f2b", "竖图 P4", 200, 480);
+const GROUP_P5 = makeDemoPngDataUrl("#2b8f6e", "竖图 P5", 200, 480);
+const GROUP_P6 = makeDemoPngDataUrl("#2b8f8f", "竖图 P6", 200, 480);
+const GROUP_P7 = makeDemoPngDataUrl("#2b6e8f", "竖图 P7", 200, 480);
+const GROUP_P8 = makeDemoPngDataUrl("#2b2b8f", "竖图 P8", 200, 480);
+
+/* ========== 演示外部插件（走完整外部链路：list → read main.js → blob import → register） ========== */
+
+const DEMO_PLUGIN_PKG = {
+  id: "hex-viewer",
+  name: "十六进制查看",
+  version: "1.0.0",
+  description: "演示外部插件：以十六进制 + ASCII 对照查看文件前 4KB",
+  author: "ReadBook 演示",
+  api: 1,
+  entry: "main.js",
+  extensions: [".hex", ".bin"],
+  dir: "(浏览器演示内置)",
+};
+
+const DEMO_PLUGIN_JS = `/* 演示外部插件：十六进制查看器 */
+export default {
+  id: "hex-viewer",
+  name: "十六进制查看",
+  version: "1.0.0",
+  description: "演示外部插件：以十六进制 + ASCII 对照查看文件前 4KB",
+  extensions: [".hex", ".bin"],
+  open(ctx) {
+    const b = ctx.bytes;
+    const shown = Math.min(b.length, 4096);
+    const lines = [];
+    for (let i = 0; i < shown; i += 16) {
+      const chunk = Array.from(b.slice(i, Math.min(i + 16, shown)));
+      const hex = chunk.map((x) => x.toString(16).padStart(2, "0")).join(" ");
+      const asc = chunk.map((x) => (x >= 32 && x < 127) ? String.fromCharCode(x) : "·").join("");
+      lines.push(i.toString(16).padStart(8, "0") + "  " + hex + "  " + asc);
+    }
+    const pre = document.createElement("pre");
+    pre.style.cssText = "margin:12px;padding:8px;font:12px/1.7 Consolas,monospace;white-space:pre;overflow:auto";
+    pre.textContent = lines.join("\\n") || "(空文件)";
+    ctx.host.style.overflow = "auto";
+    ctx.host.appendChild(pre);
+    ctx.setStatus({
+      title: ctx.name,
+      encoding: "字节 " + b.length,
+      position: "显示前 " + shown + " 字节",
+      mode: "模式: 十六进制",
+      display: "外部插件演示",
+    });
+  },
+};
+`;
 
 /* ========== 内存虚拟文件系统（文件夹侧栏演示） ========== */
 
@@ -142,7 +198,20 @@ const mockFsRoot: MockFsNode = mockDir({
     "图B.png": mockFile(GROUP_A2),
   }),
   "02组": mockDir({ "图C.png": mockFile(GROUP_B1) }),
+  "03组": mockDir({
+    "竖图P1.png": mockFile(GROUP_P1),
+    "竖图P2.png": mockFile(GROUP_P2),
+    "竖图P3.png": mockFile(GROUP_P3),
+    "竖图P4.png": mockFile(GROUP_P4),
+    "竖图P5.png": mockFile(GROUP_P5),
+    "竖图P6.png": mockFile(GROUP_P6),
+    "竖图P7.png": mockFile(GROUP_P7),
+    "竖图P8.png": mockFile(GROUP_P8),
+  }),
   "封面图片.png": mockFile(COVER_PNG),
+  "示例数据.hex": mockFile(
+    "ReadBook external plugin demo.\nThis plain-text file is shown by the demo\nhex-viewer plugin, loaded through the full\nexternal plugin pipeline (manifest -> main.js -> blob import).\n"
+  ),
 });
 
 const fsJoin = (dir: string, name: string): string => dir.replace(/[\\/]+$/, "") + "\\" + name;
@@ -352,6 +421,16 @@ window.__TAURI_INTERNALS__ = {
         parent.children.set(name, mockDir({}));
         return Promise.resolve(fsJoin(String(args.parent), name));
       }
+      case "list_plugins":
+        return Promise.resolve([JSON.parse(JSON.stringify(DEMO_PLUGIN_PKG))]);
+      case "read_plugin_file":
+        return Promise.resolve(new TextEncoder().encode(DEMO_PLUGIN_JS).buffer);
+      case "install_plugin":
+        console.log("[mock] install_plugin（演示环境无插件目录）", args.zip_path);
+        return Promise.resolve(JSON.parse(JSON.stringify(DEMO_PLUGIN_PKG)));
+      case "uninstall_plugin":
+        console.log("[mock] uninstall_plugin（演示环境无插件目录）", args.id);
+        return Promise.resolve(null);
       case "plugin:dialog|open": {
         // dialog 插件的参数嵌套在 options 里
         if ((args.options as { directory?: boolean } | undefined)?.directory) {

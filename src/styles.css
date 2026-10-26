@@ -757,6 +757,53 @@ body.folder-open #reader-container {
   accent-color: var(--accent);
 }
 
+/* 插件行操作区（启用开关 + 外部插件的卸载按钮） */
+.plugin-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.plugin-badge {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 2px 4px;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.plugin-uninstall {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  background: transparent;
+  color: #c66;
+  cursor: pointer;
+}
+
+.plugin-uninstall:hover {
+  border-color: #c66;
+}
+
+.plugin-uninstall:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 加载失败的外部插件行（红色提示，仍可卸载） */
+.plugin-row.plugin-error .plugin-name {
+  color: #d77;
+}
+
+.plugin-panel-footer {
+  justify-content: center;
+}
+
 /* 图片查看插件 */
 .imgv {
   display: flex;
@@ -847,6 +894,9 @@ body.folder-open #reader-container {
 .imgv-stage {
   flex: 1;
   overflow: auto;
+  /* 禁用浏览器滚动锚定：摘除/插入胶片带帧时代码已手工补偿滚动位置（dropTapeHead 等），
+     锚定会再补一次 → 双重补偿，接缝处视口整帧跳回图片开头（Chromium/WebView2 默认开启锚定） */
+  overflow-anchor: none;
 }
 
 /* 胶片带：按滚动方向排列多帧（每帧独立倍率，互相独立） */
@@ -871,6 +921,12 @@ body.folder-open #reader-container {
   align-items: center;
   min-height: 0;
   height: 100%;
+}
+
+/* rtl 观看序从右至左：内容窄于视口时右贴边（首图在右侧），
+   且向左追加新帧时既有帧位置不动——避免 noOverflow 下的补偿钳位跳变 */
+.imgv-strip.dir-rtl {
+  justify-content: flex-end;
 }
 
 .imgv-frame {
