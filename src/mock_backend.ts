@@ -244,7 +244,9 @@ function fsParentOf(p: string): { dir: Extract<MockFsNode, { dir: true }>; name:
 
 /* ========== 演示 SMB 服务器（远程面板用；路径用 "/" 分隔） ========== */
 
-const SMB_ROOT = "smb://demo/books";
+const SMB_DEMO_SERVER = { id: "demo", name: "演示 NAS", host: "192.168.1.100", share: "books", workgroup: "", username: "", password: "" };
+/* 已注册服务器（smb_put_servers 保存；share 用于服务器根 smb://<id> 列目录时补规范前缀） */
+let smbServers: Array<{ id: string; share: string }> = [SMB_DEMO_SERVER];
 const smbFsRoot: MockFsNode = mockDir({
   "第1章.txt": mockFile(
     "第一章 远方的信号\n\n陈默在整理旧书时，发现夹在书页间的一张字条。\n字条上只有一行钢笔字：坐标在北方，落款在雨夜。\n他决定按图索骥。\n"
@@ -263,8 +265,10 @@ const smbFsRoot: MockFsNode = mockDir({
 
 function smbParts(p: string): string[] {
   const norm = p.replace(/\\/g, "/");
-  const rel = norm.startsWith(SMB_ROOT) ? norm.slice(SMB_ROOT.length) : norm;
-  return rel.split("/").filter(Boolean);
+  if (!norm.startsWith("smb://")) return norm.split("/").filter(Boolean);
+  // 与后端 resolve 一致：剥掉 smb://<id>[/<share>] 前缀（服务器根别名与规范路径都指向 share 根）
+  const segs = norm.slice("smb://".length).split("/").filter(Boolean);
+  return segs.slice(Math.min(2, segs.length)).filter(Boolean);
 }
 
 function smbGet(p: string): MockFsNode | null {
@@ -294,7 +298,13 @@ function mockSeqSort(a: string, b: string): number {
 function mockSmbList(p: string): Record<string, unknown>[] | null {
   const node = smbGet(p);
   if (!node || !node.dir) return null;
-  const parent = p.replace(/\/+$/, "");
+  let parent = p.replace(/\/+$/, "");
+  // 服务器根别名 smb://<id> → 补 share 段成规范路径（与后端 list_dir 一致）
+  const segs = parent.split("/").filter(Boolean);
+  if (segs.length === 2) {
+    const srv = smbServers.find((s) => s.id === segs[1]);
+    parent = `smb://${segs[1]}/${srv ? srv.share : "books"}`;
+  }
   const entries = [...node.children.entries()]
     .filter(([name]) => !name.startsWith("."))
     .map(([name, child]) => ({
@@ -331,7 +341,7 @@ const storeData = {
   history: [],
   bookshelf: [],
   keywordGroups: [],
-  smbServers: [],
+  smbServers: [SMB_DEMO_SERVER],
 };
 
 function demoContent(path: string): Record<string, unknown> {
@@ -556,6 +566,7 @@ window.__TAURI_INTERNALS__ = {
         return Promise.resolve(null);
       case "smb_put_servers":
         console.log("[mock] smb_put_servers", args.servers);
+        smbServers = (args.servers as Array<{ id: string; share: string }>).map((s) => ({ id: s.id, share: s.share }));
         return Promise.resolve(null);
       case "smb_test_connection":
         return Promise.resolve("192.168.1.100:445（演示服务器）");

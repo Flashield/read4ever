@@ -25,15 +25,30 @@ const servers = (): SmbServer[] => app.state.store.smbServers;
 async function loadChildren(dir: string): Promise<SmbFileEntry[]> {
   const cached = childrenCache.get(dir);
   if (cached) return cached;
+  let entries: SmbFileEntry[];
   try {
-    const entries = await api.smbListDir(dir);
-    childrenCache.set(dir, entries);
-    return entries;
+    entries = await api.smbListDir(dir);
   } catch (e) {
     app.toast(String(e).slice(0, 60));
     childrenCache.set(dir, []);
     return [];
   }
+  childrenCache.set(dir, entries);
+  // 服务器根别名 smb://<id> 与规范共享根 smb://<id>/<share> 指向同一目录：
+  // 双写缓存键，否则共享根直接子文件的右键菜单（entryByPath 按规范父目录查）会落空
+  const segs = dir.replace(/\/+$/, "").split("/").filter(Boolean);
+  if (segs.length >= 2 && segs[0] === "smb:") {
+    const srv = servers().find((s) => s.id === segs[1]);
+    if (srv) {
+      const canon = `smb://${srv.id}/${srv.share}`;
+      const alias = `smb://${srv.id}`;
+      if (dir === canon || dir === alias) {
+        childrenCache.set(canon, entries);
+        childrenCache.set(alias, entries);
+      }
+    }
+  }
+  return entries;
 }
 
 function pathToName(p: string): string {
@@ -288,8 +303,27 @@ function rowByPath(path: string): HTMLElement | null {
 
 /* ========== 操作 ========== */
 
-async function refreshDir(dir: string): Promise<void> {
+/** 失效某目录的列表缓存（服务器根别名与规范共享根双键一起删；
+ *  传入服务器根 smb://<id> 时连其子目录键一并清扫，供删除服务器后调用） */
+function dropDirCache(dir: string): void {
   childrenCache.delete(dir);
+  const segs = dir.replace(/\/+$/, "").split("/").filter(Boolean);
+  if (segs.length < 2 || segs[0] !== "smb:") return;
+  const srv = servers().find((s) => s.id === segs[1]);
+  if (srv) {
+    childrenCache.delete(`smb://${srv.id}/${srv.share}`);
+    childrenCache.delete(`smb://${srv.id}`);
+  }
+  if (segs.length === 2) {
+    // dir 形如 smb://<id>：不依赖 servers()（删除流程先改表后清缓存），直接按键前缀清扫
+    for (const k of [...childrenCache.keys()]) {
+      if (k.startsWith(`${dir}/`)) childrenCache.delete(k);
+    }
+  }
+}
+
+async function refreshDir(dir: string): Promise<void> {
+  dropDirCache(dir);
   await renderAll();
 }
 
@@ -304,7 +338,7 @@ async function cacheFile(path: string, name: string): Promise<void> {
   try {
     await api.smbCacheFile(path);
     app.toast(`已缓存「${name}」`);
-    childrenCache.delete(parentDir(path));
+    dropDirCache(parentDir(path));
     await renderAll();
   } catch (e) {
     app.showMessage("缓存失败", String(e));
@@ -354,7 +388,7 @@ function menuForServer(s: SmbServer, x: number, y: number): void {
                 action: async () => {
                   const list = servers().filter((x) => x.id !== s.id);
                   await pushServers(list);
-                  childrenCache.delete(`smb://${s.id}`);
+                  dropDirCache(`smb://${s.id}`);
                   expanded.delete(`smb://${s.id}`);
                   app.toast(`已删除「${s.name}」`);
                   await renderAll();

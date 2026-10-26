@@ -230,7 +230,13 @@ pub async fn list_dir(path: &str, cache_dir: &Path) -> Result<Vec<SmbFileEntry>,
     let entries = with_timeout("列目录", ses.tree.list_directory(&mut ses.conn.clone(), &list_path))
         .await?
         .map_err(|e| format!("无法读取远程目录 {}: {}", path, e))?;
-    let parent = path.split("::").next().unwrap_or(path).trim_end_matches('/');
+    // 子条目路径要含共享名段：列 share 根时入参可能是别名 smb://<id>（无共享段），
+    // 补成 smb://<id>/<share> 才是规范路径，后续 resolve/打开/缓存才能通过共享名校验
+    let parent = if rel.is_empty() {
+        format!("smb://{}/{}", cfg.id, cfg.share)
+    } else {
+        path.split("::").next().unwrap_or(path).trim_end_matches('/').to_string()
+    };
     let mut out: Vec<SmbFileEntry> = Vec::new();
     for e in entries {
         if e.name == "." || e.name == ".." || e.name.starts_with('.') || e.attributes.is_hidden() {
