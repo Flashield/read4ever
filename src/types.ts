@@ -110,6 +110,7 @@ export interface FileContent {
   fileName: string;
   filePath: string;
   isHardLines: boolean;
+  note?: string; // 附加提示（如 SMB 离线兜底打开时说明内容可能过期）
 }
 
 export interface OpenFile {

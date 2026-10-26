@@ -399,6 +399,17 @@ window.__TAURI_INTERNALS__ = {
       case "open_text_file": {
         const p = String(args.path);
         if (p.endsWith(".zip")) return Promise.reject("这是一个 zip 文件");
+        if (p.startsWith("smb://")) {
+          const node = smbGet(p);
+          if (!node || node.dir) return Promise.reject("无法打开远程文件: " + p);
+          return Promise.resolve({
+            content: (node as { dir: false; content: string }).content,
+            encoding: "UTF-8",
+            fileName: p.split("/").pop() || "",
+            filePath: p,
+            isHardLines: true,
+          });
+        }
         return Promise.resolve(demoContent(p));
       }
       case "open_zip_file":
@@ -468,8 +479,19 @@ window.__TAURI_INTERNALS__ = {
         return Promise.resolve(fsJoin(parent.dirPath, newName));
       }
       case "read_file_bytes": {
-        const node = fsGet(String(args.path));
-        if (!node || node.dir) return Promise.reject("读取失败: " + args.path);
+        const p = String(args.path);
+        if (p.startsWith("smb://")) {
+          const node = smbGet(p);
+          if (!node || node.dir) return Promise.reject("读取失败: " + p);
+          const c = (node as { dir: false; content: string }).content;
+          return Promise.resolve(
+            c.startsWith("data:")
+              ? dataUrlToBuffer(c)
+              : (new TextEncoder().encode(c).buffer as ArrayBuffer)
+          );
+        }
+        const node = fsGet(p);
+        if (!node || node.dir) return Promise.reject("读取失败: " + p);
         const content = (node as { dir: false; content: string }).content;
         if (content.startsWith("data:")) return Promise.resolve(dataUrlToBuffer(content));
         return Promise.resolve(new TextEncoder().encode(content).buffer as ArrayBuffer);

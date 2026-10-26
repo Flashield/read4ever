@@ -22,12 +22,23 @@ pub struct FileContent {
     pub file_name: String,
     pub file_path: String,
     pub is_hard_lines: bool,
+    /// 附加提示（如 SMB 离线兜底打开时说明内容可能过期）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// 打开文本文件（通过前端 dialog 拿到路径后调用）。
 /// encoding 不为 None 时按指定编码解码（手动重新打开场景）。
 #[tauri::command]
-pub fn open_text_file(path: String, encoding: Option<String>) -> Result<FileContent, String> {
+pub async fn open_text_file(
+    app: AppHandle,
+    path: String,
+    encoding: Option<String>,
+) -> Result<FileContent, String> {
+    // smb 分发放在 is_zip_file 之前：File::open("smb://…") 的报错有误导性
+    if smb::is_smb_path(&path) {
+        return smb::open_text(&path, &smb_cache_dir(&app)?, encoding.as_deref()).await;
+    }
     if is_zip_file(&path) {
         return Err("这是一个 zip 文件，请使用 open_zip_file".into());
     }
@@ -44,6 +55,7 @@ pub fn open_text_file(path: String, encoding: Option<String>) -> Result<FileCont
         file_name,
         file_path: path,
         is_hard_lines: hard,
+        note: None,
     })
 }
 
@@ -55,7 +67,11 @@ pub fn open_zip_file(path: String) -> Result<Vec<String>, String> {
 
 /// 读取磁盘文件原始字节（二进制插件用；前端 invoke 得到 ArrayBuffer）
 #[tauri::command]
-pub fn read_file_bytes(path: String) -> Result<Response, String> {
+pub async fn read_file_bytes(app: AppHandle, path: String) -> Result<Response, String> {
+    if smb::is_smb_path(&path) {
+        let bytes = smb::read_all(&path).await?;
+        return Ok(Response::new(bytes));
+    }
     let bytes = fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
     Ok(Response::new(bytes))
 }
@@ -83,6 +99,7 @@ pub fn read_zip_entry(
         file_name: entry_name,
         file_path,
         is_hard_lines: hard,
+        note: None,
     })
 }
 

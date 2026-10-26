@@ -408,3 +408,117 @@ pub fn clear_cache(cache_dir: &Path) -> Result<u64, String> {
     }
     Ok(freed)
 }
+
+/* ========== 远程文件打开 ========== */
+
+/// 整文件网络读取（文本打开、插件原始字节用；大文件较慢，超时放宽到 60s）
+pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
+    let (cfg, rel) = resolve(path)?;
+    if rel.is_empty() {
+        return Err("共享根不是文件".into());
+    }
+    let ses = session_for(&cfg.id).await?;
+    let reader = with_timeout(
+        "打开远程文件",
+        ses.tree.clone().open_file_reader(ses.conn.clone(), &rel),
+    )
+    .await?
+    .map_err(|e| format!("无法打开远程文件 {}: {}", path, e))?;
+    let size = reader.size();
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    let data = tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size))
+        .await
+        .map_err(|_| "下载数据超时（60 秒）".to_string())?
+        .map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+    Ok(data)
+}
+
+fn file_content_of(
+    path: &str,
+    content: String,
+    encoding: String,
+    note: Option<&str>,
+) -> crate::commands::FileContent {
+    let pure = path.split("::").next().unwrap_or(path);
+    let file_name = pure.rsplit('/').next().unwrap_or(pure).to_string();
+    let hard = crate::reorder::looks_like_hard_lines(&content);
+    crate::commands::FileContent {
+        content,
+        encoding,
+        file_name,
+        file_path: path.to_string(),
+        is_hard_lines: hard,
+        note: note.map(|s| s.to_string()),
+    }
+}
+
+/// 打开本地缓存副本（复用本地编码检测管线）
+fn local_open(
+    bin: &Path,
+    path: &str,
+    forced: Option<&str>,
+    note: Option<&str>,
+) -> Result<crate::commands::FileContent, String> {
+    let (content, enc) =
+        crate::zipfile::read_text_file(&bin.to_string_lossy(), forced)
+            .map_err(|e| format!("读取本地缓存失败: {}", e))?;
+    Ok(file_content_of(path, content, enc, note))
+}
+
+/// 打开远程文本：新鲜缓存 → 网络整读 → 网络失败用旧缓存兜底。
+/// filePath 回填原 smb:// 路径，历史/书架的键保持规范。
+pub async fn open_text(
+    path: &str,
+    cache_dir: &Path,
+    forced_encoding: Option<&str>,
+) -> Result<crate::commands::FileContent, String> {
+    let bin = cache_dir.join(format!("{}.bin", key_of(path)));
+    let fresh = match stat(path).await {
+        Ok((size, mtime, is_dir)) => {
+            if is_dir {
+                return Err("这是远程目录，不是文件".into());
+            }
+            bin.exists() && fresh_meta(cache_dir, path, size, mtime)
+        }
+        Err(e) => {
+            // 断网等场景：有旧缓存就兜底，否则原样报错
+            if !bin.exists() {
+                return Err(e);
+            }
+            return local_open(
+                &bin,
+                path,
+                forced_encoding,
+                Some("无法访问远程服务器，已用本地缓存打开（内容可能不是最新）"),
+            );
+        }
+    };
+    if fresh {
+        return local_open(&bin, path, forced_encoding, None);
+    }
+    match read_all(path).await {
+        Ok(bytes) => {
+            let (content, enc) = if let Some(f) = forced_encoding {
+                crate::encoding::decode_with(&bytes, f)?
+            } else {
+                let (t, e) = crate::encoding::detect_and_decode(&bytes);
+                (t, e.to_string())
+            };
+            Ok(file_content_of(path, content, enc, None))
+        }
+        Err(e) => {
+            if bin.exists() {
+                local_open(
+                    &bin,
+                    path,
+                    forced_encoding,
+                    Some("网络读取失败，已用本地缓存打开（内容可能不是最新）"),
+                )
+            } else {
+                Err(e)
+            }
+        }
+    }
+}

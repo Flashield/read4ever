@@ -332,6 +332,7 @@ function loadFileContent(
   src: { isZip: boolean; zipPath: string; zipEntry: string },
   opts: OpenOpts
 ): void {
+  if (fc.note) toast(fc.note); // SMB 离线兜底等附加提示
   plugins.deactivateActive(); // 若当前显示插件视图（如图片），先退回文本渲染
   state.filePath = fc.filePath;
   state.realPath = src.isZip ? src.zipPath : fc.filePath;
@@ -703,6 +704,10 @@ export function openEditor(): void {
   if (!state.filePath) return;
   if (state.isZip) {
     toast("ZIP 内文件为只读，请先另存为后再编辑");
+    return;
+  }
+  if (state.filePath.startsWith("smb://")) {
+    toast("远程文件只读，请先另存为后再编辑");
     return;
   }
   const sel = window.getSelection()?.toString() ?? "";
