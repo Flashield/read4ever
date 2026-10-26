@@ -142,14 +142,20 @@ pub fn reorder(content: String) -> String {
 
 /// 按序号找下一个文件
 #[tauri::command]
-pub fn find_next(path: String) -> Option<String> {
-    find_next_file(&path)
+pub async fn find_next(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    if smb::is_smb_path(&path) {
+        return smb::find_sibling(&path, true, &smb_cache_dir(&app)?).await;
+    }
+    Ok(find_next_file(&path))
 }
 
 /// 按序号找上一个文件
 #[tauri::command]
-pub fn find_prev(path: String) -> Option<String> {
-    find_prev_file(&path)
+pub async fn find_prev(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    if smb::is_smb_path(&path) {
+        return smb::find_sibling(&path, false, &smb_cache_dir(&app)?).await;
+    }
+    Ok(find_prev_file(&path))
 }
 
 /// 加载持久化数据

@@ -667,3 +667,48 @@ pub async fn read_zip_entry_text(
     let buf = read_zip_entry_raw(path, entry_name, cache_dir).await?;
     crate::zipfile::decode_bytes(&buf, forced)
 }
+
+/// 远程上一集/下一集：列远程父目录 → 同扩展名过滤 → 智能序号排序 → 纯函数定位。
+/// 返回完整 smb:// 路径。连载场景 zip→zip 接续同样覆盖（realPath 即 zip 的 smb 路径）。
+pub async fn find_sibling(
+    path: &str,
+    forward: bool,
+    cache_dir: &Path,
+) -> Result<Option<String>, String> {
+    let pure = path.split("::").next().unwrap_or(path);
+    let (parent_smb, cur_name) = match pure.rsplit_once('/') {
+        Some((p, n)) => (p.to_string(), n.to_string()),
+        None => (pure.to_string(), String::new()),
+    };
+    if cur_name.is_empty() {
+        return Ok(None);
+    }
+    let entries = list_dir(&parent_smb, cache_dir).await?;
+    // 与本地 list_sibling_files 同语义：同扩展名文件（无扩展名按 txt）
+    let ext = cur_name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_else(|| "txt".to_string());
+    let mut files: Vec<(String, String)> = entries
+        .iter()
+        .filter(|e| {
+            !e.entry.is_dir
+                && e.entry
+                    .name
+                    .rsplit_once('.')
+                    .map(|(_, x)| x.eq_ignore_ascii_case(&ext))
+                    .unwrap_or(ext == "txt")
+        })
+        .map(|e| (e.entry.name.clone(), e.entry.path.clone()))
+        .collect();
+    files.sort_by(|a, b| crate::seqfile::seq_cmp(&a.0, &b.0));
+    let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
+    let idx = names.iter().position(|n| n == &cur_name);
+    let picked = if forward {
+        crate::seqfile::next_among(&names, &cur_name, idx)
+    } else {
+        // 上一集没有「兜底到末尾」语义：未命中直接无
+        idx.and_then(|i| crate::seqfile::prev_among(&names, i))
+    };
+    Ok(picked.and_then(|n| files.iter().find(|(x, _)| x == &n).map(|(_, p)| p.clone())))
+}

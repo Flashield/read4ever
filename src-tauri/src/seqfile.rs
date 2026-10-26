@@ -50,6 +50,26 @@ fn parse_file_num(name: &str) -> FileNum {
     }
 }
 
+/// 智能排序比较器：同前缀按数字排，无数字按名称排（纯函数，本地与 SMB 共用）
+pub(crate) fn seq_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let na = parse_file_num(a);
+    let nb = parse_file_num(b);
+    // 先按前缀排序（不区分大小写）
+    let pa = na.prefix.to_lowercase();
+    let pb = nb.prefix.to_lowercase();
+    let cmp = pa.cmp(&pb);
+    if cmp != std::cmp::Ordering::Equal {
+        return cmp;
+    }
+    // 再按数字排序
+    match (na.num, nb.num) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => na.name.cmp(&nb.name),
+    }
+}
+
 /// 列出目录中与当前文件同扩展名的文件，按智能序号排序
 fn list_sibling_files(current: &Path) -> Vec<PathBuf> {
     let dir = match current.parent() {
@@ -79,34 +99,53 @@ fn list_sibling_files(current: &Path) -> Vec<PathBuf> {
         }
     }
 
-    // 智能排序：同前缀按数字排，无数字按名称排
     files.sort_by(|a, b| {
-        let na = parse_file_num(
-            a.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(""),
-        );
-        let nb = parse_file_num(
-            b.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(""),
-        );
-        // 先按前缀排序（不区分大小写）
-        let pa = na.prefix.to_lowercase();
-        let pb = nb.prefix.to_lowercase();
-        let cmp = pa.cmp(&pb);
-        if cmp != std::cmp::Ordering::Equal {
-            return cmp;
-        }
-        // 再按数字排序
-        match (na.num, nb.num) {
-            (Some(x), Some(y)) => x.cmp(&y),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => na.name.cmp(&nb.name),
-        }
+        seq_cmp(
+            a.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            b.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+        )
     });
     files
+}
+
+/// 已排序名字表中 current 的下一个名字：
+/// idx 命中 → 后继；未命中（如输入名与条目名不完全一致）→ n+1 前缀兜底 → 首文件兜底。
+/// idx 由调用方计算：本地按 canonicalize 等价匹配，SMB 按名字精确匹配
+pub(crate) fn next_among(sorted: &[String], current: &str, idx: Option<usize>) -> Option<String> {
+    if let Some(i) = idx {
+        return sorted.get(i + 1).cloned();
+    }
+    let cur_num = parse_file_num(current);
+    if let Some(n) = cur_num.num {
+        for name in sorted {
+            let f = parse_file_num(name);
+            if f.prefix.eq_ignore_ascii_case(&cur_num.prefix) {
+                if let Some(m) = f.num {
+                    if m == n + 1 {
+                        return Some(name.clone());
+                    }
+                }
+            }
+        }
+    }
+    sorted.first().cloned()
+}
+
+/// 已排序名字表中位置 idx 的上一个名字（首元素/未命中 → None）
+pub(crate) fn prev_among(sorted: &[String], idx: usize) -> Option<String> {
+    if idx > 0 {
+        Some(sorted[idx - 1].clone())
+    } else {
+        None
+    }
+}
+
+/// 名字 → 同目录兄弟列表中的完整路径（目录内名字唯一）
+fn path_of_name(siblings: &[PathBuf], name: &str) -> Option<String> {
+    siblings
+        .iter()
+        .find(|f| f.file_name().and_then(|n| n.to_str()) == Some(name))
+        .and_then(|f| f.to_str().map(|s| s.to_string()))
 }
 
 /// 找到当前文件的下一个文件（按序号逻辑）
@@ -114,47 +153,18 @@ fn list_sibling_files(current: &Path) -> Vec<PathBuf> {
 pub fn find_next_file(current_path: &str) -> Option<String> {
     let current = Path::new(current_path);
     let cur_name = current.file_name()?.to_str()?.to_string();
-    let cur_num = parse_file_num(&cur_name);
-
     let siblings = list_sibling_files(current);
     let cur_canonical = current.canonicalize().ok()?;
-
-    // 找到当前文件在排序列表中的位置
-    let mut idx = None;
-    for (i, f) in siblings.iter().enumerate() {
-        if let Ok(c) = f.canonicalize() {
-            if c == cur_canonical {
-                idx = Some(i);
-                break;
-            }
-        }
-    }
-
-    // 如果在列表中找到，取下一个
-    if let Some(i) = idx {
-        if i + 1 < siblings.len() {
-            return siblings[i + 1].to_str().map(|s| s.to_string());
-        }
-        return None;
-    }
-
-    // 没找到（可能 zip 内文件），尝试用序号匹配同前缀下一个数字
-    if let Some(n) = cur_num.num {
-        for f in &siblings {
-            let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let fn_num = parse_file_num(name);
-            if fn_num.prefix.eq_ignore_ascii_case(&cur_num.prefix) {
-                if let Some(m) = fn_num.num {
-                    if m == n + 1 {
-                        return f.to_str().map(|s| s.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // 最后兜底：返回列表第一个
-    siblings.first().and_then(|f| f.to_str().map(|s| s.to_string()))
+    let names: Vec<String> = siblings
+        .iter()
+        .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
+        .collect();
+    // canonicalize 匹配（大小写不敏感文件系统下输入名可能与实际条目大小写不同）
+    let idx = siblings
+        .iter()
+        .position(|f| f.canonicalize().is_ok_and(|c| c == cur_canonical));
+    let name = next_among(&names, &cur_name, idx)?;
+    path_of_name(&siblings, &name)
 }
 
 /// 找到当前文件的上一个文件
@@ -166,10 +176,12 @@ pub fn find_prev_file(current_path: &str) -> Option<String> {
     for (i, f) in siblings.iter().enumerate() {
         if let Ok(c) = f.canonicalize() {
             if c == cur_canonical {
-                if i > 0 {
-                    return siblings[i - 1].to_str().map(|s| s.to_string());
-                }
-                return None;
+                let names: Vec<String> = siblings
+                    .iter()
+                    .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
+                    .collect();
+                let name = prev_among(&names, i)?;
+                return path_of_name(&siblings, &name);
             }
         }
     }

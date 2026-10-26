@@ -281,6 +281,16 @@ function smbGet(p: string): MockFsNode | null {
 /* 演示缓存状态（smb_cache_file 置位，smb_clear_cache 清空） */
 const smbCached = new Set<string>();
 
+/* 智能序号排序（同前缀按数字）：第2章 排在 第10章 之前 */
+function mockSeqSort(a: string, b: string): number {
+  const na = /^(\D*)(\d+)/.exec(a);
+  const nb = /^(\D*)(\d+)/.exec(b);
+  if (na && nb && na[1].toLowerCase() === nb[1].toLowerCase()) {
+    return Number(na[2]) - Number(nb[2]);
+  }
+  return a.localeCompare(b);
+}
+
 function mockSmbList(p: string): Record<string, unknown>[] | null {
   const node = smbGet(p);
   if (!node || !node.dir) return null;
@@ -423,8 +433,31 @@ window.__TAURI_INTERNALS__ = {
       case "reorder":
         return Promise.resolve(reorderText(String(args.content)));
       case "find_next":
-      case "find_prev":
+      case "find_prev": {
+        const p = String(args.path);
+        if (p.startsWith("smb://")) {
+          const slash = p.lastIndexOf("/");
+          const dir = p.slice(0, slash);
+          const cur = p.slice(slash + 1);
+          const node = smbGet(dir);
+          if (!node || !node.dir || !cur) return Promise.resolve(null);
+          const ext = (cur.split(".").pop() || "txt").toLowerCase();
+          const names = [...node.children.keys()]
+            .filter((n) => {
+              const child = node.children.get(n)!;
+              return !child.dir && (n.split(".").pop() || "txt").toLowerCase() === ext;
+            })
+            .sort(mockSeqSort);
+          const i = names.indexOf(cur);
+          if (cmd === "find_next") {
+            const next = i >= 0 ? names[i + 1] : names[0];
+            return Promise.resolve(next ? `${dir}/${next}` : null);
+          }
+          if (i <= 0) return Promise.resolve(null);
+          return Promise.resolve(`${dir}/${names[i - 1]}`);
+        }
         return Promise.resolve(null);
+      }
       case "list_dir":
       case "smb_list_dir": {
         const p = String(args.path);
