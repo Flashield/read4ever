@@ -75,6 +75,10 @@ pub fn run() {
             commands::read_plugin_file,
             commands::smb_put_servers,
             commands::smb_test_connection,
+            commands::smb_list_dir,
+            commands::smb_cache_file,
+            commands::smb_cached_status,
+            commands::smb_clear_cache,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时隐藏到托盘而非退出

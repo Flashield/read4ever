@@ -242,6 +242,63 @@ function fsParentOf(p: string): { dir: Extract<MockFsNode, { dir: true }>; name:
   return parent && parent.dir ? { dir: parent, name, dirPath } : null;
 }
 
+/* ========== 演示 SMB 服务器（远程面板用；路径用 "/" 分隔） ========== */
+
+const SMB_ROOT = "smb://demo/books";
+const smbFsRoot: MockFsNode = mockDir({
+  "第1章.txt": mockFile(
+    "第一章 远方的信号\n\n陈默在整理旧书时，发现夹在书页间的一张字条。\n字条上只有一行钢笔字：坐标在北方，落款在雨夜。\n他决定按图索骥。\n"
+  ),
+  "第2章.txt": mockFile(
+    "第二章 旧城的钥匙\n\n钥匙藏在邮局第三格抽屉里。\n抽屉里还有一封没有寄出的信，收信人是三十年前的他自己。\n"
+  ),
+  "第3章.txt": mockFile(
+    "第三章 未寄出的信\n\n信的开头写着：如果你读到这里，说明雨已经停了。\n陈默望向窗外，雨确实停了。\n"
+  ),
+  "西游记选段.txt": mockFile(demoText("C:\\demo\\西游记选段.txt")),
+  "传统小说.txt": mockFile(demoText("C:\\demo\\传统小说.txt")),
+  "西游记合集.zip": mockFile("(演示 zip 内容)"),
+  ".DS_Store": mockFile(""), // 隐藏项：列表应跳过
+});
+
+function smbParts(p: string): string[] {
+  const norm = p.replace(/\\/g, "/");
+  const rel = norm.startsWith(SMB_ROOT) ? norm.slice(SMB_ROOT.length) : norm;
+  return rel.split("/").filter(Boolean);
+}
+
+function smbGet(p: string): MockFsNode | null {
+  let node: MockFsNode = smbFsRoot;
+  for (const part of smbParts(p)) {
+    if (!node.dir) return null;
+    const next = node.children.get(part);
+    if (!next) return null;
+    node = next;
+  }
+  return node;
+}
+
+/* 演示缓存状态（smb_cache_file 置位，smb_clear_cache 清空） */
+const smbCached = new Set<string>();
+
+function mockSmbList(p: string): Record<string, unknown>[] | null {
+  const node = smbGet(p);
+  if (!node || !node.dir) return null;
+  const parent = p.replace(/\/+$/, "");
+  const entries = [...node.children.entries()]
+    .filter(([name]) => !name.startsWith("."))
+    .map(([name, child]) => ({
+      name,
+      path: `${parent}/${name}`,
+      isDir: child.dir,
+      size: child.dir ? 0 : child.content.length,
+      mtime: child.dir ? 0 : child.mtime,
+      cached: !child.dir && smbCached.has(`${parent}/${name}`),
+    }));
+  entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+  return entries;
+}
+
 let dialogCounter = 0;
 const storeData = {
   settings: {
@@ -357,12 +414,20 @@ window.__TAURI_INTERNALS__ = {
       case "find_next":
       case "find_prev":
         return Promise.resolve(null);
-      case "list_dir": {
-        const node = fsGet(String(args.path));
-        if (!node || !node.dir) return Promise.reject("无法读取目录: " + args.path);
+      case "list_dir":
+      case "smb_list_dir": {
+        const p = String(args.path);
+        if (p.startsWith("smb://")) {
+          const list = mockSmbList(p);
+          if (!list) return Promise.reject("无法读取远程目录: " + p);
+          return Promise.resolve(list);
+        }
+        if (cmd === "smb_list_dir") return Promise.reject("不是 SMB 路径: " + p);
+        const node = fsGet(p);
+        if (!node || !node.dir) return Promise.reject("无法读取目录: " + p);
         const entries = [...node.children.entries()].map(([name, child]) => ({
           name,
-          path: fsJoin(String(args.path), name),
+          path: fsJoin(p, name),
           isDir: child.dir,
           size: child.dir ? 0 : child.content.length,
           mtime: child.dir ? 0 : child.mtime,
@@ -439,6 +504,30 @@ window.__TAURI_INTERNALS__ = {
         return Promise.resolve(null);
       case "smb_test_connection":
         return Promise.resolve("192.168.1.100:445（演示服务器）");
+      case "smb_cache_file": {
+        const p = String(args.path);
+        const node = smbGet(p);
+        if (!node || node.dir) return Promise.reject("缓存失败: " + p);
+        smbCached.add(p);
+        console.log("[mock] 已缓存远程文件", p);
+        return Promise.resolve("C:\\demo\\smb-cache\\" + p.split("/").pop());
+      }
+      case "smb_cached_status": {
+        const p = String(args.path);
+        const cached = smbCached.has(p);
+        const node = smbGet(p);
+        const bytes = cached && node && !node.dir ? node.content.length : 0;
+        return Promise.resolve({ cached, fresh: cached, bytes });
+      }
+      case "smb_clear_cache": {
+        let freed = 0;
+        for (const p of smbCached) {
+          const node = smbGet(p);
+          if (node && !node.dir) freed += node.content.length;
+        }
+        smbCached.clear();
+        return Promise.resolve(freed);
+      }
       case "plugin:dialog|open": {
         // dialog 插件的参数嵌套在 options 里
         if ((args.options as { directory?: boolean } | undefined)?.directory) {

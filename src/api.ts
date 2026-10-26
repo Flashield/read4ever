@@ -1,7 +1,15 @@
 /* Tauri 后端命令封装 */
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { FileContent, FileEntry, PluginPkgInfo, SmbServer, StoreData } from "./types";
+import type {
+  FileContent,
+  FileEntry,
+  PluginPkgInfo,
+  SmbCacheStatus,
+  SmbFileEntry,
+  SmbServer,
+  StoreData,
+} from "./types";
 
 export const api = {
   openText: (path: string, encoding?: string) =>
@@ -46,6 +54,10 @@ export const api = {
   smbPutServers: (servers: SmbServer[]) =>
     invoke<void>("smb_put_servers", { servers }),
   smbTest: (server: SmbServer) => invoke<string>("smb_test_connection", { server }),
+  smbListDir: (path: string) => invoke<SmbFileEntry[]>("smb_list_dir", { path }),
+  smbCacheFile: (path: string) => invoke<string>("smb_cache_file", { path }),
+  smbCachedStatus: (path: string) => invoke<SmbCacheStatus>("smb_cached_status", { path }),
+  smbClearCache: () => invoke<number>("smb_clear_cache"),
 
   /* 文件对话框 */
   pickOpenFile: async (extraExts: string[] = []): Promise<string | null> => {

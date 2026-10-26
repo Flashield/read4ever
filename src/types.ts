@@ -54,6 +54,18 @@ export interface FileEntry {
   mtime: number;
 }
 
+/* SMB 远程目录条目：FileEntry + 本地缓存标记（对应后端 SmbFileEntry） */
+export interface SmbFileEntry extends FileEntry {
+  cached: boolean; // 本地缓存存在且新鲜
+}
+
+/* SMB 单文件缓存状态（对应后端 SmbCacheStatus） */
+export interface SmbCacheStatus {
+  cached: boolean; // 本地副本存在（哪怕过期）
+  fresh: boolean; // 与远程 size+mtime 一致
+  bytes: number; // 本地副本字节数
+}
+
 /* 关键词组：多个关键词组成一组，检索/统计以组为单位 */
 export interface KeywordGroup {
   id: string;

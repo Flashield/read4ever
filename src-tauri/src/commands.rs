@@ -175,9 +175,15 @@ pub struct FileEntry {
     pub mtime: u64, // 毫秒时间戳
 }
 
-/// 列出单层目录：目录优先、按名称排序，跳过隐藏文件
+/// 列出单层目录：目录优先、按名称排序，跳过隐藏文件。
+/// smb:// 路径分发到远程实现（插件 listContainer 由此免改获得 SMB 能力），
+/// 远程条目的 cached 标记在此丢弃——带标记的列表走 smb_list_dir。
 #[tauri::command]
-pub fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
+pub async fn list_dir(app: AppHandle, path: String) -> Result<Vec<FileEntry>, String> {
+    if smb::is_smb_path(&path) {
+        let entries = smb::list_dir(&path, &smb_cache_dir(&app)?).await?;
+        return Ok(entries.into_iter().map(|e| e.entry).collect());
+    }
     let rd = fs::read_dir(&path).map_err(|e| format!("无法读取目录 {}: {}", path, e))?;
     let mut entries: Vec<FileEntry> = Vec::new();
     for item in rd.flatten() {
@@ -352,4 +358,41 @@ pub async fn smb_put_servers(servers: Vec<store::SmbServer>) -> Result<(), Strin
 #[tauri::command]
 pub async fn smb_test_connection(server: store::SmbServer) -> Result<String, String> {
     smb::test_connection(&server).await
+}
+
+/// SMB 本地缓存目录：app_cache_dir()/smb/
+fn smb_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_cache_dir()
+        .map(|d| d.join("smb"))
+        .map_err(|e| format!("无法定位缓存目录: {}", e))
+}
+
+/// 远程目录列表（FileEntry + cached 标记，远程面板用）
+#[tauri::command]
+pub async fn smb_list_dir(app: AppHandle, path: String) -> Result<Vec<smb::SmbFileEntry>, String> {
+    smb::list_dir(&path, &smb_cache_dir(&app)?).await
+}
+
+/// 「缓存到本地」：返回本地缓存文件路径
+#[tauri::command]
+pub async fn smb_cache_file(app: AppHandle, path: String) -> Result<String, String> {
+    smb::cache_file(&path, &smb_cache_dir(&app)?)
+        .await
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// 查询单个文件的缓存状态
+#[tauri::command]
+pub async fn smb_cached_status(
+    app: AppHandle,
+    path: String,
+) -> Result<smb::SmbCacheStatus, String> {
+    smb::cached_status(&path, &smb_cache_dir(&app)?).await
+}
+
+/// 清空全部 SMB 本地缓存，返回释放字节数
+#[tauri::command]
+pub async fn smb_clear_cache(app: AppHandle) -> Result<u64, String> {
+    smb::clear_cache(&smb_cache_dir(&app)?)
 }
