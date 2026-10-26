@@ -12,9 +12,11 @@
    远程侧只读：不调用 delete/rename/write 类接口。 */
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -521,4 +523,147 @@ pub async fn open_text(
             }
         }
     }
+}
+
+/* ========== 远程 zip（RangeSource 复用 zipfile 解析） ========== */
+
+/// smb2 FileReader 的 RangeSource 适配：定位读即网络区间读（中央目录/条目数据各取所需）
+struct SmbReader {
+    reader: smb2::client::stream::FileReader,
+}
+
+impl crate::zipfile::RangeSource for SmbReader {
+    fn read_exact_at<'a>(
+        &'a mut self,
+        off: u64,
+        buf: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let data = self
+                .reader
+                .read_at(off, buf.len() as u64)
+                .await
+                .map_err(std::io::Error::other)?;
+            if data.len() != buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("远程读取不足: 请求 {} 字节，得到 {}", buf.len(), data.len()),
+                ));
+            }
+            buf.copy_from_slice(&data);
+            Ok(())
+        })
+    }
+}
+
+/// 远程 zip 索引跨命令缓存：路径 → (size, mtime, 索引)。索引重建要多次网络往返，值得缓存
+fn zip_index_store() -> &'static Mutex<HashMap<String, (u64, u64, Arc<crate::zipfile::RawZipIndex>)>> {
+    static S: OnceLock<Mutex<HashMap<String, (u64, u64, Arc<crate::zipfile::RawZipIndex>)>>> =
+        OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 新鲜本地缓存存在 → 返回本地副本路径（zip 整个走本地管线）；
+/// 断网时旧缓存也返回（与 open_text 的离线兜底一致）
+async fn local_zip_copy(path: &str, cache_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let bin = cache_dir.join(format!("{}.bin", key_of(path)));
+    if !bin.exists() {
+        return Ok(None);
+    }
+    match stat(path).await {
+        Ok((size, mtime, false)) => Ok(if fresh_meta(cache_dir, path, size, mtime) {
+            Some(bin)
+        } else {
+            None
+        }),
+        Ok((_, _, true)) => Err("这是远程目录".into()),
+        Err(_) => Ok(Some(bin)),
+    }
+}
+
+/// 取（或构建）远程 zip 索引；远程改动（size/mtime 变化）自动失效
+async fn zip_index(path: &str) -> Result<Arc<crate::zipfile::RawZipIndex>, String> {
+    let (size, mtime, _) = stat(path).await?;
+    {
+        let store = zip_index_store().lock().unwrap();
+        if let Some((s, m, idx)) = store.get(path) {
+            if *s == size && *m == mtime {
+                return Ok(idx.clone());
+            }
+        }
+    }
+    let (cfg, rel) = resolve(path)?;
+    let ses = session_for(&cfg.id).await?;
+    let mut reader = open_smb_reader(&ses, &rel, path).await?;
+    let index = Arc::new(
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            crate::zipfile::parse_index(&mut reader, size),
+        )
+        .await
+        .map_err(|_| "解析远程 zip 超时（60 秒）".to_string())?
+        .map_err(|e| format!("解析远程 zip 失败: {}", e))?,
+    );
+    let mut store = zip_index_store().lock().unwrap();
+    if store.len() > 8 {
+        store.clear(); // 与本地 zip 缓存同一上限策略
+    }
+    store.insert(path.to_string(), (size, mtime, index.clone()));
+    Ok(index)
+}
+
+async fn open_smb_reader(
+    ses: &SmbSession,
+    rel: &str,
+    path: &str,
+) -> Result<SmbReader, String> {
+    let reader = with_timeout(
+        "打开远程文件",
+        ses.tree.clone().open_file_reader(ses.conn.clone(), rel),
+    )
+    .await?
+    .map_err(|e| format!("无法打开远程文件 {}: {}", path, e))?;
+    Ok(SmbReader { reader })
+}
+
+/// 列出远程 zip 条目
+pub async fn list_zip(path: &str, cache_dir: &Path) -> Result<Vec<String>, String> {
+    if let Some(bin) = local_zip_copy(path, cache_dir).await? {
+        return crate::zipfile::list_zip_files(&bin.to_string_lossy()).await;
+    }
+    let index = zip_index(path).await?;
+    Ok(index.entries.iter().map(|e| e.name.clone()).collect())
+}
+
+/// 读取远程 zip 条目原始字节：新鲜缓存 → 本地；否则索引 + 定位读条目区间
+pub async fn read_zip_entry_raw(
+    path: &str,
+    entry_name: &str,
+    cache_dir: &Path,
+) -> Result<Vec<u8>, String> {
+    if let Some(bin) = local_zip_copy(path, cache_dir).await? {
+        return crate::zipfile::read_zip_entry_raw(&bin.to_string_lossy(), entry_name).await;
+    }
+    let index = zip_index(path).await?;
+    let (cfg, rel) = resolve(path)?;
+    let ses = session_for(&cfg.id).await?;
+    let mut reader = open_smb_reader(&ses, &rel, path).await?;
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        crate::zipfile::extract_entry(&mut reader, &index, entry_name),
+    )
+    .await
+    .map_err(|_| "读取远程 zip 条目超时（60 秒）".to_string())?
+    .map_err(|e| format!("读取 {} 失败: {}", entry_name, e))
+}
+
+/// 读取远程 zip 文本条目（编码检测同本地管线）
+pub async fn read_zip_entry_text(
+    path: &str,
+    entry_name: &str,
+    forced: Option<&str>,
+    cache_dir: &Path,
+) -> Result<(String, String), String> {
+    let buf = read_zip_entry_raw(path, entry_name, cache_dir).await?;
+    crate::zipfile::decode_bytes(&buf, forced)
 }

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::encoding::{decode_with, detect_and_decode};
@@ -9,24 +11,25 @@ use crate::encoding::{decode_with, detect_and_decode};
 /// 列出 zip 内所有 .txt 文件（含路径）。前端现在用 list_zip_files 自行过滤，
 /// 此函数保留给宽容解析测试与潜在调用方。
 #[allow(dead_code)]
-pub fn list_zip_txt(path: &str) -> Result<Vec<String>, String> {
-    Ok(list_zip_files(path)?
+pub async fn list_zip_txt(path: &str) -> Result<Vec<String>, String> {
+    Ok(list_zip_files(path)
+        .await?
         .into_iter()
         .filter(|n| n.to_ascii_uppercase().ends_with(".TXT"))
         .collect())
 }
 
 /// 列出 zip 内全部文件条目（含路径，不过滤类型）
-pub fn list_zip_files(path: &str) -> Result<Vec<String>, String> {
-    let entry = cache_entry(path)?;
+pub async fn list_zip_files(path: &str) -> Result<Vec<String>, String> {
+    let entry = cache_entry(path).await?;
     Ok(entry.index.entries.iter().map(|e| e.name.clone()).collect())
 }
 
 /// 读取 zip 内指定条目的原始字节（不做文本解码）。
 /// 中央目录只在首次访问时解析一次（缓存在进程内），条目数据按需 seek 读取——
 /// 网络驱动器上的大 zip 不再重复打开/整文件读取/逐条目往返。
-pub fn read_zip_entry_raw(path: &str, entry_name: &str) -> Result<Vec<u8>, String> {
-    let entry = cache_entry(path)?;
+pub async fn read_zip_entry_raw(path: &str, entry_name: &str) -> Result<Vec<u8>, String> {
+    let entry = cache_entry(path).await?;
     let e = entry
         .index
         .entries
@@ -34,20 +37,20 @@ pub fn read_zip_entry_raw(path: &str, entry_name: &str) -> Result<Vec<u8>, Strin
         .find(|x| x.name == entry_name)
         .ok_or_else(|| format!("zip 内未找到: {}", entry_name))?;
     let mut f = entry.file.try_clone().map_err(|e| format!("zip 句柄不可用: {}", e))?;
-    extract_entry_ranged(&mut f, e)
+    extract_entry_ranged(&mut f, e).await
 }
 
 /// 读取 zip 内指定 txt 条目。forced_encoding 不为 None 时按指定编码解码。
-pub fn read_zip_entry(
+pub async fn read_zip_entry(
     path: &str,
     entry_name: &str,
     forced_encoding: Option<&str>,
 ) -> Result<(String, String), String> {
-    let buf = read_zip_entry_raw(path, entry_name)?;
+    let buf = read_zip_entry_raw(path, entry_name).await?;
     decode_bytes(&buf, forced_encoding)
 }
 
-fn decode_bytes(buf: &[u8], forced_encoding: Option<&str>) -> Result<(String, String), String> {
+pub(crate) fn decode_bytes(buf: &[u8], forced_encoding: Option<&str>) -> Result<(String, String), String> {
     if let Some(enc) = forced_encoding {
         return decode_with(buf, enc);
     }
@@ -88,21 +91,48 @@ pub fn read_text_file(path: &str, forced_encoding: Option<&str>) -> Result<(Stri
     decode_bytes(&buf, forced_encoding)
 }
 
+/* ========== RangeSource：按偏移精确读取（本地 File / SMB 远程共用） ==========
+   解析算法只依赖「从 off 读满 buf」这一个原语：本地是 seek+read_exact，
+   SMB 是定位读（read_at）。boxed future 保证 dyn 兼容与 Send。 */
+
+pub(crate) trait RangeSource: Send {
+    /// 从 off 起读满 buf（等价 seek(Start(off)) + read_exact）
+    fn read_exact_at<'a>(
+        &'a mut self,
+        off: u64,
+        buf: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + 'a>>;
+}
+
+impl RangeSource for File {
+    fn read_exact_at<'a>(
+        &'a mut self,
+        off: u64,
+        buf: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.seek(SeekFrom::Start(off))?;
+            self.read_exact(buf)
+        })
+    }
+}
+
 /* ========== ZIP 进程内缓存 ==========
    中央目录（或宽容索引）只解析一次，条目数据按需 seek 读取。
    针对：每次读条目都重开 zip + 解析目录，以及网络驱动器上整文件读取的问题。
    实现说明：不再使用 zip crate 的 ZipArchive——它对中文打包器写坏的 zip 会在
    解析阶段拒绝且耗时数百毫秒；自研解析兼容标准与损坏布局（含 ZIP64 尾部）。 */
 
-struct RawEntry {
-    name: String,
+pub(crate) struct RawEntry {
+    pub(crate) name: String,
     method: u16,
     compressed_size: u64,
     header_offset: u64,
 }
 
-struct RawZipIndex {
-    entries: Vec<RawEntry>,
+/// 宽容解析出的 zip 索引（SMB 远程 zip 复用：跨命令缓存条目表）
+pub(crate) struct RawZipIndex {
+    pub(crate) entries: Vec<RawEntry>,
 }
 
 struct CacheEntry {
@@ -129,7 +159,7 @@ fn file_sig(path: &str) -> Option<(u64, u64)> {
 }
 
 /// 取（或构建）路径对应的缓存条目；文件变化（mtime/大小）时自动重建
-fn cache_entry(path: &str) -> Result<Arc<CacheEntry>, String> {
+async fn cache_entry(path: &str) -> Result<Arc<CacheEntry>, String> {
     let sig = file_sig(path).ok_or_else(|| format!("无法读取 zip: {}", path))?;
     {
         let store = cache_store().lock().unwrap();
@@ -139,7 +169,7 @@ fn cache_entry(path: &str) -> Result<Arc<CacheEntry>, String> {
             }
         }
     }
-    let entry = Arc::new(build_cache_entry(path, sig)?);
+    let entry = Arc::new(build_cache_entry(path, sig).await?);
     let mut store = cache_store().lock().unwrap();
     if store.len() > 8 {
         store.clear(); // 缓存上限：超过 8 个 zip 全清（低频重建，代价小）
@@ -148,31 +178,49 @@ fn cache_entry(path: &str) -> Result<Arc<CacheEntry>, String> {
     Ok(entry)
 }
 
-fn build_cache_entry(path: &str, sig: (u64, u64)) -> Result<CacheEntry, String> {
+async fn build_cache_entry(path: &str, sig: (u64, u64)) -> Result<CacheEntry, String> {
     let mut file = File::open(path).map_err(|e| format!("打开 zip 失败: {}", e))?;
     // 条目名/索引统一用 seek 式解析：只读 EOCD 尾部与中央目录（2 次网络读），
     // 绝不逐条目 by_index——那会对每个条目产生一次网络往返（网络驱动器上极慢）。
-    let index = match parse_raw_index_seeking(&mut file, sig.1) {
-        Ok(index) => index,
-        Err(_) => {
-            // 特殊布局兜底：整文件读取后按原逻辑解析（一次性付出，常见布局不走这里）
-            let t1 = std::time::Instant::now();
-            let data = fs::read(path).map_err(|e| format!("打开 zip 失败: {}", e))?;
-            let index = RawZipIndex::parse(&data)?;
-            eprintln!(
-                "[zip] seek 解析失败 → 整文件兜底（{:.0}MB，{:?}）",
-                data.len() as f64 / 1e6,
-                t1.elapsed()
-            );
-            index
-        }
-    };
+    let index = parse_index(&mut file, sig.1).await?;
     Ok(CacheEntry {
         mtime_ms: sig.0,
         len: sig.1,
         index,
         file,
     })
+}
+
+/// 解析 zip 索引：先 seek 式（EOCD+中央目录），布局异常时整读兜底。
+/// 本地 File 与 SMB 远程源共用同一套逻辑。
+pub(crate) async fn parse_index(
+    src: &mut dyn RangeSource,
+    len: u64,
+) -> Result<RawZipIndex, String> {
+    match parse_raw_index_seeking(src, len).await {
+        Ok(index) => Ok(index),
+        Err(_) => {
+            // 特殊布局兜底：整文件读取后按原逻辑解析（一次性付出，常见布局不走这里）
+            let t1 = std::time::Instant::now();
+            let data = read_all_via(src, len).await?;
+            let index = RawZipIndex::parse(&data)?;
+            eprintln!(
+                "[zip] seek 解析失败 → 整文件兜底（{:.0}MB，{:?}）",
+                data.len() as f64 / 1e6,
+                t1.elapsed()
+            );
+            Ok(index)
+        }
+    }
+}
+
+/// 经 RangeSource 一次读全文件（兜底路径用）
+async fn read_all_via(src: &mut dyn RangeSource, len: u64) -> Result<Vec<u8>, String> {
+    let mut data = vec![0u8; len as usize];
+    src.read_exact_at(0, &mut data)
+        .await
+        .map_err(|e| format!("读取 zip 失败: {}", e))?;
+    Ok(data)
 }
 
 /* ========== 宽容 ZIP 解析（仅支持传统 32 位布局 + ZIP64 尾部，用于兼容损坏 zip） ========== */
@@ -202,15 +250,17 @@ fn find_eocd(data: &[u8]) -> Option<usize> {
 /// 条目名统一 decode_zip_name（UTF-8 → GB18030 回退）。
 /// 支持标准与 ZIP64 尾部；中央目录声明位置异常（前置数据等）时返回 Err，
 /// 由调用方回退整文件解析。
-fn parse_raw_index_seeking(file: &mut File, len: u64) -> Result<RawZipIndex, String> {
+async fn parse_raw_index_seeking(
+    src: &mut dyn RangeSource,
+    len: u64,
+) -> Result<RawZipIndex, String> {
     if len < 22 {
         return Err("文件太小，不是 zip".into());
     }
     let tail_len = std::cmp::min(len as usize, 22 + 65535);
-    file.seek(SeekFrom::Start(len - tail_len as u64))
-        .map_err(|e| format!("seek 失败: {}", e))?;
     let mut tail = vec![0u8; tail_len];
-    file.read_exact(&mut tail)
+    src.read_exact_at(len - tail_len as u64, &mut tail)
+        .await
         .map_err(|e| format!("读取 zip 尾部失败: {}", e))?;
     let eocd = find_eocd(&tail).ok_or("EOCDmarker")?;
     let eocd_abs = (len - tail_len as u64) + eocd as u64;
@@ -223,19 +273,17 @@ fn parse_raw_index_seeking(file: &mut File, len: u64) -> Result<RawZipIndex, Str
         if eocd_abs < 20 {
             return Err("EOCDmarker".into());
         }
-        file.seek(SeekFrom::Start(eocd_abs - 20))
-            .map_err(|e| format!("seek 失败: {}", e))?;
         let mut loc = [0u8; 20];
-        file.read_exact(&mut loc)
+        src.read_exact_at(eocd_abs - 20, &mut loc)
+            .await
             .map_err(|e| format!("读取 ZIP64 定位器失败: {}", e))?;
         if loc[0..4] != [0x50, 0x4B, 0x06, 0x07] {
             return Err("EOCDmarker".into());
         }
         let z64_off = u64::from_le_bytes(loc[8..16].try_into().ok().ok_or("ZIP64 定位器损坏")?);
-        file.seek(SeekFrom::Start(z64_off))
-            .map_err(|e| format!("seek 失败: {}", e))?;
         let mut z64 = [0u8; 56];
-        file.read_exact(&mut z64)
+        src.read_exact_at(z64_off, &mut z64)
+            .await
             .map_err(|e| format!("读取 ZIP64 EOCD 失败: {}", e))?;
         if z64[0..4] != [0x50, 0x4B, 0x06, 0x06] {
             return Err("EOCDmarker".into());
@@ -249,10 +297,9 @@ fn parse_raw_index_seeking(file: &mut File, len: u64) -> Result<RawZipIndex, Str
     if cd_len < 4 {
         return Err("EOCDmarker".into()); // 布局不标准 → 整文件兜底
     }
-    file.seek(SeekFrom::Start(cd_offset))
-        .map_err(|e| format!("seek 失败: {}", e))?;
     let mut cd = vec![0u8; cd_len as usize];
-    file.read_exact(&mut cd)
+    src.read_exact_at(cd_offset, &mut cd)
+        .await
         .map_err(|e| format!("读取中央目录失败: {}", e))?;
     if cd[0..4] != SIG_CDFH {
         return Err("EOCDmarker".into()); // 布局不标准 → 整文件兜底
@@ -388,21 +435,23 @@ impl RawZipIndex {
 }
 
 /// 按需 seek 读取条目：本地文件头(30B+名称+扩展) + 压缩数据，只碰需要的字节区间
-fn extract_entry_ranged(file: &mut File, entry: &RawEntry) -> Result<Vec<u8>, String> {
-    file.seek(SeekFrom::Start(entry.header_offset))
-        .map_err(|e| format!("seek 失败: {}", e))?;
+async fn extract_entry_ranged(
+    src: &mut dyn RangeSource,
+    entry: &RawEntry,
+) -> Result<Vec<u8>, String> {
     let mut lfh = [0u8; 30];
-    file.read_exact(&mut lfh)
+    src.read_exact_at(entry.header_offset, &mut lfh)
+        .await
         .map_err(|e| format!("读取本地文件头失败: {}", e))?;
     if lfh[0..4] != SIG_LFH {
         return Err(format!("条目「{}」的本地文件头损坏", entry.name));
     }
     let name_len = u16_at(&lfh, 26).ok_or("本地文件头损坏")? as u64;
     let extra_len = u16_at(&lfh, 28).ok_or("本地文件头损坏")? as u64;
-    file.seek(SeekFrom::Current((name_len + extra_len) as i64))
-        .map_err(|e| format!("seek 失败: {}", e))?;
+    let data_off = entry.header_offset + 30 + name_len + extra_len;
     let mut comp = vec![0u8; entry.compressed_size as usize];
-    file.read_exact(&mut comp)
+    src.read_exact_at(data_off, &mut comp)
+        .await
         .map_err(|_| format!("条目「{}」的数据不完整", entry.name))?;
     match entry.method {
         0 => Ok(comp),
@@ -415,5 +464,19 @@ fn extract_entry_ranged(file: &mut File, entry: &RawEntry) -> Result<Vec<u8>, St
         }
         m => Err(format!("不支持的压缩方法: {}（条目「{}」）", m, entry.name)),
     }
+}
+
+/// 在索引中定位条目并读取原始字节（SMB 远程 zip 用；与本地 read_zip_entry_raw 同语义）
+pub(crate) async fn extract_entry(
+    src: &mut dyn RangeSource,
+    index: &RawZipIndex,
+    entry_name: &str,
+) -> Result<Vec<u8>, String> {
+    let e = index
+        .entries
+        .iter()
+        .find(|x| x.name == entry_name)
+        .ok_or_else(|| format!("zip 内未找到: {}", entry_name))?;
+    extract_entry_ranged(src, e).await
 }
 

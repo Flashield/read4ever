@@ -61,13 +61,16 @@ pub async fn open_text_file(
 
 /// 打开 zip，返回内部全部文件条目（类型过滤由前端按插件能力决定）
 #[tauri::command]
-pub fn open_zip_file(path: String) -> Result<Vec<String>, String> {
-    crate::zipfile::list_zip_files(&path)
+pub async fn open_zip_file(app: AppHandle, path: String) -> Result<Vec<String>, String> {
+    if smb::is_smb_path(&path) {
+        return smb::list_zip(&path, &smb_cache_dir(&app)?).await;
+    }
+    crate::zipfile::list_zip_files(&path).await
 }
 
 /// 读取磁盘文件原始字节（二进制插件用；前端 invoke 得到 ArrayBuffer）
 #[tauri::command]
-pub async fn read_file_bytes(app: AppHandle, path: String) -> Result<Response, String> {
+pub async fn read_file_bytes(path: String) -> Result<Response, String> {
     if smb::is_smb_path(&path) {
         let bytes = smb::read_all(&path).await?;
         return Ok(Response::new(bytes));
@@ -78,19 +81,33 @@ pub async fn read_file_bytes(app: AppHandle, path: String) -> Result<Response, S
 
 /// 读取 zip 内条目原始字节（二进制插件用）
 #[tauri::command]
-pub fn read_zip_entry_bytes(path: String, entry_name: String) -> Result<Response, String> {
-    let bytes = crate::zipfile::read_zip_entry_raw(&path, &entry_name)?;
+pub async fn read_zip_entry_bytes(
+    app: AppHandle,
+    path: String,
+    entry_name: String,
+) -> Result<Response, String> {
+    if smb::is_smb_path(&path) {
+        let bytes = smb::read_zip_entry_raw(&path, &entry_name, &smb_cache_dir(&app)?).await?;
+        return Ok(Response::new(bytes));
+    }
+    let bytes = crate::zipfile::read_zip_entry_raw(&path, &entry_name).await?;
     Ok(Response::new(bytes))
 }
 
 /// 读取 zip 内指定条目。encoding 不为 None 时按指定编码解码。
 #[tauri::command]
-pub fn read_zip_entry(
+pub async fn read_zip_entry(
+    app: AppHandle,
     path: String,
     entry_name: String,
     encoding: Option<String>,
 ) -> Result<FileContent, String> {
-    let (content, enc) = read_zip_entry_inner(&path, &entry_name, encoding.as_deref())?;
+    let (content, enc) = if smb::is_smb_path(&path) {
+        smb::read_zip_entry_text(&path, &entry_name, encoding.as_deref(), &smb_cache_dir(&app)?)
+            .await?
+    } else {
+        read_zip_entry_inner(&path, &entry_name, encoding.as_deref()).await?
+    };
     let hard = looks_like_hard_lines(&content);
     let file_path = format!("{}::{}", path, entry_name);
     Ok(FileContent {
@@ -345,8 +362,11 @@ pub fn list_plugins(app: AppHandle) -> Result<Vec<plugin_pkg::PluginPkgInfo>, St
 
 /// 从 .rbplugin（zip）安装插件（覆盖旧版），返回包信息
 #[tauri::command]
-pub fn install_plugin(app: AppHandle, zip_path: String) -> Result<plugin_pkg::PluginPkgInfo, String> {
-    plugin_pkg::install_plugin(&app, &zip_path)
+pub async fn install_plugin(
+    app: AppHandle,
+    zip_path: String,
+) -> Result<plugin_pkg::PluginPkgInfo, String> {
+    plugin_pkg::install_plugin(&app, &zip_path).await
 }
 
 /// 卸载插件（目录移入回收站）

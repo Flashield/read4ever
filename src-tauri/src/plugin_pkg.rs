@@ -149,9 +149,10 @@ fn safe_rel(name: &str) -> Result<PathBuf, String> {
 
 /// 从 .rbplugin（zip）安装：校验 manifest 后解包全部条目到 plugins/<id>/。
 /// 已存在同 id 时覆盖安装（先删旧目录）。zip 解析复用自研宽容 zipfile。
-pub fn install_plugin(app: &AppHandle, zip_path: &str) -> Result<PluginPkgInfo, String> {
-    let entries = crate::zipfile::list_zip_files(zip_path)?;
+pub async fn install_plugin(app: &AppHandle, zip_path: &str) -> Result<PluginPkgInfo, String> {
+    let entries = crate::zipfile::list_zip_files(zip_path).await?;
     let manifest_raw = crate::zipfile::read_zip_entry_raw(zip_path, "manifest.json")
+        .await
         .map_err(|_| "包内缺少根级 manifest.json".to_string())?;
     let m = parse_manifest(&String::from_utf8_lossy(&manifest_raw))?;
     if !entries.iter().any(|e| e == &m.entry) {
@@ -172,7 +173,7 @@ pub fn install_plugin(app: &AppHandle, zip_path: &str) -> Result<PluginPkgInfo, 
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|err| format!("创建目录失败: {}", err))?;
         }
-        let bytes = crate::zipfile::read_zip_entry_raw(zip_path, e)?;
+        let bytes = crate::zipfile::read_zip_entry_raw(zip_path, e).await?;
         fs::write(&dest, &bytes).map_err(|err| format!("写出文件失败: {}", err))?;
     }
     let mut installed = m;

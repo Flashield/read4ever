@@ -10,14 +10,15 @@ const SAMPLE_ZIP: &str = concat!(
     "/../../佛系少女升职记_佛系少女升职记.zip"
 );
 
-#[test]
-fn detects_gbk_novel_in_zip() {
+#[tokio::test]
+async fn detects_gbk_novel_in_zip() {
     if !std::path::Path::new(SAMPLE_ZIP).exists() {
         return; // 样本不在时跳过
     }
-    let entries = list_zip_txt(SAMPLE_ZIP).expect("应能列出条目");
-    let (text, label) =
-        read_zip_entry(SAMPLE_ZIP, &entries[0], None).expect("应能读取");
+    let entries = list_zip_txt(SAMPLE_ZIP).await.expect("应能列出条目");
+    let (text, label) = read_zip_entry(SAMPLE_ZIP, &entries[0], None)
+        .await
+        .expect("应能读取");
     println!("检测编码: {}, 开头: {}", label, text.chars().take(30).collect::<String>());
     assert_eq!(label, "GB18030", "GBK 小说应判为 GB18030");
     assert!(text.contains("佛系少女升职记"), "解码内容应当正确");
