@@ -258,10 +258,13 @@ const storeData = {
     lastFilePath: "",
     lastScroll: 0,
     autoRestore: false,
+    folderTab: "",
   },
   bookmarks: [],
   history: [],
   bookshelf: [],
+  keywordGroups: [],
+  smbServers: [],
 };
 
 function demoContent(path: string): Record<string, unknown> {
@@ -431,6 +434,11 @@ window.__TAURI_INTERNALS__ = {
       case "uninstall_plugin":
         console.log("[mock] uninstall_plugin（演示环境无插件目录）", args.id);
         return Promise.resolve(null);
+      case "smb_put_servers":
+        console.log("[mock] smb_put_servers", args.servers);
+        return Promise.resolve(null);
+      case "smb_test_connection":
+        return Promise.resolve("192.168.1.100:445（演示服务器）");
       case "plugin:dialog|open": {
         // dialog 插件的参数嵌套在 options 里
         if ((args.options as { directory?: boolean } | undefined)?.directory) {

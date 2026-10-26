@@ -47,11 +47,13 @@ export function defaultStore(): StoreData {
       folderListRecursive: false,
       plugins: {},
       pluginSettings: {},
+      folderTab: "",
     },
     bookmarks: [],
     history: [],
     bookshelf: [],
     keywordGroups: [],
+    smbServers: [],
   };
 }
 

@@ -3,6 +3,7 @@ pub mod encoding; // pub：src-tauri/tests 集成测试访问
 mod plugin_pkg;
 mod reorder;
 mod seqfile;
+mod smb;
 mod store;
 pub mod zipfile; // pub：src-tauri/tests 集成测试访问
 
@@ -72,6 +73,8 @@ pub fn run() {
             commands::install_plugin,
             commands::uninstall_plugin,
             commands::read_plugin_file,
+            commands::smb_put_servers,
+            commands::smb_test_connection,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时隐藏到托盘而非退出

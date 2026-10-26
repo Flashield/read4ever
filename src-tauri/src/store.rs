@@ -24,6 +24,25 @@ pub struct KeywordGroup {
     pub keywords: Vec<String>,
 }
 
+/// SMB 远程服务器配置（远程浏览用）。username 为空 = 访客登录。
+/// id 是稳定短 id，规范路径 smb://<id>/share/… 以它引用本配置。
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmbServer {
+    pub id: String,
+    pub name: String,
+    /// 主机名或 IP（可带 :端口，默认 445）
+    pub host: String,
+    /// 共享名（不含斜杠）
+    pub share: String,
+    #[serde(default)]
+    pub workgroup: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+}
+
 /// 持久化数据结构：设置、书签、历史、收藏、关键词组
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +53,8 @@ pub struct StoreData {
     pub bookshelf: Vec<BookshelfItem>,
     #[serde(default)]
     pub keyword_groups: Vec<KeywordGroup>,
+    #[serde(default)]
+    pub smb_servers: Vec<SmbServer>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -75,6 +96,9 @@ pub struct Settings {
     /// 插件固定设置（插件 id → 设置键值）
     #[serde(default)]
     pub plugin_settings: std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>,
+    /// 文件夹侧栏当前标签："" 本地 / "smb" 远程
+    #[serde(default)]
+    pub folder_tab: String,
 }
 
 fn default_true() -> bool {
@@ -105,6 +129,7 @@ impl Default for Settings {
             folder_list_recursive: false,
             plugins: std::collections::HashMap::new(),
             plugin_settings: std::collections::HashMap::new(),
+            folder_tab: String::new(),
         }
     }
 }

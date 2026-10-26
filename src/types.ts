@@ -31,6 +31,18 @@ export interface Settings {
   folderListRecursive: boolean; // 文件夹侧栏列表是否含子目录
   plugins: Record<string, boolean>; // 插件启用状态（未列出的默认启用）
   pluginSettings: Record<string, Record<string, number | boolean | string>>; // 插件固定设置
+  folderTab: string; // 文件夹侧栏当前标签："" 本地 / "smb" 远程
+}
+
+/* SMB 远程服务器配置（对应后端 SmbServer；username 空 = 访客） */
+export interface SmbServer {
+  id: string; // 稳定短 id，规范路径 smb://<id>/share/… 用它引用
+  name: string;
+  host: string; // 主机名或 IP（可带 :端口，默认 445）
+  share: string; // 共享名
+  workgroup: string;
+  username: string;
+  password: string;
 }
 
 /* 文件夹侧栏的目录条目（对应后端 FileEntry） */
@@ -77,6 +89,7 @@ export interface StoreData {
   history: HistoryEntry[];
   bookshelf: BookshelfItem[];
   keywordGroups: KeywordGroup[];
+  smbServers: SmbServer[];
 }
 
 export interface FileContent {

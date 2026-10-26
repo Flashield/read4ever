@@ -1,7 +1,7 @@
 /* Tauri 后端命令封装 */
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { FileContent, FileEntry, PluginPkgInfo, StoreData } from "./types";
+import type { FileContent, FileEntry, PluginPkgInfo, SmbServer, StoreData } from "./types";
 
 export const api = {
   openText: (path: string, encoding?: string) =>
@@ -41,6 +41,11 @@ export const api = {
   uninstallPlugin: (id: string) => invoke<void>("uninstall_plugin", { id }),
   readPluginFile: (id: string, name: string) =>
     invoke<ArrayBuffer>("read_plugin_file", { id, name }),
+
+  /* SMB 远程 */
+  smbPutServers: (servers: SmbServer[]) =>
+    invoke<void>("smb_put_servers", { servers }),
+  smbTest: (server: SmbServer) => invoke<string>("smb_test_connection", { server }),
 
   /* 文件对话框 */
   pickOpenFile: async (extraExts: string[] = []): Promise<string | null> => {

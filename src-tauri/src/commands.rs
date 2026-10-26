@@ -9,6 +9,7 @@ use crate::encoding::encode_text;
 use crate::plugin_pkg;
 use crate::reorder::{looks_like_hard_lines, reorder_text};
 use crate::seqfile::{find_next_file, find_prev_file};
+use crate::smb;
 use crate::store::{self, StoreData};
 use crate::zipfile::{is_zip_file, read_text_file, read_zip_entry as read_zip_entry_inner};
 
@@ -336,4 +337,19 @@ pub fn uninstall_plugin(app: AppHandle, id: String) -> Result<(), String> {
 pub fn read_plugin_file(app: AppHandle, id: String, name: String) -> Result<Response, String> {
     let bytes = plugin_pkg::read_plugin_file(&app, &id, &name)?;
     Ok(Response::new(bytes))
+}
+
+/* ========== SMB 远程浏览 ========== */
+
+/// 前端启动/增删服务器后推入凭证表（后端会话失效判断的依据）
+#[tauri::command]
+pub async fn smb_put_servers(servers: Vec<store::SmbServer>) -> Result<(), String> {
+    smb::put_servers(servers);
+    Ok(())
+}
+
+/// 测试连接：连服务器 + 连共享 + 列共享根，成功返回摘要串
+#[tauri::command]
+pub async fn smb_test_connection(server: store::SmbServer) -> Result<String, String> {
+    smb::test_connection(&server).await
 }
