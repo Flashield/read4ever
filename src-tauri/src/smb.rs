@@ -5,8 +5,14 @@
    - 访客登录 = username 留空（或 "Guest"）；消费侧路径分隔符一律 "/"，
      名字里的 Windows 非法字符由 crate 自动做私有区映射
    - 目录条目自带 size/is_directory/modified（FileTime::to_system_time 换算）
-   - 区间读：Arc<Tree>::open_file_reader(conn, path) → FileReader::read_at(&self, off, len)
-   - Connection 可 Clone，克隆共享同一 SMB 会话；auto_reconnect 断线原地重拨重认证
+   - 区间读：client.open_file_reader(&tree, path) → FileReader::read_at(&self, off, len)
+   - ⚠️ 重连语义（0.35 源码核实，2026-10-27 修正）：auto_reconnect 只是给 Connection
+     装 reviver；真正“断线重拨+重认证+换新 tree id+重放一次”只发生在 SmbClient
+     便捷方法（list_directory/stat/read_file…，内部 replaying 包装器）里，对
+     Disconnected/ServerUnresponsive/HandleInvalidated 三类错误生效。直接调
+     Tree 层方法（自管 Connection）永远不重连——空闲被 NAS/防火墙断开后全部报错。
+     因此本模块所有树操作一律走 client 便捷方法；FileReader 跨会话必失效
+     （HandleInvalidated），长读循环里失败要经 stat 触发重连后重开句柄续读。
    规范路径：smb://<服务器id>/<share>/<相对路径>，zip 条目再追加 "::条目名"。
    凭证表由前端启动/增删后经 smb_put_servers 推入（避免读到防抖 save_store 的旧数据）。
    远程侧只读：不调用 delete/rename/write 类接口。 */
@@ -20,7 +26,6 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use smb2::client::connection::Connection;
 use smb2::pack::FileTime;
 use smb2::{ClientConfig, SmbClient, Tree};
 
@@ -31,14 +36,20 @@ const OP_TIMEOUT: Duration = Duration::from_secs(15);
 /// 流式下载的块大小
 const CHUNK: u64 = 256 * 1024;
 
-/// 单服务器会话：client 保活（断线重连由它负责），tree 克隆给各操作，conn 克隆分发。
-/// Connection 克隆共享同一 SMB 会话，操作间无需加锁串行。
+/// 单服务器会话。client+tree 放在同一把异步锁里：client 的便捷方法（断线重连
+/// 重放要求 &mut client 与 &mut tree，重连后把新 tree id 原地写回 tree）。
+/// 短操作（列目录/stat/打开句柄）持锁执行；返回的 FileReader 是 'static 的，
+/// 区间读在锁外并行进行。会话死了不换对象——下一次持锁操作原地复活，
+/// 并发等待者拿到的是已复活的连接。
 /// cfg 是建会话时的配置快照——put_servers 时与当前表比对，不一致即失效重建。
 struct SmbSession {
     cfg: SmbServer,
-    _client: SmbClient,
-    tree: Arc<Tree>,
-    conn: Connection,
+    core: tokio::sync::Mutex<SmbCore>,
+}
+
+struct SmbCore {
+    client: SmbClient,
+    tree: Tree,
 }
 
 /// 服务器凭证表（前端推入）
@@ -139,13 +150,9 @@ async fn session_for(id: &str) -> Result<Arc<SmbSession>, String> {
         .connect_share(&cfg.share)
         .await
         .map_err(|e| format!("连接共享 \\\\{}\\{} 失败: {}", cfg.host, cfg.share, e))?;
-    // Tree 的方法要 &mut Connection：从 client 拿克隆（与 tree 同源，共享会话）
-    let conn = client.connection().clone();
     let session = Arc::new(SmbSession {
         cfg,
-        _client: client,
-        conn,
-        tree: Arc::new(tree),
+        core: tokio::sync::Mutex::new(SmbCore { client, tree }),
     });
     sessions()
         .write()
@@ -174,13 +181,12 @@ pub async fn test_connection(cfg: &SmbServer) -> Result<String, String> {
         let mut client = SmbClient::connect(config_of(cfg))
             .await
             .map_err(|e| format!("无法连接 {}: {}", addr, e))?;
-        let tree = client
+        let mut tree = client
             .connect_share(&cfg.share)
             .await
             .map_err(|e| format!("无法打开共享 \\\\{}\\{}: {}", cfg.host, cfg.share, e))?;
-        let conn = client.connection().clone();
-        let entries = tree
-            .list_directory(&mut conn.clone(), "")
+        let entries = client
+            .list_directory(&mut tree, "")
             .await
             .map_err(|e| format!("无法读取共享根目录: {}", e))?;
         Ok::<_, String>(format!("{}（{} 个条目）", addr, entries.len()))
@@ -217,6 +223,22 @@ async fn with_timeout<F: std::future::Future>(what: &str, f: F) -> Result<F::Out
     }
 }
 
+/// 连接类错误（会话已死/复活失败）：把会话从缓存表摘除，下次访问按全新连接重建。
+/// 不摘除的话，smb2 对复活失败的连接有 10s 冷却期——期间即使服务器已恢复，
+/// 同一连接也直接返回冷却前的旧错误；重建连接绕开冷却期。
+fn evict_session(id: &str, e: &smb2::Error) {
+    let dead = matches!(
+        e,
+        smb2::Error::Disconnected
+            | smb2::Error::ServerUnresponsive { .. }
+            | smb2::Error::ReconnectFailed { .. }
+            | smb2::Error::HandleInvalidated { .. }
+    );
+    if dead {
+        sessions().write().unwrap().remove(id);
+    }
+}
+
 /// 列出 share 内单层目录（smb://…/share[/子路径]）：目录优先、名称排序，跳 . .. 隐藏项
 pub async fn list_dir(path: &str, cache_dir: &Path) -> Result<Vec<SmbFileEntry>, String> {
     let (cfg, rel) = resolve(path)?;
@@ -227,9 +249,19 @@ pub async fn list_dir(path: &str, cache_dir: &Path) -> Result<Vec<SmbFileEntry>,
     } else {
         format!("{}/", rel)
     };
-    let entries = with_timeout("列目录", ses.tree.list_directory(&mut ses.conn.clone(), &list_path))
-        .await?
-        .map_err(|e| format!("无法读取远程目录 {}: {}", path, e))?;
+    // client 便捷方法：空闲断线时自动重连重认证+重放一次（tree 层方法不重连）
+    let entries = {
+        let mut core = ses.core.lock().await;
+        let SmbCore { client, tree } = &mut *core;
+        match with_timeout("列目录", client.list_directory(tree, &list_path)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                evict_session(&cfg.id, &e);
+                return Err(format!("无法读取远程目录 {}: {}", path, e));
+            }
+            Err(msg) => return Err(msg),
+        }
+    };
     // 子条目路径要含共享名段：列 share 根时入参可能是别名 smb://<id>（无共享段），
     // 补成 smb://<id>/<share> 才是规范路径，后续 resolve/打开/缓存才能通过共享名校验
     let parent = if rel.is_empty() {
@@ -273,9 +305,18 @@ pub async fn stat(path: &str) -> Result<(u64, u64, bool), String> {
         return Ok((0, 0, true)); // share 根视作目录
     }
     let ses = session_for(&cfg.id).await?;
-    let info = with_timeout("访问远程文件", ses.tree.stat(&mut ses.conn.clone(), &rel))
-        .await?
-        .map_err(|e| format!("无法访问 {}: {}", path, e))?;
+    let info = {
+        let mut core = ses.core.lock().await;
+        let SmbCore { client, tree } = &mut *core;
+        match with_timeout("访问远程文件", client.stat(tree, &rel)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                evict_session(&cfg.id, &e);
+                return Err(format!("无法访问 {}: {}", path, e));
+            }
+            Err(msg) => return Err(msg),
+        }
+    };
     Ok((info.size, mtime_ms(info.modified), info.is_directory))
 }
 
@@ -314,6 +355,17 @@ fn fresh_meta(cache_dir: &Path, path: &str, size: u64, mtime: u64) -> bool {
     meta_of(cache_dir, path).is_some_and(|m| m.size == size && m.mtime_ms == mtime)
 }
 
+/// 单块远程读取（超时与错误统一折算成中文文案）
+async fn read_chunk(
+    reader: &mut smb2::client::stream::FileReader,
+    off: u64,
+    len: u64,
+) -> Result<Vec<u8>, String> {
+    with_timeout("下载数据", reader.read_at(off, len))
+        .await?
+        .map_err(|e| e.to_string())
+}
+
 /// 缓存远程文件：已新鲜直接复用；否则 256KB 块流式下载，.part → rename 原子落盘
 pub async fn cache_file(path: &str, cache_dir: &Path) -> Result<PathBuf, String> {
     let (cfg, rel) = resolve(path)?;
@@ -321,9 +373,18 @@ pub async fn cache_file(path: &str, cache_dir: &Path) -> Result<PathBuf, String>
         return Err("共享根目录无需缓存".into());
     }
     let ses = session_for(&cfg.id).await?;
-    let info = with_timeout("访问远程文件", ses.tree.stat(&mut ses.conn.clone(), &rel))
-        .await?
-        .map_err(|e| format!("无法访问 {}: {}", path, e))?;
+    let info = {
+        let mut core = ses.core.lock().await;
+        let SmbCore { client, tree } = &mut *core;
+        match with_timeout("访问远程文件", client.stat(tree, &rel)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                evict_session(&cfg.id, &e);
+                return Err(format!("无法访问 {}: {}", path, e));
+            }
+            Err(msg) => return Err(msg),
+        }
+    };
     if info.is_directory {
         return Err("目录无需缓存".into());
     }
@@ -333,24 +394,37 @@ pub async fn cache_file(path: &str, cache_dir: &Path) -> Result<PathBuf, String>
     if bin.exists() && fresh_meta(cache_dir, path, size, mtime) {
         return Ok(bin); // 已新鲜，免下载
     }
-    let reader = with_timeout(
-        "打开远程文件",
-        ses.tree.clone().open_file_reader(ses.conn.clone(), &rel),
-    )
-    .await?
-    .map_err(|e| format!("无法打开远程文件 {}: {}", path, e))?;
+    let mut reader = open_smb_reader(&ses, &rel, path).await?;
     std::fs::create_dir_all(cache_dir).map_err(|e| format!("创建缓存目录失败: {}", e))?;
     let part = cache_dir.join(format!("{}.part", key));
     let mut out = std::fs::File::create(&part).map_err(|e| format!("写缓存失败: {}", e))?;
     let mut off = 0u64;
     while off < size {
         let len = CHUNK.min(size - off);
-        let chunk = with_timeout("下载数据", reader.read_at(off, len))
-            .await?
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&part);
-                format!("下载 {} 失败: {}", path, e)
-            })?;
+        let chunk = match read_chunk(&mut reader, off, len).await {
+            Ok(c) => c,
+            Err(why) => {
+                // 大文件下载中途断线：句柄已随会话失效。经 open_smb_reader 的
+                // healing stat 重连后重开句柄，从当前偏移续传（每块至多重试一次）
+                reader = match open_smb_reader(&ses, &rel, path).await {
+                    Ok(r) => r,
+                    Err(reopen_err) => {
+                        let _ = std::fs::remove_file(&part);
+                        return Err(format!(
+                            "下载 {} 失败: {}（重开远程文件失败: {}）",
+                            path, why, reopen_err
+                        ));
+                    }
+                };
+                match read_chunk(&mut reader, off, len).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&part);
+                        return Err(format!("下载 {} 失败: {}", path, e));
+                    }
+                }
+            }
+        };
         if chunk.is_empty() {
             let _ = std::fs::remove_file(&part);
             return Err(format!("下载 {} 失败: 远程提前结束", path));
@@ -414,27 +488,31 @@ pub fn clear_cache(cache_dir: &Path) -> Result<u64, String> {
 
 /* ========== 远程文件打开 ========== */
 
-/// 整文件网络读取（文本打开、插件原始字节用；大文件较慢，超时放宽到 60s）
+/// 整文件网络读取（文本打开、插件原始字节用；大文件较慢，超时放宽到 60s）。
+/// 读循环在会话锁外进行（FileReader 是 'static 的）；断线时句柄随会话失效，
+/// 经 open_smb_reader 的 healing stat 重连后重开句柄整读重试一次。
 pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
     let (cfg, rel) = resolve(path)?;
     if rel.is_empty() {
         return Err("共享根不是文件".into());
     }
     let ses = session_for(&cfg.id).await?;
-    let reader = with_timeout(
-        "打开远程文件",
-        ses.tree.clone().open_file_reader(ses.conn.clone(), &rel),
-    )
-    .await?
-    .map_err(|e| format!("无法打开远程文件 {}: {}", path, e))?;
+    let reader = open_smb_reader(&ses, &rel, path).await?;
     let size = reader.size();
     if size == 0 {
         return Ok(Vec::new());
     }
-    let data = tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size))
-        .await
-        .map_err(|_| "下载数据超时（60 秒）".to_string())?
-        .map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+    let first = tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size)).await;
+    let data = match first {
+        Ok(Ok(data)) => data,
+        Ok(Err(_)) | Err(_) => {
+            let reader = open_smb_reader(&ses, &rel, path).await?;
+            tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size))
+                .await
+                .map_err(|_| "下载数据超时（60 秒）".to_string())?
+                .map_err(|e| format!("读取 {} 失败: {}", path, e))?
+        }
+    };
     Ok(data)
 }
 
@@ -528,9 +606,27 @@ pub async fn open_text(
 
 /* ========== 远程 zip（RangeSource 复用 zipfile 解析） ========== */
 
-/// smb2 FileReader 的 RangeSource 适配：定位读即网络区间读（中央目录/条目数据各取所需）
+/// smb2 FileReader 的 RangeSource 适配：定位读即网络区间读（中央目录/条目数据各取所需）。
+/// 持有会话与路径：读失败（会话断线后句柄必失效）时经 healing stat 重连重开句柄，
+/// 重读本区间——每次读取至多重开一次，解析/解压流程对断线无感。
 struct SmbReader {
+    ses: Arc<SmbSession>,
+    rel: String,
+    path: String, // 仅用于错误文案
     reader: smb2::client::stream::FileReader,
+}
+
+async fn smb_reader_for(
+    ses: &Arc<SmbSession>,
+    rel: &str,
+    path: &str,
+) -> Result<SmbReader, String> {
+    Ok(SmbReader {
+        ses: ses.clone(),
+        rel: rel.to_string(),
+        path: path.to_string(),
+        reader: open_smb_reader(ses, rel, path).await?,
+    })
 }
 
 impl crate::zipfile::RangeSource for SmbReader {
@@ -540,11 +636,26 @@ impl crate::zipfile::RangeSource for SmbReader {
         buf: &'a mut [u8],
     ) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            let data = self
-                .reader
-                .read_at(off, buf.len() as u64)
-                .await
-                .map_err(std::io::Error::other)?;
+            let data = loop {
+                match self.reader.read_at(off, buf.len() as u64).await {
+                    Ok(data) => break data,
+                    Err(_e) => {
+                        // 断线：重连（open_smb_reader 内 stat 触发重连重放）+ 重开句柄，再试一次
+                        self.reader = open_smb_reader(&self.ses, &self.rel, &self.path)
+                            .await
+                            .map_err(std::io::Error::other)?;
+                        match self.reader.read_at(off, buf.len() as u64).await {
+                            Ok(data) => break data,
+                            Err(e) => {
+                                return Err(std::io::Error::other(format!(
+                                    "远程读取失败（已尝试重连）: {}",
+                                    e
+                                )))
+                            }
+                        }
+                    }
+                }
+            };
             if data.len() != buf.len() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -595,7 +706,7 @@ async fn zip_index(path: &str) -> Result<Arc<crate::zipfile::RawZipIndex>, Strin
     }
     let (cfg, rel) = resolve(path)?;
     let ses = session_for(&cfg.id).await?;
-    let mut reader = open_smb_reader(&ses, &rel, path).await?;
+    let mut reader = smb_reader_for(&ses, &rel, path).await?;
     let index = Arc::new(
         tokio::time::timeout(
             Duration::from_secs(60),
@@ -613,18 +724,37 @@ async fn zip_index(path: &str) -> Result<Arc<crate::zipfile::RawZipIndex>, Strin
     Ok(index)
 }
 
+/// 打开远程文件的区间读句柄。
+/// 先 stat 一次再 open：stat 走 client 便捷方法（断线自动重连重放），
+/// 把会话救活后 open_file_reader（内部不重试）才不会撞在死连接上。
+/// 返回的 FileReader 是 'static，读取在会话锁外并行；一旦会话重连，
+/// 旧句柄全部失效（HandleInvalidated），调用方需重开。
 async fn open_smb_reader(
     ses: &SmbSession,
     rel: &str,
     path: &str,
-) -> Result<SmbReader, String> {
-    let reader = with_timeout(
-        "打开远程文件",
-        ses.tree.clone().open_file_reader(ses.conn.clone(), rel),
-    )
-    .await?
-    .map_err(|e| format!("无法打开远程文件 {}: {}", path, e))?;
-    Ok(SmbReader { reader })
+) -> Result<smb2::client::stream::FileReader, String> {
+    let reader = {
+        let mut core = ses.core.lock().await;
+        let SmbCore { client, tree } = &mut *core;
+        match with_timeout("访问远程文件", client.stat(tree, rel)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                evict_session(&ses.cfg.id, &e);
+                return Err(format!("无法访问 {}: {}", path, e));
+            }
+            Err(msg) => return Err(msg),
+        }
+        match with_timeout("打开远程文件", client.open_file_reader(tree, rel)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                evict_session(&ses.cfg.id, &e);
+                return Err(format!("无法打开远程文件 {}: {}", path, e));
+            }
+            Err(msg) => return Err(msg),
+        }
+    };
+    Ok(reader)
 }
 
 /// 列出远程 zip 条目
@@ -648,7 +778,7 @@ pub async fn read_zip_entry_raw(
     let index = zip_index(path).await?;
     let (cfg, rel) = resolve(path)?;
     let ses = session_for(&cfg.id).await?;
-    let mut reader = open_smb_reader(&ses, &rel, path).await?;
+    let mut reader = smb_reader_for(&ses, &rel, path).await?;
     tokio::time::timeout(
         Duration::from_secs(60),
         crate::zipfile::extract_entry(&mut reader, &index, entry_name),
