@@ -20,10 +20,21 @@ const MAX_CHUNK: u64 = 8 * 1024 * 1024;
 pub fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.register_asynchronous_uri_scheme_protocol(
         "readbook-stream",
-        |_ctx, request, responder| {
-            // 读盘很快，但放线程池里避免阻塞事件循环
+        |ctx, request, responder| {
+            // 读盘（本地/SMB/zip）放后台线程，避免阻塞事件循环。
+            // 但 respond 必须回主线程执行：WKURLSchemeTask 的 did* 调用与 WebKit 的
+            // stopURLSchemeTask 都发生在主线程，后台线程直接调 did* 会在任务刚被
+            // 停止时（seek 拖尾时 WebKit 批量取消在途请求）抛 NSException
+            // （"This task has already been stopped"）；panic="abort" 构建下 objc2
+            // 的 @try 拦不住它，异常展开直接 abort。回主线程后 respond 与 stop
+            // 串行化：stop 在前则 wry 校验跳过 did*，stop 在后则任务仍有效。
+            let app = ctx.app_handle().clone();
             std::thread::spawn(move || {
-                let _ = responder.respond(serve(request));
+                let response = serve(request);
+                // 应用退出中派发失败：丢弃响应即可（任务随后随窗口一起取消）
+                let _ = app.run_on_main_thread(move || {
+                    responder.respond(response);
+                });
             });
         },
     )
