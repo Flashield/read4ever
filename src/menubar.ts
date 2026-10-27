@@ -4,6 +4,7 @@ import * as reader from "./reader";
 import * as folder from "./folder";
 import * as registry from "./plugins/registry";
 import { showDropdown, hideDropdown, isOpen, type MenuItemDef } from "./dropdown";
+import { setKeepAwakeEnabled } from "./keepawake";
 
 const MENUS: Record<string, () => MenuItemDef[]> = {
   file: () => [
@@ -43,6 +44,15 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
       action: () => {
         app.state.store.settings.autoRestore = !app.state.store.settings.autoRestore;
         app.persist();
+      },
+    },
+    {
+      label: "滚屏/播放时保持屏幕常亮",
+      checked: () => app.state.store.settings.keepAwake,
+      action: () => {
+        app.state.store.settings.keepAwake = !app.state.store.settings.keepAwake;
+        app.persist();
+        setKeepAwakeEnabled(app.state.store.settings.keepAwake);
       },
     },
     {

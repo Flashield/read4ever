@@ -25,6 +25,7 @@ export interface Settings {
   lastFilePath: string;
   lastScroll: number;
   autoRestore: boolean;
+  keepAwake: boolean; // 滚屏/定时翻页/插件播放时保持屏幕常亮（阻止屏保/待机）
   activeKeywordGroupId: string; // 当前使用的关键词组
   lastFolderPath: string; // 上次打开的文件夹（文件夹侧栏恢复用）
   folderAutoOpen: boolean; // 启动时自动打开文件夹侧栏

@@ -5,6 +5,7 @@ import * as plugins from "./plugins/registry";
 import { applyTheme, findThemeByName, normalizeFontFamily, FONT_SONG } from "./themes";
 import { convertDisplay, type DisplayMode } from "./simp_trad";
 import { showDropdown, initDropdown } from "./dropdown";
+import { setKeepAwakeEnabled } from "./keepawake";
 import type { FileContent, StoreData } from "./types";
 
 /* 路径文件名（含 smb:// 的 / 分隔）；viewName 额外剥掉 zip 复合路径的条目部分 */
@@ -45,6 +46,7 @@ export function defaultStore(): StoreData {
       lastFilePath: "",
       lastScroll: 0,
       autoRestore: true,
+      keepAwake: true,
       activeKeywordGroupId: "",
       lastFolderPath: "",
       folderAutoOpen: true,
@@ -1049,6 +1051,9 @@ export async function boot(): Promise<void> {
   initReaderContextMenu();
   initEncodingSwitcher();
   initDragDrop();
+
+  // 滚屏/播放保持屏幕常亮：初始同步用户设置（关闭时聚合器直接短路）
+  setKeepAwakeEnabled(s.keepAwake);
 
   updateUI();
   startReadTicker();
