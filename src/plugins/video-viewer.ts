@@ -354,6 +354,7 @@ function buildView(): void {
   const syncPlayBtn = () => {
     const btn = q<HTMLElement>('button[data-act="play"]');
     if (btn && video) btn.textContent = video.paused ? "▶" : "⏸";
+    ctx?.setKeepAwake(!!video && !video.paused && !video.ended); // 播放中保持常亮（幂等）
     syncStatus();
   };
   video.addEventListener("play", syncPlayBtn);
