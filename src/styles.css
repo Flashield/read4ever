@@ -2009,3 +2009,50 @@ mark.kw-flash {
   color: #fff;
   border-color: var(--accent);
 }
+
+/* ========== 收藏书架：筛选与搜索 ========== */
+.bs-filter {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.bs-filter input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid var(--ui-border);
+  background: #333;
+  color: #fff;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.bs-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.bs-tag-filter.hidden {
+  display: none;
+}
+
+.bs-tag-filter-chip {
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: transparent;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-tag-filter-chip.on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}

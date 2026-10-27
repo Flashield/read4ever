@@ -97,9 +97,6 @@ let shelfEdit: { mode: "create" } | { mode: "rename"; id: string } | null = null
 let bsTagFilter = new Set<string>();
 let bsSearch = "";
 let tagEditPath: string | null = null;
-// 标签筛选/搜索由 Task 6 接入；先引用一次避免 noUnusedLocals 误报
-void bsTagFilter;
-void bsSearch;
 
 function rowEl(name: string, desc: string, onDelete?: () => void, onClick?: () => void): HTMLElement {
   const row = document.createElement("div");
@@ -171,6 +168,7 @@ function renderBookmarks(): void {
 
 function renderBookshelf(): void {
   renderShelfBar();
+  renderTagFilter();
   renderBookshelfList();
 }
 
@@ -226,9 +224,9 @@ function renderShelfBar(): void {
     chip.title = s.name;
     chip.addEventListener("click", () => {
       if (s.id === active.id) return;
-      app.setActiveShelf(s.id);
-      bsTagFilter = new Set(); // 标签集随书架变化，清空选中（Task 6 用）
+      bsTagFilter = new Set(); // 标签集随书架变化，清空选中
       tagEditPath = null;
+      app.setActiveShelf(s.id);
     });
     bar.appendChild(chip);
   });
@@ -268,6 +266,40 @@ function renderShelfBar(): void {
   });
   ops.append(rn, del);
   bar.appendChild(ops);
+}
+
+/* 标签筛选行：当前书架出现过的标签（多选并集），「全部」一键清除 */
+function renderTagFilter(): void {
+  const box = $("bookshelf-tag-filter");
+  box.innerHTML = "";
+  const tags = [...new Set(app.activeShelf().items.flatMap((it) => it.tags))];
+  bsTagFilter = new Set([...bsTagFilter].filter((t) => tags.includes(t))); // 剪枝：切书架后清掉无效选中
+  if (tags.length === 0) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const all = document.createElement("button");
+  all.className = "bs-tag-filter-chip" + (bsTagFilter.size === 0 ? " on" : "");
+  all.textContent = "全部";
+  all.addEventListener("click", () => {
+    bsTagFilter = new Set();
+    renderBookshelf();
+  });
+  box.appendChild(all);
+  tags.forEach((t) => {
+    const on = bsTagFilter.has(t);
+    const c = document.createElement("button");
+    c.className = "bs-tag-filter-chip" + (on ? " on" : "");
+    c.textContent = t;
+    c.title = on ? "取消筛选该标签" : "按该标签筛选";
+    c.addEventListener("click", () => {
+      if (bsTagFilter.has(t)) bsTagFilter.delete(t);
+      else bsTagFilter.add(t);
+      renderBookshelf();
+    });
+    box.appendChild(c);
+  });
 }
 
 /* 书架条目行：名称 + 标签 chips + 🏷 编辑 + ✕ 删除（不用通用 rowEl，需塞标签） */
@@ -374,6 +406,25 @@ function buildTagEditor(item: BookshelfItem): HTMLElement {
   return box;
 }
 
+/* 过滤 + 排序：命中任一选中标签即显示（并集），按命中标签数降序（sort 稳定，同数保持原顺序） */
+function visibleBookshelfItems(): { item: BookshelfItem; hits: number }[] {
+  const shelf = app.activeShelf();
+  const out: { item: BookshelfItem; hits: number }[] = [];
+  for (const it of shelf.items) {
+    const nameOk =
+      !bsSearch || it.name.toLowerCase().includes(bsSearch) || it.filePath.toLowerCase().includes(bsSearch);
+    if (!nameOk) continue;
+    if (bsTagFilter.size === 0) {
+      out.push({ item: it, hits: 0 });
+      continue;
+    }
+    const hits = it.tags.filter((t) => bsTagFilter.has(t)).length;
+    if (hits > 0) out.push({ item: it, hits });
+  }
+  if (bsTagFilter.size > 0) out.sort((a, b) => b.hits - a.hits);
+  return out;
+}
+
 function renderBookshelfList(): void {
   const list = $("bookshelf-list");
   list.innerHTML = "";
@@ -385,9 +436,17 @@ function renderBookshelfList(): void {
     list.appendChild(empty);
     return;
   }
-  shelf.items.forEach((b) => {
-    list.appendChild(renderBookshelfItemRow(b));
-    if (tagEditPath === b.filePath) list.appendChild(buildTagEditor(b));
+  const visible = visibleBookshelfItems();
+  if (visible.length === 0) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "padding:16px;font-size:12px;color:#888";
+    empty.textContent = "没有匹配的收藏，试试调整搜索词或标签筛选。";
+    list.appendChild(empty);
+    return;
+  }
+  visible.forEach(({ item }) => {
+    list.appendChild(renderBookshelfItemRow(item));
+    if (tagEditPath === item.filePath) list.appendChild(buildTagEditor(item));
   });
 }
 
@@ -562,6 +621,11 @@ export function initPanels(): void {
   });
   $("bookmark-desc").addEventListener("keydown", (e) => {
     if (e.key === "Enter") ($("bookmark-add") as HTMLButtonElement).click();
+  });
+
+  $("bookshelf-search").addEventListener("input", () => {
+    bsSearch = ($("bookshelf-search") as HTMLInputElement).value.trim().toLowerCase();
+    renderBookshelfList();
   });
 
   $("bookshelf-add").addEventListener("click", () => {
