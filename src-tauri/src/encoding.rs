@@ -23,9 +23,12 @@ pub fn detect_and_decode(data: &[u8]) -> (String, &'static str) {
         return (s.to_string(), "UTF-8");
     }
 
-    // 3. chardetng 检测
+    // 3. chardetng 检测。只喂头部采样：其状态机按字节线性扫描，
+    //    全量喂大文件极慢（实测 670KB 约 2.5s）；采样前 16KB 猜测结果
+    //    与全量一致（实测 GB18030/Big5 均如此），且足够稳定。
+    let sample = &data[..data.len().min(16 * 1024)];
     let mut detector = chardetng::EncodingDetector::new();
-    detector.feed(data, true);
+    detector.feed(sample, true);
     let enc = detector.guess(None, true);
 
     // 4. chardetng 会把部分 GBK 中文判成单字节西文（如 windows-1252），
@@ -39,7 +42,10 @@ pub fn detect_and_decode(data: &[u8]) -> (String, &'static str) {
         return detect_chinese(data);
     }
     let (s, _, _) = enc.decode(data);
-    (s.into_owned(), enc.name())
+    // 新版 encoding_rs 中 GBK 是独立编码（name 为 "GBK"），归一为 GB18030，
+    // 与 detect_chinese / decode_with 的 label 风格统一
+    let label = if enc.name() == "GBK" { "GB18030" } else { enc.name() };
+    (s.into_owned(), label)
 }
 
 /// 按指定编码直接解码（用于手动"以编码重新打开"）
@@ -141,3 +147,44 @@ pub fn encode_text(text: &str, encoding: &str) -> Vec<u8> {
     bytes.into_owned()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn build_chinese_text(target_bytes: usize) -> String {
+        let sentences = [
+            "他说这句话的时候，眼神里透着一种说不出的疲惫，仿佛这十年的风霜都写在了脸上。",
+            "窗外下着淅淅沥沥的小雨，街灯把湿漉漉的路面照得一片昏黄，行人撑着伞匆匆走过。",
+            "这件事说来话长，得从二十年前那个夏天讲起，那时候他们都还年轻，什么都不怕。",
+            "国会议员经过长时间讨论，终于对这项法案达成了一致，门外的记者蜂拥而入。",
+        ];
+        let mut text = String::new();
+        let mut i = 0;
+        while text.len() < target_bytes {
+            text.push_str(sentences[i % sentences.len()]);
+            text.push('\n');
+            i += 1;
+        }
+        text
+    }
+
+    /// 回归：大输入（约 670KB GB18030）编码检测须在 500ms 内完成。
+    /// 修复前把全量字节喂给 chardetng 状态机，约 2.5s/670KB。
+    #[test]
+    fn large_input_detection_is_fast() {
+        let text = build_chinese_text(1_000_000);
+        let (gb, _, _) = encoding_rs::GB18030.encode(&text);
+        let t = Instant::now();
+        let (decoded, label) = detect_and_decode(&gb);
+        let elapsed = t.elapsed();
+        assert_eq!(decoded, text);
+        println!("detect_and_decode {}B 耗时: {:?}", gb.len(), elapsed);
+        assert!(
+            label.eq_ignore_ascii_case("gb18030") || label.eq_ignore_ascii_case("gbk"),
+            "中文应识别为 GB18030/GBK，实际: {}",
+            label
+        );
+        assert!(elapsed < Duration::from_millis(500), "编码检测耗时 {:?}，超过 500ms", elapsed);
+    }
+}
