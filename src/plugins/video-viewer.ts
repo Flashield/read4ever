@@ -1,8 +1,8 @@
 /* 视频查看插件：播放常见视频格式（含 zip 内视频）。
    基础功能：播放/暂停、进度条跳转、时间显示、倍速、音量/静音、全屏、
    同目录/同压缩包内上一个/下一个、自动连播。
-   大文件：声明 wantsStream——本地文件与本地 zip 存储型条目走宿主 readbook-stream://
-   协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（压缩条目等）自动回退字节整读。
+   大文件：声明 wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 readbook-stream://
+   协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（远程 zip 条目、压缩条目等）自动回退字节整读。
    移动端就绪（docs/iOS移植方案.md D3/D4）：<video playsinline>、纯点击交互、
    触屏隐藏音量控件（iOS 音量由系统控制）、桌面全屏走 requestFullscreen、
    触屏走 body.immersive 沉浸模式；自动播放被策略拒绝时静默停在首帧。 */
@@ -38,6 +38,8 @@ let immersive = false; // 触屏沉浸全屏（body.immersive）生效中
 let currentStream = false; // 当前视频是否走流式 URL（错误回退判断用）
 const urlCache = new Map<string, string>();
 const streamFailed = new Set<string>(); // 流式失败的目标（压缩 zip 条目等）：会话内回退整读
+/** 流式失败后的自愈重试标记（每路径每次失败至多重试一次；元数据成功加载即重置） */
+const streamRetried = new Set<string>();
 
 const q = <T extends Element>(sel: string): T | null =>
   ctx ? (ctx.host.querySelector(sel) as T | null) : null;
@@ -93,7 +95,7 @@ async function loadVideo(index: number, autoplay: boolean): Promise<void> {
   globalIdx = Math.max(0, Math.min(index, ctx.siblings.length - 1));
   const path = ctx.siblings[globalIdx] || ctx.path;
   try {
-    // 优先流式（2GB+ 文件按 Range 分块拉取）；失败过/不可流式（SMB、浏览器演示）→ 字节整读
+    // 优先流式（2GB+ 文件按 Range 分块拉取，本地/本地 zip 存储型条目/SMB 普通文件）；失败过/不可流式（远程 zip 条目、浏览器演示）→ 字节整读
     const stream = !streamFailed.has(path) ? ctx.streamUrlFor?.(path) ?? null : null;
     const url = stream ?? (await ensureUrl(path));
     if (!ctx || !video) return;
@@ -342,6 +344,8 @@ function buildView(): void {
   });
 
   video.addEventListener("loadedmetadata", () => {
+    const p = ctx?.siblings[globalIdx] || ctx?.path;
+    if (p) streamRetried.delete(p); // 新一轮请求真拿到数据：恢复一次重试机会
     const dur = q<HTMLElement>(".vv-dur");
     if (dur && video) dur.textContent = fmtTime(video.duration);
     syncStatus();
@@ -359,9 +363,15 @@ function buildView(): void {
     if (autoplayNext) void nav(1, true);
   });
   video.addEventListener("error", () => {
-    // 流式失败（如压缩 zip 条目、协议不可用）→ 记忆并回退字节整读重试；再次失败按编码不支持提示
+    // 流式失败（如压缩 zip 条目、协议不可用、网络抖动）→ 先原样重试一次躲过瞬时抖动
+    //（SMB 断线自愈在「下一次请求」才生效）；仍失败则记忆并回退字节整读；再失败按编码不支持提示
     const p = ctx?.siblings[globalIdx] || ctx?.path;
     if (currentStream && video && p && !streamFailed.has(p)) {
+      if (!streamRetried.has(p)) {
+        streamRetried.add(p);
+        void loadVideo(globalIdx, !video.paused);
+        return;
+      }
       streamFailed.add(p);
       void loadVideo(globalIdx, !video.paused);
       return;
@@ -413,7 +423,7 @@ export const videoViewerPlugin: ReadBookPlugin = {
   name: "视频查看",
   version: "1.1.0",
   description:
-    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播；2GB+ 大文件走宿主流式协议按需分块（本地文件与本地 zip 存储型条目）",
+    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）",
   extensions: EXTENSIONS,
   wantsStream: true,
   menu,
@@ -433,6 +443,7 @@ export const videoViewerPlugin: ReadBookPlugin = {
     for (const u of urlCache.values()) URL.revokeObjectURL(u);
     urlCache.clear();
     streamFailed.clear();
+    streamRetried.clear(); // 会话残留标记不清会导致重开文件时首次错误跳过重试直降级
     currentStream = false;
     if (immersive) {
       document.body.classList.remove("immersive");

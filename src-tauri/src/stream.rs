@@ -2,7 +2,7 @@
    <video> 元素按 HTTP Range 语义分块拉取（seek 只读所需区间），
    单次响应封顶 MAX_CHUNK，2GB+ 视频不再整读进内存。
    目标经 percent-encode 编码在 URL 路径里：
-   · 普通文件 = 完整路径；
+   · 普通文件 = 完整路径（本地路径或 smb:// 远程路径；远程每请求 stat+打开+区间读，断线自愈）；
    · zip 条目 = 「zip路径::条目名」（与前端复合路径同形），仅支持存储型（Stored）条目，
      压缩条目不可随机定位 → 返回错误，前端回退整读。
    无 Range 头的请求按 bytes=0- 处理（媒体元素总会带 Range；无 Range 时不封顶会整读大文件）。 */
@@ -12,6 +12,7 @@ use std::io::{Read, Seek, SeekFrom};
 use percent_encoding::percent_decode_str;
 use tauri::http::{header, Request, Response, StatusCode};
 
+use crate::smb;
 use crate::zipfile;
 
 const MAX_CHUNK: u64 = 8 * 1024 * 1024;
@@ -44,6 +45,14 @@ pub fn serve(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+
+    // SMB 分支在最前：远程 zip 复合目标协议不支持，显式拒绝（前端不会生成该 URL，纯防御）
+    if smb::is_smb_path(target) {
+        if target.contains("::") {
+            return err_response(StatusCode::NOT_FOUND, "远程 zip 内的视频不支持流式播放");
+        }
+        return serve_smb(target, range.as_deref());
+    }
 
     if let Some((zip, entry)) = split_zip_target(target) {
         return serve_zip(zip, entry, range.as_deref());
@@ -98,6 +107,31 @@ fn serve_zip(zip: &str, entry: &str, range: Option<&str>) -> Response<Vec<u8>> {
     let len = e - s + 1;
     match tauri::async_runtime::block_on(zipfile::read_zip_entry_stored_range(zip, entry, s, len)) {
         Ok(buf) => partial(buf, s, e, total, content_type(entry)),
+        Err(err) => err_response(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
+/* SMB 普通文件：每请求 stat 取总长 + 打开句柄区间读（RangeSource 断线自愈） */
+fn serve_smb(path: &str, range: Option<&str>) -> Response<Vec<u8>> {
+    let total = match tauri::async_runtime::block_on(smb::stat(path)) {
+        Ok((t, _, false)) => t,
+        Ok((_, _, true)) => return err_response(StatusCode::NOT_FOUND, "这是远程目录"),
+        Err(e) => return err_response(StatusCode::NOT_FOUND, e),
+    };
+    if total == 0 {
+        return err_response(StatusCode::NOT_FOUND, "远程文件为空");
+    }
+    let (s, e) = match parse_range(range, total) {
+        Err(()) => return err_416(total),
+        Ok(None) => (0, total.saturating_sub(1).min(MAX_CHUNK - 1)),
+        Ok(Some((s, e))) => (s, e.min(s + MAX_CHUNK - 1)),
+    };
+    match tauri::async_runtime::block_on(smb::read_range(path, s, e - s + 1)) {
+        Ok((buf, t)) if !buf.is_empty() => {
+            let end = s + buf.len() as u64 - 1;
+            partial(buf, s, end, t, content_type(path))
+        }
+        Ok((_, t)) => err_416(t), // 文件在 stat 与读取间变小，区间已不成立
         Err(err) => err_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
 }
@@ -312,5 +346,22 @@ mod tests {
         let url2 = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(&target2)));
         let r2 = serve(req(&url2, Some("bytes=0-1")));
         assert_eq!(r2.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn smb_branch_wiring() {
+        // 远程 zip 复合目标：显式拒绝（前端不会生成该 URL，纯防御）
+        let target = "smb://sid/share/v.zip::e.mp4";
+        let url = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(target)));
+        let r = serve(req(&url, Some("bytes=0-1")));
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert!(String::from_utf8_lossy(r.body()).contains("远程 zip"));
+
+        // 无凭证配置的 smb 路径：resolve 即败 → 404 带中文说明（不触网，确定性）
+        let target2 = "smb://nosuchid/share/v.mp4";
+        let url2 = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(target2)));
+        let r2 = serve(req(&url2, Some("bytes=0-1")));
+        assert_eq!(r2.status(), StatusCode::NOT_FOUND);
+        assert!(String::from_utf8_lossy(r2.body()).contains("SMB"));
     }
 }

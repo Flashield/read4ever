@@ -10,7 +10,7 @@ import type { PluginOpenContext, PluginViewStatus, ReadBookPlugin } from "./type
 
 const TEXT_RE = /\.(txt|zip)$/i;
 
-/** 流式播放协议（src-tauri/src/stream.rs）：按 HTTP Range 分块响应本地文件/本地 zip 存储型条目 */
+/** 流式播放协议（src-tauri/src/stream.rs）：按 HTTP Range 分块响应本地文件、本地 zip 存储型条目与 SMB 远程普通文件 */
 const STREAM_SCHEME = "readbook-stream";
 
 /** 真 Tauri 环境判定：mock_backend 会伪造 __TAURI_INTERNALS__（仅供 invoke），
@@ -20,12 +20,16 @@ const isTauri = (): boolean =>
   typeof (window as unknown as { __TAURI_INTERNALS__?: { convertFileSrc?: unknown } })
     .__TAURI_INTERNALS__?.convertFileSrc === "function";
 
-/** 本地文件的流式播放 URL；SMB 与浏览器演示环境返回 null（回退字节整读）。
- *  zip 条目保持「zip路径::条目名」复合形式整体编码，协议侧自行拆分。 */
+/** 远程 smb 复合路径（zip::条目）：协议侧显式 404，不发起必败的流式尝试 */
+const isSmbComposite = (p: string): boolean => p.startsWith("smb://") && p.includes("::");
+
+/** 本地文件与 SMB 远程普通文件的流式播放 URL；远程 zip 条目与浏览器演示环境返回 null（回退字节整读）。
+ *  zip 条目保持「zip路径::条目名」复合形式整体编码，协议侧自行拆分。
+ *  注意 splitTarget 的 base 在 zip 复合路径下是条目名，smb:// 前缀在 zipPath 里。 */
 function streamUrlFor(path: string): string | null {
   if (!isTauri()) return null;
+  if (isSmbComposite(path)) return null;
   const t = splitTarget(path);
-  if (t.base.startsWith("smb://")) return null;
   const target = t.entry ? `${t.zipPath}::${t.entry}` : t.base;
   return convertFileSrc(target, STREAM_SCHEME);
 }
@@ -233,8 +237,8 @@ export async function openFile(path: string): Promise<void> {
   if (!plugin) return;
   const prev = active;
   try {
-    // wantsStream 的插件：本地文件跳过整文件预读（2GB+ 视频必需），改由流式协议按需分块
-    const wantStream = !!plugin.wantsStream && isTauri() && !path.startsWith("smb://");
+    // wantsStream 的插件：本地与 SMB 普通文件跳过整文件预读（2GB+ 视频必需），改由流式协议按需分块
+    const wantStream = !!plugin.wantsStream && isTauri() && !isSmbComposite(path);
     const bytes = wantStream
       ? new Uint8Array(0)
       : new Uint8Array(

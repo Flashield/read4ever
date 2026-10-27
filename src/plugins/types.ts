@@ -39,9 +39,9 @@ export interface PluginOpenContext {
   /** 读取文件字节（自动区分磁盘文件与 zip 条目）。
    *  安全边界：仅允许当前打开文件所在目录/压缩包内的路径，越界路径拒绝。 */
   loadBytes(path: string): Promise<Uint8Array>;
-  /** 本地文件（含本地 zip 存储型条目）的流式播放 URL（readbook-stream://，宿主按
-   *  HTTP Range 分块响应）——声明 wantsStream 的插件播放大文件用。
-   *  SMB / 浏览器演示环境返回 null，调用方回退 loadBytes 整读。 */
+  /** 本地文件、本地 zip 存储型条目与 SMB 远程普通文件的流式播放 URL（readbook-stream://，
+   *  宿主按 HTTP Range 分块响应）——声明 wantsStream 的插件播放大文件用。
+   *  SMB 远程 zip 复合路径与浏览器演示环境返回 null，调用方回退 loadBytes 整读。 */
   streamUrlFor?(path: string): string | null;
   /** 列出当前文件所在容器（目录或 zip）的全部条目：
    *  zip 返回条目名（含子路径），目录返回文件完整路径（含子目录文件）。 */
@@ -64,8 +64,8 @@ export interface ReadBookPlugin {
   description: string;
   /** 可接管的扩展名（小写、含点），如 ".png" */
   extensions: string[];
-  /** 声明后宿主跳过整文件字节预读，改经 ctx.streamUrlFor 提供本地文件的流式 URL
-   *  （2GB+ 媒体必需；zip 条目为存储型时同样支持，压缩条目由插件自行回退整读） */
+  /** 声明后宿主跳过整文件字节预读，改经 ctx.streamUrlFor 提供本地文件与 SMB 普通文件的流式 URL
+   *  （2GB+ 媒体必需；本地 zip 条目为存储型时同样支持，远程 zip 复合路径与压缩条目由插件自行回退整读） */
   wantsStream?: boolean;
   /** 打开文件：把视图渲染到 ctx.host */
   open(ctx: PluginOpenContext): void | Promise<void>;

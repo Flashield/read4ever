@@ -35,6 +35,8 @@ use crate::store::SmbServer;
 const OP_TIMEOUT: Duration = Duration::from_secs(15);
 /// 流式下载的块大小
 const CHUNK: u64 = 256 * 1024;
+/// read_all 整读上限：超过则拒绝（大文件正道是流式播放/缓存到本地）
+const READ_ALL_MAX: u64 = 1024 * 1024 * 1024;
 
 /// 单服务器会话。client+tree 放在同一把异步锁里：client 的便捷方法（断线重连
 /// 重放要求 &mut client 与 &mut tree，重连后把新 tree id 原地写回 tree）。
@@ -502,6 +504,9 @@ pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
     if size == 0 {
         return Ok(Vec::new());
     }
+    if size > READ_ALL_MAX {
+        return Err("远程文件过大（上限 1 GB），不支持整读——请用流式播放或先缓存到本地".into());
+    }
     let first = tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size)).await;
     let data = match first {
         Ok(Ok(data)) => data,
@@ -601,6 +606,34 @@ pub async fn open_text(
                 Err(e)
             }
         }
+    }
+}
+
+/// 远程文件区间读（流式播放协议用）：返回 (数据, 文件总长)。
+/// total 以本次打开句柄为准；offset 越界返回空数据。
+/// 整体 60s 超时（对齐 read_all，覆盖连接+打开+读取，慢网络下 8MB 不误杀）。
+/// len 由调用方封顶（如 stream 层 MAX_CHUNK）。
+pub async fn read_range(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, u64), String> {
+    let fut = async {
+        let (cfg, rel) = resolve(path)?;
+        if rel.is_empty() {
+            return Err("共享根不是文件".into());
+        }
+        let ses = session_for(&cfg.id).await?;
+        let mut r = smb_reader_for(&ses, &rel, path).await?;
+        let total = r.reader.size();
+        if len == 0 || offset >= total {
+            return Ok((Vec::new(), total));
+        }
+        let mut buf = vec![0u8; len.min(total - offset) as usize];
+        crate::zipfile::RangeSource::read_exact_at(&mut r, offset, &mut buf)
+            .await
+            .map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+        Ok((buf, total))
+    };
+    match tokio::time::timeout(Duration::from_secs(60), fut).await {
+        Ok(inner) => inner,
+        Err(_) => Err("读取远程文件超时（60 秒）".into()),
     }
 }
 
