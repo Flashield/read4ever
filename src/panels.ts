@@ -199,9 +199,10 @@ function renderShelfBar(): void {
     input.focus();
     input.select();
     const confirmEdit = () => {
-      if (shelfEdit?.mode === "create") app.addShelf(input.value);
-      else if (shelfEdit?.mode === "rename") app.renameShelf(shelfEdit.id, input.value);
+      const edit = shelfEdit;
       shelfEdit = null;
+      if (edit?.mode === "create") app.addShelf(input.value);
+      else if (edit?.mode === "rename") app.renameShelf(edit.id, input.value);
       renderBookshelf();
     };
     const closeEdit = () => {

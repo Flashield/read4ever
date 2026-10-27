@@ -1896,4 +1896,20 @@ mark.kw-flash {
 .shelf-edit input {
   flex: 1;
   min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--ui-border);
+  background: #333;
+  color: #fff;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.shelf-edit button {
+  padding: 2px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
 }
