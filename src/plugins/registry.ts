@@ -280,7 +280,10 @@ export async function openFile(path: string): Promise<void> {
       getSetting: <T>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
-      setKeepAwake: (on) => holdAwake(`plugin:${owner.id}`, on),
+      setKeepAwake: (on) => {
+        if (active !== owner) return; // 视图已切走/关闭：丢弃过期请求，防止僵尸定时器重新挂起常亮
+        holdAwake(`plugin:${owner.id}`, on);
+      },
     };
     activeCtx = ctx;
     await plugin.open(ctx);
@@ -293,6 +296,15 @@ export async function openFile(path: string): Promise<void> {
       }
     }
   } catch (e) {
+    // open 失败也要收尾 prev 插件（成功路径的 prev 释放/停用在 try 内 await 之后，抛错时不可达）
+    if (prev && prev !== plugin) {
+      releasePluginAwake(prev.id);
+      try {
+        prev.deactivate?.();
+      } catch (de) {
+        console.error("[plugin] deactivate 失败:", de);
+      }
+    }
     deactivateActive();
     app.showMessage("打开失败", String(e));
   }
