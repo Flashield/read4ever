@@ -972,6 +972,7 @@ function syncButtons(): void {
   if (speed) speed.value = String(scrollPxPerSec);
   const dir = q<HTMLSelectElement>(".imgv-dir");
   if (dir) dir.value = direction;
+  ctx?.setKeepAwake(slideOn || scrollOn); // 幻灯或自动滚屏任一播放中 → 常亮（幂等）
   syncStatus(); // 幻灯/滚屏/方向等播放状态变化 → 状态栏"显示"格随之更新
 }
 
