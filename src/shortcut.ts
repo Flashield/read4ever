@@ -37,6 +37,10 @@ export function initShortcuts(): void {
             })();
           else app.openFileDialog();
           return;
+        case "w":
+          e.preventDefault();
+          app.closeFile();
+          return;
         case "z":
           e.preventDefault();
           app.goBack();

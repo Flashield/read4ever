@@ -337,6 +337,38 @@ export async function openFileDialog(): Promise<void> {
   if (p) openPath(p);
 }
 
+/* ========== 关闭文件（逐层：插件视图 → 文本） ========== */
+
+export function closeFile(): void {
+  if (plugins.isActive()) {
+    plugins.deactivateActive();
+    // 底下无文本（比如启动后直接打开的图片/视频）→ 欢迎页
+    if (!state.filePath) reader.showWelcome();
+    updateUI();
+    return;
+  }
+  if (!state.filePath) return;
+  reader.stopScroll();
+  saveCurrentProgress(); // 最终位置与时长写入历史
+  state.filePath = "";
+  state.realPath = "";
+  state.zipEntry = "";
+  state.isZip = false;
+  state.fileName = "";
+  state.raw = "";
+  state.encoding = "";
+  state.modified = false;
+  state.isHardLines = false;
+  state.prevPositions = [];
+  state.readSeconds = 0;
+  reader.showWelcome();
+  // 清掉自动恢复锚点，否则下次启动又把这本书"复活"
+  state.store.settings.lastFilePath = "";
+  state.store.settings.lastScroll = 0;
+  persist();
+  updateUI();
+}
+
 function loadFileContent(
   fc: FileContent,
   src: { isZip: boolean; zipPath: string; zipEntry: string },

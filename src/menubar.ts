@@ -24,6 +24,7 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { label: "下一个文件", shortcut: "Ctrl+PgDn", action: () => app.gotoNextFile(), disabled: !app.state.filePath },
     { sep: true },
     { label: "另存为…", shortcut: "Ctrl+S", action: () => app.saveAs(), disabled: !app.state.filePath },
+    { label: "关闭文件", shortcut: "Ctrl+W", action: () => app.closeFile(), disabled: !app.state.filePath && !registry.isActive() },
     { sep: true },
     { label: "隐藏到托盘", shortcut: "T", action: () => app.hideToTray() },
     { label: "退出", shortcut: "Ctrl+Q", action: () => app.exitApp() },
