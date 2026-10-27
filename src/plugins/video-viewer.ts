@@ -432,6 +432,7 @@ export const videoViewerPlugin: ReadBookPlugin = {
     ctx = c;
     globalIdx = Math.max(0, Math.min(c.siblingIndex, c.siblings.length - 1));
     buildView();
+    c.setKeepAwake(false); // 同插件换文件重开：旧播放已终止，重置常亮持有（新文件 play 事件会重新持有）
     void loadVideo(globalIdx, true);
   },
   deactivate(): void {
