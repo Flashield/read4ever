@@ -423,6 +423,7 @@ window.__TAURI_INTERNALS__ = {
       case "hide_to_tray":
       case "show_from_tray":
       case "exit_app":
+      case "set_keep_awake":
         console.log(`[mock] ${cmd}`);
         return Promise.resolve(null);
       case "open_text_file": {

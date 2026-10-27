@@ -29,6 +29,7 @@ export const api = {
   setTitle: (title: string) => invoke<void>("set_window_title", { title }),
   hideToTray: () => invoke<void>("hide_to_tray"),
   exitApp: () => invoke<void>("exit_app"),
+  setKeepAwake: (on: boolean) => invoke<void>("set_keep_awake", { on }),
 
   /* 文件夹侧栏 */
   listDir: (path: string) => invoke<FileEntry[]>("list_dir", { path }),
