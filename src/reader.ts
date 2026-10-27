@@ -1,4 +1,5 @@
 /* 阅读区：内容渲染、连续滚屏引擎、页模式翻页、双页模式 */
+import { holdAwake } from "./keepawake";
 
 export type ScrollMode = "continuous" | "page";
 
@@ -129,6 +130,7 @@ function loop(ts: number): void {
 export function startScroll(): void {
   if (scrolling) return;
   scrolling = true;
+  holdAwake("reading", true); // 滚屏/页模式定时翻页期间保持屏幕常亮
   mouseFactor = 1;
   el().classList.add("scroll-hidden");
   if (mode === "continuous") {
@@ -151,6 +153,7 @@ export function startScroll(): void {
 export function stopScroll(): void {
   if (!scrolling) return;
   scrolling = false;
+  holdAwake("reading", false);
   cancelAnimationFrame(rafId);
   window.clearInterval(pageTimer);
   el().classList.remove("scroll-hidden");
