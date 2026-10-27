@@ -50,7 +50,11 @@ pub struct StoreData {
     pub settings: Settings,
     pub bookmarks: Vec<Bookmark>,
     pub history: Vec<HistoryEntry>,
+    /// 旧版单书架扁平列表：仅反序列化兼容，加载时迁入 bookshelves 后清空、不再写出
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bookshelf: Vec<BookshelfItem>,
+    #[serde(default)]
+    pub bookshelves: Vec<Bookshelf>,
     #[serde(default)]
     pub keyword_groups: Vec<KeywordGroup>,
     #[serde(default)]
@@ -99,6 +103,9 @@ pub struct Settings {
     /// 文件夹侧栏当前标签："" 本地 / "smb" 远程
     #[serde(default)]
     pub folder_tab: String,
+    /// 书架面板当前书架 id（失效时前端回退第一个）
+    #[serde(default)]
+    pub bookshelf_active_id: String,
 }
 
 fn default_true() -> bool {
@@ -130,6 +137,7 @@ impl Default for Settings {
             plugins: std::collections::HashMap::new(),
             plugin_settings: std::collections::HashMap::new(),
             folder_tab: String::new(),
+            bookshelf_active_id: String::new(),
         }
     }
 }
@@ -160,6 +168,19 @@ pub struct BookshelfItem {
     pub file_path: String,
     pub name: String,
     pub added: String,
+    /// 标签（书架面板快速筛选用）
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// 收藏书架：多书架，条目嵌套归属
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Bookshelf {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub items: Vec<BookshelfItem>,
 }
 
 fn store_path(app: &AppHandle) -> Option<PathBuf> {
@@ -168,11 +189,26 @@ fn store_path(app: &AppHandle) -> Option<PathBuf> {
     Some(dir.join("readbook.json"))
 }
 
+/// 旧版扁平收藏列表迁入默认书架（幂等：新列表非空时丢弃旧列表）
+fn migrate_legacy_bookshelf(data: &mut StoreData) {
+    if data.bookshelves.is_empty() && !data.bookshelf.is_empty() {
+        data.bookshelves.push(Bookshelf {
+            id: "shelf-default".to_string(),
+            name: "默认书架".to_string(),
+            items: std::mem::take(&mut data.bookshelf),
+        });
+    } else if !data.bookshelf.is_empty() {
+        data.bookshelf.clear();
+    }
+}
+
 pub fn load_store(app: &AppHandle) -> StoreData {
     match store_path(app) {
         Some(p) if p.exists() => {
             let data = fs::read_to_string(&p).unwrap_or_default();
-            serde_json::from_str(&data).unwrap_or_default()
+            let mut store: StoreData = serde_json::from_str(&data).unwrap_or_default();
+            migrate_legacy_bookshelf(&mut store);
+            store
         }
         _ => StoreData::default(),
     }
@@ -182,4 +218,71 @@ pub fn save_store(app: &AppHandle, data: &StoreData) -> Result<(), String> {
     let p = store_path(app).ok_or("无法获取数据目录")?;
     let json = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
     fs::write(&p, json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SETTINGS_JSON: &str = r#""settings": {
+        "themeName": "白纸", "customThemes": [], "fontFamily": "SimSun",
+        "fontSize": 18, "lineSpacing": 1.8, "scrollSpeed": 135,
+        "scrollMode": "continuous", "pageInterval": 10, "displayMode": "auto",
+        "dualPage": false, "lastFilePath": "", "lastScroll": 0, "autoRestore": true
+    }"#;
+
+    /// 旧版 readbook.json（扁平 bookshelf、条目无 tags、无 bookshelves）
+    /// → 迁入「默认书架」，tags 补空，序列化只写新字段
+    #[test]
+    fn legacy_flat_bookshelf_migrates_to_default_shelf() {
+        let json = format!(
+            r#"{{ {}, "bookmarks": [], "history": [],
+                "bookshelf": [
+                    {{ "filePath": "C:\\b\\a.txt", "name": "a", "added": "2026-01-01T00:00:00Z" }},
+                    {{ "filePath": "C:\\b\\b.txt", "name": "b", "added": "2026-01-02T00:00:00Z" }}
+                ] }}"#,
+            SETTINGS_JSON
+        );
+        let mut store: StoreData = serde_json::from_str(&json).unwrap();
+        migrate_legacy_bookshelf(&mut store);
+        assert_eq!(store.bookshelves.len(), 1);
+        let shelf = &store.bookshelves[0];
+        assert_eq!(shelf.id, "shelf-default");
+        assert_eq!(shelf.name, "默认书架");
+        assert_eq!(shelf.items.len(), 2);
+        assert_eq!(shelf.items[0].file_path, "C:\\b\\a.txt");
+        assert!(shelf.items.iter().all(|i| i.tags.is_empty()));
+        assert!(store.bookshelf.is_empty()); // 旧字段清空 → 序列化时 skip
+        let out = serde_json::to_string(&store).unwrap();
+        assert!(!out.contains("\"bookshelf\":"), "旧字段不应再写出: {out}");
+        assert!(out.contains("\"bookshelves\":"));
+        assert!(out.contains("\"tags\":[]"));
+    }
+
+    /// 新格式数据：迁移不生效（幂等），缺 tags 字段补空，round-trip 不丢字段
+    #[test]
+    fn new_format_roundtrip_and_default_tags() {
+        let json = format!(
+            r#"{{ {}, "bookmarks": [], "history": [],
+                "bookshelves": [
+                    {{ "id": "s1", "name": "小说", "items": [
+                        {{ "filePath": "/x/1.txt", "name": "1", "added": "2026-01-01T00:00:00Z", "tags": ["科幻", "长篇"] }},
+                        {{ "filePath": "/x/2.txt", "name": "2", "added": "2026-01-02T00:00:00Z" }}
+                    ] }},
+                    {{ "id": "s2", "name": "资料", "items": [] }}
+                ] }}"#,
+            SETTINGS_JSON
+        );
+        let mut store: StoreData = serde_json::from_str(&json).unwrap();
+        migrate_legacy_bookshelf(&mut store);
+        assert_eq!(store.bookshelves.len(), 2); // 不变
+        assert_eq!(store.bookshelves[0].items.len(), 2);
+        assert_eq!(store.bookshelves[0].items[0].tags, vec!["科幻", "长篇"]);
+        assert!(store.bookshelves[0].items[1].tags.is_empty()); // 缺字段 → default
+        // round-trip
+        let out = serde_json::to_string(&store).unwrap();
+        let back: StoreData = serde_json::from_str(&out).unwrap();
+        assert_eq!(back.bookshelves[0].items[0].tags, vec!["科幻", "长篇"]);
+        assert_eq!(back.bookshelves.len(), 2);
+    }
 }
