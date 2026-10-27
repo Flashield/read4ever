@@ -1913,3 +1913,99 @@ mark.kw-flash {
   cursor: pointer;
   font-size: 13px;
 }
+
+/* ========== 收藏书架：条目标签 ========== */
+.item-tag-edit {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  opacity: 0.55;
+}
+
+.item-tag-edit:hover {
+  opacity: 1;
+}
+
+.bs-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.bs-tag {
+  display: inline-flex;
+  background: var(--ui-hover);
+  border-radius: 8px;
+  padding: 1px 7px;
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bs-tag-editor {
+  border-top: 1px dashed var(--ui-border);
+  border-bottom: 1px solid var(--ui-border);
+  padding: 8px 10px;
+  background: var(--ui-hover);
+}
+
+.bs-tag-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.bs-tag-input-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--ui-border);
+  background: #333;
+  color: #fff;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.bs-tag-close {
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.bs-tag-close:hover {
+  color: #ff6b6b;
+}
+
+.bs-tag-editor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.bs-tag-editor-chips:empty::after {
+  content: "暂无已有标签";
+  font-size: 11px;
+  color: #999;
+}
+
+.bs-tag-suggest {
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: transparent;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bs-tag-suggest.on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}

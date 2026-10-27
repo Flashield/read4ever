@@ -97,10 +97,9 @@ let shelfEdit: { mode: "create" } | { mode: "rename"; id: string } | null = null
 let bsTagFilter = new Set<string>();
 let bsSearch = "";
 let tagEditPath: string | null = null;
-// 标签筛选/搜索/行内标签编辑由 Task 5/6 接入；先引用一次避免 noUnusedLocals 误报
+// 标签筛选/搜索由 Task 6 接入；先引用一次避免 noUnusedLocals 误报
 void bsTagFilter;
 void bsSearch;
-void tagEditPath;
 
 function rowEl(name: string, desc: string, onDelete?: () => void, onClick?: () => void): HTMLElement {
   const row = document.createElement("div");
@@ -271,6 +270,110 @@ function renderShelfBar(): void {
   bar.appendChild(ops);
 }
 
+/* 书架条目行：名称 + 标签 chips + 🏷 编辑 + ✕ 删除（不用通用 rowEl，需塞标签） */
+function renderBookshelfItemRow(item: BookshelfItem): HTMLElement {
+  const shelfId = app.activeShelf().id;
+  const row = document.createElement("div");
+  row.className = "list-item";
+  const info = document.createElement("div");
+  info.className = "list-item-info";
+  const n = document.createElement("div");
+  n.className = "item-name";
+  n.textContent = item.name;
+  const d = document.createElement("div");
+  d.className = "item-desc";
+  d.textContent = `加入于 ${fmtTime(item.added)}`;
+  info.append(n, d);
+  if (item.tags.length > 0) {
+    const tagRow = document.createElement("div");
+    tagRow.className = "bs-tags";
+    item.tags.forEach((t) => {
+      const c = document.createElement("span");
+      c.className = "bs-tag";
+      c.textContent = t;
+      tagRow.appendChild(c);
+    });
+    info.appendChild(tagRow);
+  }
+  info.addEventListener("click", () => app.openPath(item.filePath));
+  row.appendChild(info);
+  const tagBtn = document.createElement("button");
+  tagBtn.className = "item-tag-edit";
+  tagBtn.textContent = "🏷";
+  tagBtn.title = "编辑标签";
+  tagBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    tagEditPath = tagEditPath === item.filePath ? null : item.filePath;
+    renderBookshelfList();
+  });
+  row.appendChild(tagBtn);
+  const del = document.createElement("button");
+  del.className = "item-delete";
+  del.textContent = "✕";
+  del.title = "删除";
+  del.addEventListener("click", (e) => {
+    e.stopPropagation();
+    app.deleteBookshelfItem(shelfId, item.filePath);
+  });
+  row.appendChild(del);
+  return row;
+}
+
+/* 行内标签编辑器：输入框（回车/逗号提交，可一次多个）+ 全局标签建议 chips */
+function buildTagEditor(item: BookshelfItem): HTMLElement {
+  const shelfId = app.activeShelf().id;
+  const box = document.createElement("div");
+  box.className = "bs-tag-editor";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "输入标签，回车添加（可逗号/空格分隔多个）";
+  const close = document.createElement("button");
+  close.className = "bs-tag-close";
+  close.textContent = "✕";
+  close.title = "收起";
+  const chips = document.createElement("div");
+  chips.className = "bs-tag-editor-chips";
+  const setTags = (tags: string[]) => {
+    app.setBookshelfItemTags(shelfId, item.filePath, tags);
+    renderBookshelf(); // 刷新行内 chips、编辑器开关态与筛选行
+  };
+  const addFromInput = () => {
+    const parts = input.value.split(/[,，、\s]+/).filter(Boolean);
+    if (parts.length) setTags([...item.tags, ...parts]);
+    else input.focus();
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // 防止 Esc 顺带关掉面板
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addFromInput();
+    }
+    if (e.key === "Escape") {
+      tagEditPath = null;
+      renderBookshelf();
+    }
+  });
+  close.addEventListener("click", () => {
+    tagEditPath = null;
+    renderBookshelf();
+  });
+  app.allShelfTags().forEach((t) => {
+    const on = item.tags.includes(t);
+    const c = document.createElement("button");
+    c.className = "bs-tag-suggest" + (on ? " on" : "");
+    c.textContent = (on ? "✓ " : "＋ ") + t;
+    c.addEventListener("click", () => {
+      setTags(on ? item.tags.filter((x) => x !== t) : [...item.tags, t]);
+    });
+    chips.appendChild(c);
+  });
+  const inputRow = document.createElement("div");
+  inputRow.className = "bs-tag-input-row";
+  inputRow.append(input, close);
+  box.append(inputRow, chips);
+  return box;
+}
+
 function renderBookshelfList(): void {
   const list = $("bookshelf-list");
   list.innerHTML = "";
@@ -282,10 +385,9 @@ function renderBookshelfList(): void {
     list.appendChild(empty);
     return;
   }
-  shelf.items.forEach((b: BookshelfItem) => {
-    list.appendChild(
-      rowEl(b.name, `加入于 ${fmtTime(b.added)}`, () => app.deleteBookshelfItem(shelf.id, b.filePath), () => app.openPath(b.filePath))
-    );
+  shelf.items.forEach((b) => {
+    list.appendChild(renderBookshelfItemRow(b));
+    if (tagEditPath === b.filePath) list.appendChild(buildTagEditor(b));
   });
 }
 
