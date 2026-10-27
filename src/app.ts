@@ -217,6 +217,10 @@ export function renderContent(keepRatio?: number): void {
   const r = keepRatio !== undefined ? keepRatio : reader.getRatio();
   reader.setContent(currentDisplayText());
   if (r > 0) reader.setRatio(r);
+  // 立即强制一次排版：大文本在 WebKit 非合成（软件渲染）路径下会把首次
+  // 排版推迟到之后的某个事件，导致打开后第一次点菜单/按键卡顿 1~2s；
+  // 提前排掉这笔开销，交互保持即时。合成路径下排版本就即时，无副作用。
+  void (document.getElementById("reader-content") as HTMLElement).offsetHeight;
 }
 
 /* 内容重渲染后通知依赖当前文本的模块（如关键词检索）重建索引 */
