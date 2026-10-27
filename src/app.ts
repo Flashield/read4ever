@@ -6,7 +6,7 @@ import { applyTheme, findThemeByName, normalizeFontFamily, FONT_SONG } from "./t
 import { convertDisplay, type DisplayMode } from "./simp_trad";
 import { showDropdown, initDropdown } from "./dropdown";
 import { setKeepAwakeEnabled } from "./keepawake";
-import type { FileContent, StoreData } from "./types";
+import type { Bookshelf, BookshelfItem, FileContent, StoreData } from "./types";
 
 /* 路径文件名（含 smb:// 的 / 分隔）；viewName 额外剥掉 zip 复合路径的条目部分 */
 const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
@@ -54,10 +54,11 @@ export function defaultStore(): StoreData {
       plugins: {},
       pluginSettings: {},
       folderTab: "",
+      bookshelfActiveId: "",
     },
     bookmarks: [],
     history: [],
-    bookshelf: [],
+    bookshelves: [{ id: "shelf-default", name: "默认书架", items: [] }],
     keywordGroups: [],
     smbServers: [],
   };
@@ -76,7 +77,33 @@ function mergeDefaults(data: StoreData): StoreData {
     ...t,
     fontFamily: normalizeFontFamily(t.fontFamily),
   }));
+  // 书架：旧扁平列表迁入默认书架，条目补 tags，保证至少一个书架、activeId 有效
+  merged.bookshelves = migrateBookshelves(data);
+  delete (merged as StoreData & { bookshelf?: BookshelfItem[] }).bookshelf;
+  if (!merged.bookshelves.some((s) => s.id === merged.settings.bookshelfActiveId)) {
+    merged.settings.bookshelfActiveId = merged.bookshelves[0].id;
+  }
   return merged;
+}
+
+/* 书架数据迁移/清洗（兼容旧形状：扁平 bookshelf、条目缺 tags、缺 bookshelves） */
+function migrateBookshelves(data: StoreData): Bookshelf[] {
+  const legacy = ((data as StoreData & { bookshelf?: BookshelfItem[] }).bookshelf || []).map((it) => ({
+    ...it,
+    tags: it.tags || [],
+  }));
+  let shelves = (data.bookshelves || []).map((s) => ({
+    id: s.id || "shelf-default",
+    name: s.name || "默认书架",
+    items: (s.items || []).map((it) => ({ ...it, tags: it.tags || [] })),
+  }));
+  if (shelves.length === 0 && legacy.length > 0) {
+    shelves = [{ id: "shelf-default", name: "默认书架", items: legacy }];
+  }
+  if (shelves.length === 0) {
+    shelves = [{ id: "shelf-default", name: "默认书架", items: [] }];
+  }
+  return shelves;
 }
 
 /* ========== 持久化 ========== */
@@ -635,30 +662,107 @@ export function deleteBookmarkAt(idx: number): void {
   document.dispatchEvent(new CustomEvent("rb-store-changed"));
 }
 
-/* ========== 收藏书架 ========== */
+/* ========== 收藏书架（多书架） ========== */
+
+/** 当前书架（activeId 失效时回退第一个） */
+export function activeShelf(): Bookshelf {
+  const shelves = state.store.bookshelves;
+  return shelves.find((s) => s.id === state.store.settings.bookshelfActiveId) || shelves[0];
+}
 
 export function addToBookshelf(name?: string): void {
   // 插件视图（如图片查看）中收藏当前查看的文件（跨容器推进后取当前路径）
   const path = plugins.isActive() ? plugins.activeFilePath() : state.filePath;
   if (!path) return;
-  if (state.store.bookshelf.some((b) => b.filePath === path)) {
-    toast("已在书架中");
+  const shelf = activeShelf();
+  if (shelf.items.some((b) => b.filePath === path)) {
+    toast("已在当前书架中");
     return;
   }
-  state.store.bookshelf.unshift({
+  shelf.items.unshift({
     filePath: path,
     name: name || viewName(path).replace(/\.txt$/i, ""),
     added: new Date().toISOString(),
+    tags: [],
   });
   persist();
-  toast("已加入收藏书架");
+  toast(`已加入「${shelf.name}」`);
   document.dispatchEvent(new CustomEvent("rb-store-changed"));
 }
 
-export function deleteBookshelfAt(idx: number): void {
-  state.store.bookshelf.splice(idx, 1);
+export function addShelf(name: string): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  const shelf: Bookshelf = { id: crypto.randomUUID(), name: n, items: [] };
+  state.store.bookshelves.push(shelf);
+  state.store.settings.bookshelfActiveId = shelf.id; // 新建后立即切过去
   persist();
   document.dispatchEvent(new CustomEvent("rb-store-changed"));
+  return true;
+}
+
+export function renameShelf(id: string, name: string): boolean {
+  const n = name.trim();
+  const shelf = state.store.bookshelves.find((s) => s.id === id);
+  if (!shelf || !n) return false;
+  shelf.name = n;
+  persist();
+  document.dispatchEvent(new CustomEvent("rb-store-changed"));
+  return true;
+}
+
+export function removeShelf(id: string): void {
+  const shelves = state.store.bookshelves;
+  if (shelves.length <= 1) return; // 至少保留一个书架
+  const idx = shelves.findIndex((s) => s.id === id);
+  if (idx < 0) return;
+  shelves.splice(idx, 1);
+  if (state.store.settings.bookshelfActiveId === id) {
+    state.store.settings.bookshelfActiveId = shelves[Math.max(0, idx - 1)].id;
+  }
+  persist();
+  document.dispatchEvent(new CustomEvent("rb-store-changed"));
+}
+
+export function setActiveShelf(id: string): void {
+  if (!state.store.bookshelves.some((s) => s.id === id)) return;
+  state.store.settings.bookshelfActiveId = id;
+  persist(); // 启动恢复当前书架
+  document.dispatchEvent(new CustomEvent("rb-store-changed"));
+}
+
+/** 删除书架条目（filePath 定位，过滤态下索引不稳定故不用索引） */
+export function deleteBookshelfItem(shelfId: string, filePath: string): void {
+  const shelf = state.store.bookshelves.find((s) => s.id === shelfId);
+  if (!shelf) return;
+  const i = shelf.items.findIndex((b) => b.filePath === filePath);
+  if (i < 0) return;
+  shelf.items.splice(i, 1);
+  persist();
+  document.dispatchEvent(new CustomEvent("rb-store-changed"));
+}
+
+/** 设置条目标签（清洗：trim、截断 20 字符、去空、去重） */
+export function setBookshelfItemTags(shelfId: string, filePath: string, tags: string[]): void {
+  const shelf = state.store.bookshelves.find((s) => s.id === shelfId);
+  if (!shelf) return;
+  const item = shelf.items.find((b) => b.filePath === filePath);
+  if (!item) return;
+  const cleaned: string[] = [];
+  for (const t of tags) {
+    const v = t.trim().slice(0, 20);
+    if (v && !cleaned.includes(v)) cleaned.push(v);
+  }
+  item.tags = cleaned;
+  persist();
+  document.dispatchEvent(new CustomEvent("rb-store-changed"));
+}
+
+/** 全部书架的标签并集（编辑建议词表） */
+export function allShelfTags(): string[] {
+  const set = new Set<string>();
+  for (const s of state.store.bookshelves) for (const it of s.items) for (const t of it.tags) set.add(t);
+  return [...set];
 }
 
 /* ========== 历史 ========== */

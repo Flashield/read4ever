@@ -348,7 +348,7 @@ const storeData = {
   },
   bookmarks: [],
   history: [],
-  bookshelf: [],
+  bookshelves: [{ id: "shelf-default", name: "默认书架", items: [] }],
   keywordGroups: [],
   smbServers: [SMB_DEMO_SERVER],
 };

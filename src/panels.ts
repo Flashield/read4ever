@@ -162,14 +162,17 @@ function renderBookmarks(): void {
 function renderBookshelf(): void {
   const list = $("bookshelf-list");
   list.innerHTML = "";
-  const all = app.state.store.bookshelf;
-  if (all.length === 0) {
-    list.innerHTML = '<div style="padding:16px;font-size:12px;color:#888">书架空空如也。打开一本书后点「添加当前」收进来。</div>';
+  const shelf = app.activeShelf();
+  if (shelf.items.length === 0) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "padding:16px;font-size:12px;color:#888";
+    empty.textContent = "书架空空如也。打开一本书后点「添加当前」收进来。";
+    list.appendChild(empty);
     return;
   }
-  all.forEach((b, i) => {
+  shelf.items.forEach((b) => {
     list.appendChild(
-      rowEl(b.name, `加入于 ${fmtTime(b.added)}`, () => app.deleteBookshelfAt(i), () => app.openPath(b.filePath))
+      rowEl(b.name, `加入于 ${fmtTime(b.added)}`, () => app.deleteBookshelfItem(shelf.id, b.filePath), () => app.openPath(b.filePath))
     );
   });
 }

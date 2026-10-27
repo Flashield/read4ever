@@ -33,6 +33,7 @@ export interface Settings {
   plugins: Record<string, boolean>; // 插件启用状态（未列出的默认启用）
   pluginSettings: Record<string, Record<string, number | boolean | string>>; // 插件固定设置
   folderTab: string; // 文件夹侧栏当前标签："" 本地 / "smb" 远程
+  bookshelfActiveId: string; // 书架面板当前书架（失效时回退第一个）
 }
 
 /* SMB 远程服务器配置（对应后端 SmbServer；username 空 = 访客） */
@@ -94,13 +95,21 @@ export interface BookshelfItem {
   filePath: string;
   name: string;
   added: string;
+  tags: string[]; // 标签（书架面板快速筛选）
+}
+
+/* 收藏书架：多书架，条目嵌套归属 */
+export interface Bookshelf {
+  id: string;
+  name: string;
+  items: BookshelfItem[];
 }
 
 export interface StoreData {
   settings: Settings;
   bookmarks: Bookmark[];
   history: HistoryEntry[];
-  bookshelf: BookshelfItem[];
+  bookshelves: Bookshelf[];
   keywordGroups: KeywordGroup[];
   smbServers: SmbServer[];
 }
