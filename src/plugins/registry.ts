@@ -4,6 +4,7 @@
 import { api } from "../api";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as app from "../app";
+import { holdAwake, releasePluginAwake } from "../keepawake";
 import type { MenuItemDef } from "../dropdown";
 import type { FileEntry, PluginPkgInfo } from "../types";
 import type { PluginOpenContext, PluginViewStatus, ReadBookPlugin } from "./types";
@@ -214,6 +215,7 @@ export function deactivateActive(): void {
   activeFile = "";
   activeOpenedName = "";
   activeCtx = null;
+  releasePluginAwake(p.id); // 兜底：外部插件忘关也不永久常亮
   try {
     p.deactivate?.();
   } catch (e) {
@@ -278,11 +280,13 @@ export async function openFile(path: string): Promise<void> {
       getSetting: <T>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
+      setKeepAwake: (on) => holdAwake(`plugin:${owner.id}`, on),
     };
     activeCtx = ctx;
     await plugin.open(ctx);
     if (prev && prev !== plugin) {
       try {
+        releasePluginAwake(prev.id); // 同 deactivateActive 的兜底语义
         prev.deactivate?.();
       } catch (e) {
         console.error("[plugin] deactivate 失败:", e);

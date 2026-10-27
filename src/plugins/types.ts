@@ -55,6 +55,9 @@ export interface PluginOpenContext {
   setSetting(key: string, value: string | number | boolean): void;
   /** 轻提示：屏幕下方短暂浮出一行文字 */
   toast(text: string): void;
+  /** 持有/释放屏幕常亮（滚屏、幻灯、视频播放等场景）。幂等；
+   *  视图关闭时宿主自动释放插件持有的常亮，忘关不会永久常亮。 */
+  setKeepAwake(on: boolean): void;
 }
 
 export interface ReadBookPlugin {
