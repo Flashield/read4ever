@@ -37,6 +37,12 @@ percent-encoding = "2"
 # 直用其 time（超时包装）；tokio 已随 tauri 在依赖树中，仅显式声明
 tokio = { version = "1", features = ["time"] }
 
+# 屏幕常亮（docs/屏幕常亮方案.md）：keepawake 仅桌面三平台引入。
+# iOS 不支持（落地时在 wake.rs 用 objc2-ui-kit 设 idleTimerDisabled 自实现）；
+# 门控先例：iOS 方案中 tray-icon feature 与 trash crate 同样按目标门控。
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+keepawake = "0.6"
+
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["macros", "rt"] }

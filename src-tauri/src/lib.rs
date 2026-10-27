@@ -6,6 +6,7 @@ mod seqfile;
 mod smb;
 mod stream;
 mod store;
+mod wake;
 pub mod zipfile; // pub：src-tauri/tests 集成测试访问
 
 use tauri::{
@@ -20,7 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init());
-    let builder = stream::register(builder);
+    let builder = stream::register(builder).manage(wake::WakeState::default());
     builder
         .setup(|app| {
             // 系统托盘
@@ -76,6 +77,7 @@ pub fn run() {
             commands::smb_cache_file,
             commands::smb_cached_status,
             commands::smb_clear_cache,
+            wake::set_keep_awake,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时隐藏到托盘而非退出
