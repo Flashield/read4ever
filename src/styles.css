@@ -2034,10 +2034,6 @@ mark.kw-flash {
   margin-top: 6px;
 }
 
-.bs-tag-filter.hidden {
-  display: none;
-}
-
 .bs-tag-filter-chip {
   border: 1px solid var(--ui-border);
   border-radius: 10px;

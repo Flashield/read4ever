@@ -437,6 +437,7 @@ function renderBookshelfList(): void {
     return;
   }
   const visible = visibleBookshelfItems();
+  if (tagEditPath && !visible.some((v) => v.item.filePath === tagEditPath)) tagEditPath = null;
   if (visible.length === 0) {
     const empty = document.createElement("div");
     empty.style.cssText = "padding:16px;font-size:12px;color:#888";
