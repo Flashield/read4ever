@@ -1,7 +1,8 @@
 /* 侧边面板：书签、收藏书架、历史记录、外观方案 */
 import * as app from "./app";
 import { BUILT_IN_THEMES, findThemeByName, getAllThemeNames, FONT_OPTIONS } from "./themes";
-import type { CustomTheme } from "./types";
+import { showDropdown } from "./dropdown";
+import type { BookshelfItem, CustomTheme } from "./types";
 
 function $(id: string): HTMLElement {
   return document.getElementById(id) as HTMLElement;
@@ -91,6 +92,16 @@ export function isAnyPanelOpen(): boolean {
 
 /* ========== 列表渲染 ========== */
 
+/* 书架面板状态：行内编辑的书架 / 标签选中集 / 搜索词 / 行内标签编辑的条目 */
+let shelfEdit: { mode: "create" } | { mode: "rename"; id: string } | null = null;
+let bsTagFilter = new Set<string>();
+let bsSearch = "";
+let tagEditPath: string | null = null;
+// 标签筛选/搜索/行内标签编辑由 Task 5/6 接入；先引用一次避免 noUnusedLocals 误报
+void bsTagFilter;
+void bsSearch;
+void tagEditPath;
+
 function rowEl(name: string, desc: string, onDelete?: () => void, onClick?: () => void): HTMLElement {
   const row = document.createElement("div");
   row.className = "list-item";
@@ -160,17 +171,117 @@ function renderBookmarks(): void {
 }
 
 function renderBookshelf(): void {
+  renderShelfBar();
+  renderBookshelfList();
+}
+
+/* 书架行：chips 切换 + 行内新建/重命名 + 下拉确认删除 */
+function renderShelfBar(): void {
+  const bar = $("bookshelf-shelf-bar");
+  bar.innerHTML = "";
+  const editing = shelfEdit;
+  if (editing) {
+    const row = document.createElement("div");
+    row.className = "shelf-edit";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = editing.mode === "create" ? "新书架名称…" : "书架新名称…";
+    input.value =
+      editing.mode === "rename"
+        ? app.state.store.bookshelves.find((s) => s.id === editing.id)?.name ?? ""
+        : "";
+    const ok = document.createElement("button");
+    ok.textContent = "确定";
+    const cancel = document.createElement("button");
+    cancel.textContent = "取消";
+    row.append(input, ok, cancel);
+    bar.appendChild(row);
+    input.focus();
+    input.select();
+    const confirmEdit = () => {
+      if (shelfEdit?.mode === "create") app.addShelf(input.value);
+      else if (shelfEdit?.mode === "rename") app.renameShelf(shelfEdit.id, input.value);
+      shelfEdit = null;
+      renderBookshelf();
+    };
+    const closeEdit = () => {
+      shelfEdit = null;
+      renderBookshelf();
+    };
+    ok.addEventListener("click", confirmEdit);
+    cancel.addEventListener("click", closeEdit);
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // 防止 Esc 顺带关掉整个面板
+      if (e.key === "Enter") confirmEdit();
+      if (e.key === "Escape") closeEdit();
+    });
+    return;
+  }
+  const shelves = app.state.store.bookshelves;
+  const active = app.activeShelf();
+  shelves.forEach((s) => {
+    const chip = document.createElement("button");
+    chip.className = "shelf-chip" + (s.id === active.id ? " active" : "");
+    chip.textContent = s.name;
+    chip.title = s.name;
+    chip.addEventListener("click", () => {
+      if (s.id === active.id) return;
+      app.setActiveShelf(s.id);
+      bsTagFilter = new Set(); // 标签集随书架变化，清空选中（Task 6 用）
+      tagEditPath = null;
+    });
+    bar.appendChild(chip);
+  });
+  const add = document.createElement("button");
+  add.className = "shelf-chip shelf-new";
+  add.textContent = "＋";
+  add.title = "新建书架";
+  add.addEventListener("click", () => {
+    shelfEdit = { mode: "create" };
+    renderBookshelf();
+  });
+  bar.appendChild(add);
+  const ops = document.createElement("span");
+  ops.className = "shelf-ops";
+  const rn = document.createElement("button");
+  rn.textContent = "✎";
+  rn.title = "重命名当前书架";
+  rn.addEventListener("click", () => {
+    shelfEdit = { mode: "rename", id: active.id };
+    renderBookshelf();
+  });
+  const del = document.createElement("button");
+  del.textContent = "🗑";
+  del.title = shelves.length <= 1 ? "至少保留一个书架" : "删除当前书架（条目随之删除）";
+  if (shelves.length <= 1) del.disabled = true;
+  del.addEventListener("click", (e) => {
+    if (app.state.store.bookshelves.length <= 1) return;
+    showDropdown(
+      [
+        { label: `删除书架「${active.name}」？${active.items.length} 个条目将一并删除`, disabled: true },
+        { label: "删除", action: () => app.removeShelf(active.id) },
+        { label: "取消", action: () => {} },
+      ],
+      (e as MouseEvent).clientX,
+      (e as MouseEvent).clientY
+    );
+  });
+  ops.append(rn, del);
+  bar.appendChild(ops);
+}
+
+function renderBookshelfList(): void {
   const list = $("bookshelf-list");
   list.innerHTML = "";
   const shelf = app.activeShelf();
   if (shelf.items.length === 0) {
     const empty = document.createElement("div");
     empty.style.cssText = "padding:16px;font-size:12px;color:#888";
-    empty.textContent = "书架空空如也。打开一本书后点「添加当前」收进来。";
+    empty.textContent = `「${shelf.name}」空空如也。打开一本书后点「添加当前」收进来。`;
     list.appendChild(empty);
     return;
   }
-  shelf.items.forEach((b) => {
+  shelf.items.forEach((b: BookshelfItem) => {
     list.appendChild(
       rowEl(b.name, `加入于 ${fmtTime(b.added)}`, () => app.deleteBookshelfItem(shelf.id, b.filePath), () => app.openPath(b.filePath))
     );

@@ -1828,3 +1828,72 @@ mark.kw-flash {
     box-shadow: 0 0 8px rgba(255, 213, 77, 0.9);
   }
 }
+
+/* ========== 收藏书架：书架行 ========== */
+.shelf-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.shelf-chip {
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: transparent;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-chip.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.shelf-new {
+  border-style: dashed;
+  color: #888;
+}
+
+.shelf-ops {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.shelf-ops button {
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 13px;
+}
+
+.shelf-ops button:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.shelf-ops button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.shelf-edit {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.shelf-edit input {
+  flex: 1;
+  min-width: 0;
+}
