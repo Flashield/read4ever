@@ -238,6 +238,7 @@ export async function openFile(path: string): Promise<void> {
   const plugin = handlerForExt(ext);
   if (!plugin) return;
   const prev = active;
+  let switched = false;
   try {
     // wantsStream 的插件：本地与 SMB 普通文件跳过整文件预读（2GB+ 视频必需），改由流式协议按需分块
     const wantStream = !!plugin.wantsStream && isTauri() && !isSmbComposite(path);
@@ -253,6 +254,7 @@ export async function openFile(path: string): Promise<void> {
     host.classList.remove("hidden");
     document.getElementById("reader-content")?.classList.add("hidden");
     active = plugin;
+    switched = true;
     activeStatus = {};
     activeFile = baseName(base);
     activeOpenedName = baseName(zipPath || path);
@@ -299,10 +301,12 @@ export async function openFile(path: string): Promise<void> {
     // open 失败也要收尾 prev 插件（成功路径的 prev 释放/停用在 try 内 await 之后，抛错时不可达）
     if (prev && prev !== plugin) {
       releasePluginAwake(prev.id);
-      try {
-        prev.deactivate?.();
-      } catch (de) {
-        console.error("[plugin] deactivate 失败:", de);
+      if (switched) { // 仅当视图已切到新插件：deactivateActive 不再负责 prev
+        try {
+          prev.deactivate?.();
+        } catch (de) {
+          console.error("[plugin] deactivate 失败:", de);
+        }
       }
     }
     deactivateActive();
