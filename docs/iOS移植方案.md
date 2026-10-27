@@ -123,6 +123,7 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 - **S5** "用 ReadBook 打开"事件能否送达 webview → stretch，不强求
 - 软风险：小屏键盘遮挡查找栏（visualViewport 兜底）、UTType 过滤器可能不生效、老设备大文本渲染、7 天重签节奏
 - **S6 SMB 视频流式**（2026-10-27 新增，桌面端已实现）：模拟器连真实 NAS 播放/seek，验证 WKWebView 媒体元素经 WKURLSchemeHandler 发起的 Range 请求得到 206/Content-Range 正确响应（注意 AVPlayer 的探测区间与 seek 任务取消语义）；Android 侧验证 shouldInterceptRequest 是否携带 Range 头。降级预案：异常平台 streamUrlFor 返回 null 回退整读（受 1 GB 上限），大文件引导用户「缓存到本地」。桌面实现零新增依赖，本门禁命令不变
+- **S7 屏幕常亮 iOS 模块**（2026-10-27 新增，桌面端已实现，见 `docs/屏幕常亮方案.md`）：`wake.rs` 的 iOS 分支用 objc2-ui-kit 设 `UIApplication.idleTimerDisabled`（经 `run_on_main_thread`）；命令签名与前端零改动，仅需真机验证滚屏/插件播放期间不自动锁屏
 
 ## 7. 不改动清单（桌面回归保护）
 
