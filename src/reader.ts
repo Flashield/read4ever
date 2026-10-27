@@ -53,9 +53,47 @@ function onMouseMove(e: MouseEvent): void {
 
 /* ========== 内容 ========== */
 
+/* 分块大小（字符）。整篇单文本节点在 Blink/WebView2 下打开需全量排版（百万字
+   数百 ms~秒级），且每次交互都伴随与文本规模相关的主线程开销；WebKit 系引擎
+   成本极低。按换行边界切成 content-visibility:auto 块后，各引擎都只排版/绘制
+   视口附近内容：实测 Chromium 打开 1.25M 字从 ~1.1s 降至 6ms，交互无回归。 */
+const CHUNK_CHARS = 8000;
+
 export function setContent(text: string): void {
   const e = el();
-  e.textContent = text;
+  const frag = document.createDocumentFragment();
+  if (text.length > CHUNK_CHARS) {
+    /* 用于估计未渲染块的初始高度（contain-intrinsic-size 的 auto 会在块
+       首次渲染后记住真实尺寸，估计值只影响首帧滚动条长度与按比例跳转） */
+    const cs = getComputedStyle(e);
+    const fontSize = parseFloat(cs.fontSize) || 16;
+    const lineH = parseFloat(cs.lineHeight) || fontSize * 1.8;
+    const cpl = Math.max(4, (e.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)) / fontSize);
+
+    let start = 0;
+    while (start < text.length) {
+      let end = Math.min(start + CHUNK_CHARS, text.length);
+      if (end < text.length) {
+        const nl = text.lastIndexOf("\n", end);
+        if (nl > start) end = nl + 1; // 边界落在换行处且 \n 归前块：pre-wrap 渲染出该换行，视觉无损
+      }
+      const chunk = text.slice(start, end);
+      const div = document.createElement("div");
+      div.className = "cv-chunk";
+      let lines = 0;
+      for (const seg of chunk.split("\n")) lines += Math.max(1, Math.round(seg.length / cpl));
+      div.textContent = chunk;
+      div.style.containIntrinsicSize = `auto ${Math.ceil(lines * lineH)}px`;
+      frag.appendChild(div);
+      start = end;
+    }
+  } else {
+    const div = document.createElement("div");
+    div.className = "cv-chunk";
+    div.textContent = text;
+    frag.appendChild(div);
+  }
+  e.replaceChildren(frag);
   e.scrollTop = 0;
   e.scrollLeft = 0;
 }

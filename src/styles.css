@@ -272,6 +272,14 @@ body {
   cursor: text;
 }
 
+/* 大文本分块：跳过屏外块的排版与绘制（引擎不支持时按普通块渲染，无回归）。
+   仅单页模式启用：双页是 multicol 布局，WebKit 系引擎（macOS WKWebView/
+   Linux WebKitGTK）中 multicol 容器内的 content-visibility:auto 块会被整体
+   跳过导致内容空白，故双页回退为整篇排版（代价仅切换时一次性）。 */
+.reader-content:not(.dual-page) .cv-chunk {
+  content-visibility: auto;
+}
+
 .reader-content.dual-page {
   column-count: 2;
   column-gap: 40px;
