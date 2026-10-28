@@ -40,7 +40,7 @@ export function defaultStore(): StoreData {
       fontFamily: FONT_SONG,
       fontSize: 18,
       lineSpacing: 1.8,
-      scrollSpeed: 135, // 滚屏基准速度（像素/秒）
+      scrollSpeed: 135, // 滚屏速度（像素/秒）
       scrollMode: "continuous",
       pageInterval: 10,
       displayMode: "auto",

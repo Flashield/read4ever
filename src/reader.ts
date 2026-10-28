@@ -182,7 +182,7 @@ export function getSpeed(): number {
   return speed;
 }
 
-/** 设置滚屏基准速度（像素/秒，10–2000） */
+/** 设置滚屏速度（像素/秒，10–2000） */
 export function setSpeed(px: number): void {
   speed = Math.min(2000, Math.max(10, Math.round(px)));
 }
