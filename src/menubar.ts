@@ -147,7 +147,7 @@ function showShortcuts(): void {
       "F11           全屏阅读（碰屏幕边缘呼出各栏）",
       "T             隐藏到系统托盘",
       "Ctrl+Q        退出",
-      "Esc           关闭查找/面板/弹窗",
+      "Esc           关闭查找/面板/弹窗，退出全屏",
     ].join("\n")
   );
 }

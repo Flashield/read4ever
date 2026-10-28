@@ -36,7 +36,7 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 | D1 | 路径间接层放 Rust 不放 TS | 新模块 `src-tauri/src/pathmap.rs`：`to_stored/to_abs`。桌面恒等映射（零迁移零回归）；iOS 存相对 `Documents/` 的路径（容器路径每次启动变化，相对路径免疫）。前端继续把路径当**不透明令牌**，`types.ts`↔`store.rs` 结构不变（AGENTS.md 同步规则不受影响） |
 | D2 | 导入即拷贝（不用 security-scoped bookmarks） | iOS 书库根 `<container>/Documents/ReadBook/`。多选文件落 `Inbox/`；保留目录结构走"文件"App 拖文件夹（`UIFileSharingEnabled` 免费获得）。`find_next/find_prev` 遍历导入副本的父目录，逻辑不变 |
 | D3 | 布局用 CSS 媒体查询，行为用平台助手 | `@media ((hover:none) and (pointer:coarse)), (max-width:760px)` 决定布局——手机布局可在 Linux 浏览器（`npm run dev` + 设备模拟）完整调试；JS 只门控行为 |
-| D4 | 全屏策略 | 桌面保留 `document.requestFullscreen()`；移动端 CSS 沉浸模式（`body.immersive`） |
+| D4 | 全屏策略 | 桌面保留 `document.requestFullscreen()`；移动端 CSS 沉浸模式（`body.immersive`）（2026-10-28 起退役：桌面与触屏统一走 fullscreen.ts 公共沉浸模块 body.fs-immersive） |
 | D5 | 移除死插件 | `tauri-plugin-fs`/`tauri-plugin-opener` JS 侧从未调用，删除以减依赖面与权限面 |
 | D6 | 回收站 | 桌面 `trash::delete`；移动端移入 `<app_data_dir>/Trash/` |
 
@@ -80,7 +80,7 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 
 1. `src/styles.css` 移动媒体查询块：隐藏 `#menu-bar`；工具栏精简；右面板/文件夹侧栏改全屏 overlay；输入框 ≥16px（防 iOS 聚焦缩放）；`overscroll-behavior: contain`
 2. 新 `src/touch.ts`：左/右 1/3 点击翻页（`reader.pageUp/pageDown`），中央切换沉浸模式；横滑 ~60px 上/下一个文件；长按现有上下文菜单；选区非空或目标在面板内时忽略；仅 `platform.isTouch` 挂载
-3. `app.ts` `toggleFullscreen()`（app.ts:819-827）：移动端切 `body.immersive`，桌面路径不动
+3. `app.ts` `toggleFullscreen()`（app.ts:819-827）：移动端切 `body.immersive`，桌面路径不动（2026-10-28 起退役：桌面与触屏统一走 fullscreen.ts 公共沉浸模块 body.fs-immersive）
 4. `menubar.ts`：工具栏加 ☰ 按钮 → 现有 MENUS 底部 sheet 呈现（`dropdown.ts` 加 `position:"sheet"`）；桌面专属项按平台隐藏
 5. `panels.ts`/`folder.ts`：触屏跳过面板拖拽缩放、面板外点击关闭；`reader.ts` 欢迎文案按平台；`themes.ts` 字体栈追加 `-apple-system` 兜底（SimSun→Songti SC 已覆盖 iOS）
 

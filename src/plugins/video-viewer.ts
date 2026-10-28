@@ -4,9 +4,10 @@
    大文件：声明 wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 readbook-stream://
    协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（远程 zip 条目、压缩条目等）自动回退字节整读。
    移动端就绪（docs/iOS移植方案.md D3/D4）：<video playsinline>、纯点击交互、
-   触屏隐藏音量控件（iOS 音量由系统控制）、桌面全屏走 requestFullscreen、
-   触屏走 body.immersive 沉浸模式；自动播放被策略拒绝时静默停在首帧。 */
+   触屏隐藏音量控件（iOS 音量由系统控制）、
+   全屏走宿主公共沉浸模块（fullscreen.ts）；自动播放被策略拒绝时静默停在首帧。 */
 import * as app from "../app";
+import { toggle as fsToggle } from "../fullscreen";
 import { deactivateActive, pluginSetting, setPluginSetting } from "./registry";
 import type { MenuItemDef } from "../dropdown";
 import type { PluginOpenContext, ReadBookPlugin } from "./types";
@@ -34,7 +35,6 @@ let ctx: PluginOpenContext | null = null;
 let video: HTMLVideoElement | null = null;
 let globalIdx = 0;
 let seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
-let immersive = false; // 触屏沉浸全屏（body.immersive）生效中
 let currentStream = false; // 当前视频是否走流式 URL（错误回退判断用）
 const urlCache = new Map<string, string>();
 const streamFailed = new Set<string>(); // 流式失败的目标（压缩 zip 条目等）：会话内回退整读
@@ -50,10 +50,6 @@ const extMime = (p: string): string => {
   const m = p.toLowerCase().match(/\.[a-z0-9]+$/);
   return (m && MIME[m[0]]) || "video/mp4";
 };
-
-/** 触屏设备（无悬停 + 粗指针）：隐藏音量控件、全屏走沉浸模式 */
-const isCoarse = (): boolean =>
-  window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 
 const fmtTime = (sec: number): string => {
   if (!Number.isFinite(sec) || sec < 0) return "0:00";
@@ -155,28 +151,10 @@ function bumpVolume(d: number): void {
   if (muteBtn) muteBtn.textContent = video.muted || video.volume === 0 ? "🔇" : "🔊";
 }
 
-/** 桌面走 requestFullscreen；触屏（iOS 无元素全屏 API）走 body.immersive 沉浸模式 */
+/** 全屏走公共沉浸模块：播放区随宿主铺满，插件栏吸附屏幕边缘碰边呼出；
+   触屏下 requestFullscreen 被拒自动降级纯 CSS 沉浸（触屏 media query 保底常显插件栏） */
 async function toggleFullscreen(): Promise<void> {
-  if (document.fullscreenElement) {
-    await document.exitFullscreen();
-    return;
-  }
-  if (immersive) {
-    document.body.classList.remove("immersive");
-    immersive = false;
-    return;
-  }
-  const stage = q<HTMLElement>(".vv-stage");
-  if (!isCoarse() && stage?.requestFullscreen) {
-    try {
-      await stage.requestFullscreen();
-      return;
-    } catch {
-      /* 拒绝则落到沉浸模式 */
-    }
-  }
-  document.body.classList.add("immersive");
-  immersive = true;
+  await fsToggle();
 }
 
 /* ========== 标签与状态上报 ========== */
@@ -264,7 +242,7 @@ function buildView(): void {
   if (!ctx) return;
   ctx.host.innerHTML = `
     <div class="vv">
-      <div class="vv-bar">
+      <div class="vv-bar plugin-topbar">
         <span class="vv-name"></span>
         <span class="vv-page"></span>
         <span class="vv-spacer"></span>
@@ -285,7 +263,7 @@ function buildView(): void {
         <video class="vv-video" playsinline preload="metadata"></video>
         <div class="vv-error hidden"></div>
       </div>
-      <div class="vv-seekrow">
+      <div class="vv-seekrow plugin-bottombar">
         <span class="vv-cur">0:00</span>
         <input class="vv-progress" type="range" min="0" max="1000" step="1" value="0" title="播放进度（←/→ 快退/快进 5 秒）" />
         <span class="vv-dur">0:00</span>
@@ -447,10 +425,6 @@ export const videoViewerPlugin: ReadBookPlugin = {
     streamFailed.clear();
     streamRetried.clear(); // 会话残留标记不清会导致重开文件时首次错误跳过重试直降级
     currentStream = false;
-    if (immersive) {
-      document.body.classList.remove("immersive");
-      immersive = false;
-    }
     video = null;
     ctx = null;
   },

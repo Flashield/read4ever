@@ -2181,13 +2181,18 @@ body.fs-immersive.show-bottom .plugin-bottombar {
   transform: none;
 }
 
-/* 触屏（无 hover）：碰边呼出不可用，插件工具栏保持常显可点（等同原 body.immersive 行为）；
+/* 触屏（无 hover）：碰边呼出不可用，插件工具栏保持常显可点（等同旧触屏沉浸行为）；
    菜单/工具栏/状态栏仍隐藏 */
 @media ((hover: none)) {
   body.fs-immersive .plugin-topbar,
   body.fs-immersive .plugin-bottombar {
     position: static;
     transform: none;
+  }
+
+  /* 触屏无碰边呼出：热区会吞掉边缘点击，禁用 */
+  body.fs-immersive .fs-hotzone {
+    display: none;
   }
 }
 

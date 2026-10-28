@@ -1044,7 +1044,7 @@ function menu(): MenuItemDef[] {
 function buildView(host: HTMLElement): void {
   host.innerHTML = `
     <div class="imgv">
-      <div class="imgv-bar">
+      <div class="imgv-bar plugin-topbar">
         <span class="imgv-name"></span>
         <span class="imgv-page"></span>
         <span class="imgv-spacer"></span>
