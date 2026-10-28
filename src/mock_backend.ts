@@ -399,6 +399,8 @@ function reorderText(text: string): string {
 const callbacks: Record<number, (data: unknown) => void> = {};
 let cbId = 100;
 
+/* @ts-expect-error 扩展 window：标记演示模式（fullscreen.ts 据此走网页全屏而非原生窗口全屏） */
+window.__RB_BROWSER_DEMO__ = true;
 /* @ts-expect-error 扩展 window */
 window.__TAURI_INTERNALS__ = {
   metadata: {
