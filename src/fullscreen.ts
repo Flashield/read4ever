@@ -6,10 +6,12 @@ const IMMERSIVE_CLS = "fs-immersive";
 const EDGES = ["top", "bottom", "left", "right"] as const;
 const HIDE_DELAY = 300; // 鼠标离开后收回延时（毫秒）
 
-const hideTimers: Record<string, number> = {};
+type Edge = (typeof EDGES)[number];
+
+const hideTimers: Partial<Record<Edge, number>> = {};
 
 /* 每条边的呼出命中集合：热区 + 该边吸附的界面元素（下拉菜单悬停时不收顶栏） */
-const EDGE_SELECTORS: Record<string, string> = {
+const EDGE_SELECTORS: Record<Edge, string> = {
   top: ".fs-hotzone-top, #menu-bar, #toolbar, .plugin-topbar, #menu-dropdown",
   bottom: ".fs-hotzone-bottom, #status-bar, .plugin-bottombar",
   left: ".fs-hotzone-left, .side-panel.panel-left",
@@ -20,22 +22,22 @@ export function isImmersive(): boolean {
   return !!document.fullscreenElement || document.body.classList.contains(IMMERSIVE_CLS);
 }
 
-function clearEdge(edge: string): void {
+function clearEdge(edge: Edge): void {
   window.clearTimeout(hideTimers[edge]);
   document.body.classList.remove("show-" + edge);
 }
 
-function showEdge(edge: string): void {
+function showEdge(edge: Edge): void {
   window.clearTimeout(hideTimers[edge]);
   document.body.classList.add("show-" + edge);
 }
 
-function scheduleHide(edge: string): void {
+function scheduleHide(edge: Edge): void {
   window.clearTimeout(hideTimers[edge]);
   hideTimers[edge] = window.setTimeout(() => clearEdge(edge), HIDE_DELAY);
 }
 
-function edgeOf(t: HTMLElement | null): string | null {
+function edgeOf(t: HTMLElement | null): Edge | null {
   if (!t) return null;
   for (const edge of EDGES) {
     if (t.closest(EDGE_SELECTORS[edge])) return edge;

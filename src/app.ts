@@ -7,6 +7,7 @@ import { convertDisplay, type DisplayMode } from "./simp_trad";
 import { showDropdown, initDropdown } from "./dropdown";
 import { setKeepAwakeEnabled } from "./keepawake";
 import { perfLine } from "./debug-perf"; // 【临时调试】
+import * as fullscreen from "./fullscreen";
 import type { Bookshelf, BookshelfItem, FileContent, StoreData } from "./types";
 
 /* 路径文件名（含 smb:// 的 / 分隔）；viewName 额外剥掉 zip 复合路径的条目部分 */
@@ -529,7 +530,7 @@ export function toggleScroll(): void {
   const on = reader.toggleScroll();
   if (on)
     toast(
-      `开始${reader.getMode() === "page" ? "页模式翻页" : "滚屏"}（当前 ${reader.getSpeed()} 像素/秒，鼠标上下移动可调速）`
+      `开始${reader.getMode() === "page" ? "页模式翻页" : "滚屏"}（当前 ${reader.getSpeed()} 像素/秒）`
     );
   updateUI();
 }
@@ -616,7 +617,7 @@ export function showSpeedPicker(): void {
 
   showDropdown(
     [
-      { label: "滚屏速度（鼠标上下位置仍可临时调速）", disabled: true },
+      { label: "滚屏速度", disabled: true },
       { customEl: row },
       { customEl: numRow },
       { sep: true },
@@ -1006,19 +1007,13 @@ export function toggleDual(): void {
 }
 
 export function isFullscreen(): boolean {
-  return !!document.fullscreenElement;
+  return fullscreen.isImmersive();
 }
 
 export async function toggleFullscreen(): Promise<void> {
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-    } else {
-      await document.documentElement.requestFullscreen();
-    }
-  } catch {
-    /* 忽略 */
-  }
+  const was = fullscreen.isImmersive();
+  await fullscreen.toggle();
+  if (!was) toast("全屏模式：F11/Esc 退出，鼠标碰屏幕边缘呼出各栏");
 }
 
 export function hideToTray(): void {
@@ -1038,6 +1033,10 @@ export function handleEscape(): void {
   const modal = document.getElementById("edit-modal");
   if (modal && !modal.classList.contains("hidden")) {
     closeEditor();
+    return;
+  }
+  if (fullscreen.isImmersive()) {
+    void toggleFullscreen();
     return;
   }
   document.dispatchEvent(new CustomEvent("rb-escape"));
@@ -1197,6 +1196,8 @@ export async function boot(): Promise<void> {
   initReaderContextMenu();
   initEncodingSwitcher();
   initDragDrop();
+  fullscreen.initFullscreen();
+  document.addEventListener("rb-fullscreen-changed", updateUI);
 
   // 滚屏/播放保持屏幕常亮：初始同步用户设置（关闭时聚合器直接短路）
   setKeepAwakeEnabled(s.keepAwake);

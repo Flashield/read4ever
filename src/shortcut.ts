@@ -88,6 +88,13 @@ export function initShortcuts(): void {
       return;
     }
 
+    // 全屏切换不受插件视图屏蔽（公共沉浸功能，插件栏吸附照常可用）
+    if (key === "F11") {
+      e.preventDefault();
+      app.toggleFullscreen();
+      return;
+    }
+
     // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（Space/数字/±/P/PgUp/PgDn/Home/End/T
     // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）与 Ctrl 组合不受影响
     if (plugins.isActive()) return;
@@ -96,11 +103,6 @@ export function initShortcuts(): void {
     if (key === "F5") {
       e.preventDefault();
       app.doReorder();
-      return;
-    }
-    if (key === "F11") {
-      e.preventDefault();
-      app.toggleFullscreen();
       return;
     }
     if (key === "F1") {
