@@ -14,9 +14,8 @@ let hooks: ReaderHooks = { onProgress: () => {}, onPageEnd: () => {} };
 
 let scrolling = false;
 let mode: ScrollMode = "continuous";
-let speed = 135; // 滚屏基准速度（像素/秒，鼠标位于屏幕中部时）
+let speed = 135; // 滚屏速度（像素/秒）
 let pageInterval = 10; // 页模式间隔（秒）
-let mouseFactor = 1; // 滚屏时鼠标纵向位置调速系数
 let dual = false;
 
 let rafId = 0;
@@ -39,11 +38,9 @@ export function init(h: ReaderHooks): void {
   window.addEventListener("mousemove", onMouseMove);
 }
 
-/* 滚屏时鼠标位置控制速度：越靠下越快；移动鼠标时临时显示光标 */
-function onMouseMove(e: MouseEvent): void {
+/* 滚屏时移动鼠标临时显示光标（1.2 秒后隐藏） */
+function onMouseMove(): void {
   if (!scrolling) return;
-  const y = Math.min(1, Math.max(0, e.clientY / window.innerHeight));
-  mouseFactor = 0.2 + 2.8 * y;
   el().classList.remove("scroll-hidden");
   window.clearTimeout(cursorTimer);
   cursorTimer = window.setTimeout(() => {
@@ -114,7 +111,7 @@ function loop(ts: number): void {
   if (!scrolling || mode !== "continuous") return;
   const dt = Math.min(100, ts - lastTs);
   lastTs = ts;
-  const px = (speed * mouseFactor * dt) / 1000;
+  const px = (speed * dt) / 1000;
   const e = el();
   if (dual) e.scrollLeft += px;
   else e.scrollTop += px;
@@ -131,7 +128,6 @@ export function startScroll(): void {
   if (scrolling) return;
   scrolling = true;
   holdAwake("reading", true); // 滚屏/页模式定时翻页期间保持屏幕常亮
-  mouseFactor = 1;
   el().classList.add("scroll-hidden");
   if (mode === "continuous") {
     lastTs = performance.now();
