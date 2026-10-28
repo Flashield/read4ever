@@ -1186,13 +1186,6 @@ body.folder-open #reader-container {
   }
 }
 
-/* 移动端沉浸全屏（docs/iOS移植方案.md D4）：视频插件全屏按钮与 Phase 3 沉浸模式共用 */
-body.immersive #menu-bar,
-body.immersive #toolbar,
-body.immersive #status-bar {
-  display: none;
-}
-
 .panel-header {
   display: flex;
   justify-content: space-between;
@@ -2051,4 +2044,156 @@ mark.kw-flash {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+/* ========== 全屏沉浸模式（公共功能，src/fullscreen.ts） ========== */
+/* 四边呼出热区：仅沉浸时显示 */
+.fs-hotzone {
+  position: fixed;
+  z-index: 350;
+  display: none;
+}
+
+body.fs-immersive .fs-hotzone {
+  display: block;
+}
+
+.fs-hotzone-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+.fs-hotzone-bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+.fs-hotzone-left {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+}
+
+.fs-hotzone-right {
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+}
+
+/* 阅读/播放区铺满整窗（插件宿主在内随之铺满；覆盖 panel-open/folder-open 的 margin 让位）。
+   z-index 300：低于热区 350 与各栏 400，高于普通内容 */
+body.fs-immersive #reader-container,
+body.fs-immersive.panel-open #reader-container,
+body.fs-immersive.folder-open #reader-container {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  z-index: 300;
+}
+
+/* 顶栏滑出窗顶（工具栏须额外让出菜单栏高度）；show-top 滑回。
+   reader-container 脱离文档流后菜单/工具栏仍在 flow 顶部，保持 relative+高 z-index 盖在阅读区上 */
+body.fs-immersive #menu-bar,
+body.fs-immersive #toolbar {
+  position: relative;
+  z-index: 400;
+  transition: transform 0.18s;
+}
+
+body.fs-immersive #menu-bar {
+  transform: translateY(-100%);
+}
+
+body.fs-immersive #toolbar {
+  transform: translateY(calc(-100% - var(--menu-bar-h)));
+}
+
+body.fs-immersive.show-top #menu-bar,
+body.fs-immersive.show-top #toolbar {
+  transform: none;
+}
+
+/* 状态栏固定窗底再滑出（脱离文档流后 flow 位置不再在底部，必须 fixed） */
+body.fs-immersive #status-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 400;
+  transform: translateY(100%);
+  transition: transform 0.18s;
+}
+
+body.fs-immersive.show-bottom #status-bar {
+  transform: none;
+}
+
+/* 侧边栏吸附左右缘，show-left/right 滑回（覆盖在阅读区上，不动 margin） */
+body.fs-immersive .side-panel {
+  top: 0;
+  bottom: 0;
+  transition: transform 0.18s;
+}
+
+body.fs-immersive .side-panel:not(.panel-left) {
+  transform: translateX(100%);
+}
+
+body.fs-immersive .side-panel.panel-left {
+  transform: translateX(-100%);
+}
+
+body.fs-immersive.show-right .side-panel:not(.panel-left),
+body.fs-immersive.show-left .side-panel.panel-left {
+  transform: none;
+}
+
+/* 插件约定工具栏：吸附 #plugin-view-host（定位祖先）上/下缘；
+   绝对定位脱离文档流，stage（flex:1）自动占满。宿主内 z-index 6 即可，
+   热区只占边缘窄条不遮挡呼出后的栏 */
+body.fs-immersive .plugin-topbar,
+body.fs-immersive .plugin-bottombar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  transition: transform 0.18s;
+}
+
+body.fs-immersive .plugin-topbar {
+  top: 0;
+  transform: translateY(-100%);
+}
+
+body.fs-immersive .plugin-bottombar {
+  bottom: 0;
+  transform: translateY(100%);
+}
+
+body.fs-immersive.show-top .plugin-topbar,
+body.fs-immersive.show-bottom .plugin-bottombar {
+  transform: none;
+}
+
+/* 触屏（无 hover）：碰边呼出不可用，插件工具栏保持常显可点（等同原 body.immersive 行为）；
+   菜单/工具栏/状态栏仍隐藏 */
+@media ((hover: none)) {
+  body.fs-immersive .plugin-topbar,
+  body.fs-immersive .plugin-bottombar {
+    position: static;
+    transform: none;
+  }
+}
+
+/* 查找栏沉浸时钉右上角常显（自带 ✕；重置面板让位偏移） */
+body.fs-immersive #find-bar,
+body.fs-immersive.panel-open #find-bar {
+  top: 12px;
+  right: 12px;
 }
