@@ -1,5 +1,6 @@
 /* 通用下拉菜单：菜单栏、ZIP 条目选择、编码选择、插件子菜单共用。
    支持层级子菜单：条目带 children 时悬停展开下一级（✓ 状态展开时即时求值）。 */
+import { perfLine } from "./debug-perf"; // 【临时调试】
 
 export interface MenuItemDef {
   label?: string;
@@ -71,6 +72,7 @@ export function hideDropdown(): void {
 
 /** 在指定层级展开菜单项（level 0 = 顶部菜单，>0 = 子菜单） */
 export function showDropdownAt(depth: number, items: MenuItemDef[], x: number, y: number): void {
+  const tt = performance.now(); // 【临时调试】
   truncateTo(depth + 1);
   const lv = levelAt(depth);
   lv.content.innerHTML = "";
@@ -143,6 +145,7 @@ export function showDropdownAt(depth: number, items: MenuItemDef[], x: number, y
   top = Math.min(top, window.innerHeight - Math.min(rect.height, window.innerHeight * 0.7) - 8);
   lv.el.style.left = Math.max(4, left) + "px";
   lv.el.style.top = Math.max(4, top) + "px";
+  perfLine(`showDropdownAt depth=${depth} ${items.length}项 耗时 ${(performance.now() - tt).toFixed(0)}ms`); // 【临时调试】
 }
 
 /** 顶部菜单展开（保持原签名，现有调用方不变） */

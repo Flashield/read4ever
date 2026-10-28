@@ -4,6 +4,7 @@ import * as reader from "./reader";
 import * as folder from "./folder";
 import * as registry from "./plugins/registry";
 import { showDropdown, hideDropdown, isOpen, type MenuItemDef } from "./dropdown";
+import { perfLine } from "./debug-perf"; // 【临时调试】
 import { setKeepAwakeEnabled } from "./keepawake";
 
 const MENUS: Record<string, () => MenuItemDef[]> = {
@@ -176,10 +177,12 @@ function menuX(key: string): number {
 }
 
 function openMenu(key: string): void {
+  const tt = performance.now(); // 【临时调试】
   activeMenuKey = key;
   document.querySelectorAll(".menu-item").forEach((m) => m.classList.remove("active"));
   document.querySelector(`.menu-item[data-menu="${key}"]`)?.classList.add("active");
   showDropdown(MENUS[key](), menuX(key), 30);
+  perfLine(`openMenu(${key}) 耗时 ${(performance.now() - tt).toFixed(0)}ms`); // 【临时调试】
 }
 
 export function initMenubar(): void {
