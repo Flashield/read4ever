@@ -6,7 +6,6 @@ import { applyTheme, findThemeByName, normalizeFontFamily, FONT_SONG } from "./t
 import { convertDisplay, type DisplayMode } from "./simp_trad";
 import { showDropdown, initDropdown } from "./dropdown";
 import { setKeepAwakeEnabled } from "./keepawake";
-import { perfLine } from "./debug-perf"; // 【临时调试】
 import * as fullscreen from "./fullscreen";
 import type { Bookshelf, BookshelfItem, FileContent, StoreData } from "./types";
 
@@ -218,15 +217,12 @@ export function currentDisplayText(): string {
 export function renderContent(keepRatio?: number): void {
   const r = keepRatio !== undefined ? keepRatio : reader.getRatio();
   const text = currentDisplayText();
-  const t0 = performance.now(); // 【临时调试】
   reader.setContent(text);
-  const t1 = performance.now(); // 【临时调试】
   if (r > 0) reader.setRatio(r);
   // 立即强制一次排版：大文本在 WebKit 非合成（软件渲染）路径下会把首次
   // 排版推迟到之后的某个事件，导致打开后第一次点菜单/按键卡顿 1~2s；
   // 提前排掉这笔开销，交互保持即时。合成路径下排版本就即时，无副作用。
   void (document.getElementById("reader-content") as HTMLElement).offsetHeight;
-  perfLine(`renderContent ${text.length}字：setContent ${(t1 - t0).toFixed(0)}ms + 比例/强制排版 ${(performance.now() - t1).toFixed(0)}ms`); // 【临时调试】
 }
 
 /* 内容重渲染后通知依赖当前文本的模块（如关键词检索）重建索引 */
@@ -442,7 +438,6 @@ function loadFileContent(
   updateUI();
   persist();
   notifyContentChanged();
-  perfLine(`打开完成：${state.fileName}（编码 ${state.encoding}）`); // 【临时调试】
 }
 
 /* 按序号打开上一个/下一个文件 */
