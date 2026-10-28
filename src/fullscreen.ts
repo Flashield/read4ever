@@ -4,18 +4,22 @@
 
 const IMMERSIVE_CLS = "fs-immersive";
 const EDGES = ["top", "bottom", "left", "right"] as const;
-const HIDE_DELAY = 300; // 鼠标离开后收回延时（毫秒）
+const HIDE_DELAY = 300;   // 鼠标离开后收回延时（毫秒）
+const HOLD_DELAY = 1000;  // 悬停下拉时已展示边的保持延时（毫秒）
 
 type Edge = (typeof EDGES)[number];
 
 const hideTimers: Partial<Record<Edge, number>> = {};
 
-/* 每条边的呼出命中集合：热区 + 该边吸附的界面元素（下拉菜单悬停时不收顶栏） */
+/* 下拉/子菜单选择器（固定/任意定位，不在 EDGE_SELECTORS 顶边命中内） */
+const DROPDOWN_SEL = ".dropdown, .dropdown-sub";
+
+/* 每条边的呼出命中集合：热区 + 该边吸附的界面元素 */
 const EDGE_SELECTORS: Record<Edge, string> = {
-  top: ".fs-hotzone-top, #menu-bar, #toolbar, .plugin-topbar, #menu-dropdown",
+  top:    ".fs-hotzone-top, #menu-bar, #toolbar, .plugin-topbar",
   bottom: ".fs-hotzone-bottom, #status-bar, .plugin-bottombar",
-  left: ".fs-hotzone-left, .side-panel.panel-left",
-  right: ".fs-hotzone-right, .side-panel:not(.panel-left)",
+  left:   ".fs-hotzone-left, .side-panel.panel-left",
+  right:  ".fs-hotzone-right, .side-panel:not(.panel-left)",
 };
 
 export function isImmersive(): boolean {
@@ -35,6 +39,12 @@ function showEdge(edge: Edge): void {
 function scheduleHide(edge: Edge): void {
   window.clearTimeout(hideTimers[edge]);
   hideTimers[edge] = window.setTimeout(() => clearEdge(edge), HIDE_DELAY);
+}
+
+/** 悬停下拉时保持已展示边（不清，仅续延时） */
+function holdEdge(edge: Edge): void {
+  window.clearTimeout(hideTimers[edge]);
+  hideTimers[edge] = window.setTimeout(() => clearEdge(edge), HOLD_DELAY);
 }
 
 function edgeOf(t: HTMLElement | null): Edge | null {
@@ -86,17 +96,39 @@ export function initFullscreen(): void {
   }
 
   // 碰边呼出 / 离开延时收回：mouseover 冒泡 + closest 命中集合；
-  // mouseout 用 relatedTarget 判重，仍在同边集合内不动作
+  // mouseout 用 relatedTarget 判重，仍在同边集合内不动作；
+  // 下拉可锚定在屏幕任意位置，悬停其中保持已展示边，不新增
   document.addEventListener("mouseover", (e) => {
     if (!isImmersive()) return;
-    const edge = edgeOf(e.target as HTMLElement);
-    if (edge) showEdge(edge);
+    const t = e.target as HTMLElement;
+    const edge = edgeOf(t);
+    if (edge) {
+      showEdge(edge);
+      return;
+    }
+    // 下拉悬停：保持已展示边，用较长的 HOLD 延时防止 stationary 阅读菜单时锚点栏收回
+    if (t.closest(DROPDOWN_SEL)) {
+      EDGES.forEach((eg) => {
+        if (document.body.classList.contains("show-" + eg)) holdEdge(eg);
+      });
+    }
   });
   document.addEventListener("mouseout", (e) => {
     if (!isImmersive()) return;
-    const edge = edgeOf(e.target as HTMLElement);
-    if (!edge) return;
+    const t = e.target as HTMLElement;
     const to = e.relatedTarget as HTMLElement | null;
+
+    // 从下拉移出到非下拉内容：因悬停而保持的边延时收回
+    if (t.closest(DROPDOWN_SEL) && !(to && to.closest(DROPDOWN_SEL))) {
+      EDGES.forEach((eg) => {
+        if (document.body.classList.contains("show-" + eg)) scheduleHide(eg);
+      });
+      return;
+    }
+
+    // 从边相关元素移出：仍在同边命中集合内不动作
+    const edge = edgeOf(t);
+    if (!edge) return;
     if (to && to.closest(EDGE_SELECTORS[edge])) return;
     scheduleHide(edge);
   });
