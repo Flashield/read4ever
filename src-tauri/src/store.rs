@@ -72,6 +72,10 @@ fn default_tab_limit() -> u32 {
     20
 }
 
+fn default_pause() -> String {
+    "pause".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -127,7 +131,7 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub open_in_new_tab: bool,
     /// 切换标签页时后台媒体："pause" | "continue"
-    #[serde(default)]
+    #[serde(default = "default_pause")]
     pub tab_switch_playback: String,
     /// 标签页数量上限
     #[serde(default = "default_tab_limit")]

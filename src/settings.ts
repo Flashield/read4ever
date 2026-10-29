@@ -11,6 +11,7 @@ export function isSettingsOpen(): boolean {
 }
 
 export function openSettings(): void {
+  if (isSettingsOpen()) return;
   syncFromStore();
   document.getElementById("settings-modal")?.classList.remove("hidden");
 }
