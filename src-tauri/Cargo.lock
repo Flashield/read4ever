@@ -3,6 +3,29 @@
 version = 4
 
 [[package]]
+name = "Read4Ever"
+version = "2026.10.29"
+dependencies = [
+ "chardetng",
+ "encoding_rs",
+ "flate2",
+ "glob",
+ "keepawake",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "smb2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-opener",
+ "tokio",
+ "trash",
+ "zip",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3076,29 +3099,6 @@ name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
-
-[[package]]
-name = "readbook"
-version = "0.1.0"
-dependencies = [
- "chardetng",
- "encoding_rs",
- "flate2",
- "glob",
- "keepawake",
- "percent-encoding",
- "serde",
- "serde_json",
- "smb2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-opener",
- "tokio",
- "trash",
- "zip",
-]
 
 [[package]]
 name = "redox_syscall"
