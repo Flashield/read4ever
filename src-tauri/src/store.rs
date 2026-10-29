@@ -63,6 +63,17 @@ pub struct StoreData {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct TabDescriptor {
+    pub path: String,
+    pub ratio: f64,
+}
+
+fn default_tab_limit() -> u32 {
+    20
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub theme_name: String,
     pub custom_themes: Vec<CustomTheme>,
@@ -106,6 +117,21 @@ pub struct Settings {
     /// 书架面板当前书架 id（失效时前端回退第一个）
     #[serde(default)]
     pub bookshelf_active_id: String,
+    /// 手动打开文件默认新标签页
+    #[serde(default = "default_true")]
+    pub open_in_new_tab: bool,
+    /// 切换标签页时后台媒体："pause" | "continue"
+    #[serde(default)]
+    pub tab_switch_playback: String,
+    /// 标签页数量上限
+    #[serde(default = "default_tab_limit")]
+    pub tab_limit: u32,
+    /// 启动恢复用标签页描述（惰性重建）
+    #[serde(default)]
+    pub tabs: Vec<TabDescriptor>,
+    /// 启动恢复时激活的 tab 下标
+    #[serde(default)]
+    pub active_tab_index: u32,
 }
 
 fn default_true() -> bool {
@@ -138,6 +164,11 @@ impl Default for Settings {
             plugin_settings: std::collections::HashMap::new(),
             folder_tab: String::new(),
             bookshelf_active_id: String::new(),
+            open_in_new_tab: true,
+            tab_switch_playback: "pause".to_string(),
+            tab_limit: 20,
+            tabs: Vec::new(),
+            active_tab_index: 0,
         }
     }
 }

@@ -78,6 +78,10 @@ export function initShortcuts(): void {
           e.preventDefault();
           app.exitApp();
           return;
+        case ",":
+          e.preventDefault();
+          void import("./settings").then((m) => m.openSettings());
+          return;
       }
       if (key === "PageDown") {
         e.preventDefault();

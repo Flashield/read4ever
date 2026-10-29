@@ -4,7 +4,6 @@ import * as reader from "./reader";
 import * as folder from "./folder";
 import * as registry from "./plugins/registry";
 import { showDropdown, hideDropdown, isOpen, type MenuItemDef } from "./dropdown";
-import { setKeepAwakeEnabled } from "./keepawake";
 
 const MENUS: Record<string, () => MenuItemDef[]> = {
   file: () => [
@@ -37,43 +36,7 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { label: "原码显示", checked: () => app.state.displayMode === "auto", action: () => app.setDisplayMode("auto") },
     { sep: true },
     { label: "双页模式", shortcut: "Ctrl+D", checked: () => reader.isDual(), action: () => app.toggleDual() },
-    {
-      label: "文件名自然排序",
-      checked: () => app.state.store.settings.naturalSort,
-      action: () => {
-        app.state.store.settings.naturalSort = !app.state.store.settings.naturalSort;
-        app.persist();
-        void folder.refreshPanel();
-        void import("./smb").then((m) => m.refreshAll());
-      },
-    },
     { label: "全屏阅读", shortcut: "F11", checked: () => app.isFullscreen(), action: () => app.toggleFullscreen() },
-    { sep: true },
-    {
-      label: "启动时恢复上次阅读",
-      checked: () => app.state.store.settings.autoRestore,
-      action: () => {
-        app.state.store.settings.autoRestore = !app.state.store.settings.autoRestore;
-        app.persist();
-      },
-    },
-    {
-      label: "滚屏/播放时保持屏幕常亮",
-      checked: () => app.state.store.settings.keepAwake,
-      action: () => {
-        app.state.store.settings.keepAwake = !app.state.store.settings.keepAwake;
-        app.persist();
-        setKeepAwakeEnabled(app.state.store.settings.keepAwake);
-      },
-    },
-    {
-      label: "启动时打开文件夹侧栏",
-      checked: () => app.state.store.settings.folderAutoOpen,
-      action: () => {
-        app.state.store.settings.folderAutoOpen = !app.state.store.settings.folderAutoOpen;
-        app.persist();
-      },
-    },
   ],
   read: () => [
     {
@@ -125,6 +88,8 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { label: "历史记录…", action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "history-panel" })) },
     { sep: true },
     { label: "清除历史记录", action: () => app.clearHistory() },
+    { sep: true },
+    { label: "设置…", shortcut: "Ctrl+,", action: () => void import("./settings").then((m) => m.openSettings()) },
   ],
   plugin: () => [
     { label: "打开插件管理…", action: () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "plugin-panel" })) },

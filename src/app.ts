@@ -57,6 +57,11 @@ export function defaultStore(): StoreData {
       pluginSettings: {},
       folderTab: "",
       bookshelfActiveId: "",
+      openInNewTab: true,
+      tabSwitchPlayback: "pause",
+      tabLimit: 20,
+      tabs: [],
+      activeTabIndex: 0,
     },
     bookmarks: [],
     history: [],
@@ -1079,6 +1084,11 @@ export function handleEscape(): void {
     closeEditor();
     return;
   }
+  const sm = document.getElementById("settings-modal");
+  if (sm && !sm.classList.contains("hidden")) {
+    void import("./settings").then((m) => m.closeSettings());
+    return;
+  }
   if (fullscreen.isImmersive()) {
     void toggleFullscreen();
     return;
@@ -1234,6 +1244,8 @@ export async function boot(): Promise<void> {
   initKeywords();
   initFolderPanel();
   initSmbPanel();
+  const { initSettingsModal } = await import("./settings");
+  initSettingsModal();
   initDropdown();
   initEditModal();
   initDblClickEdit();

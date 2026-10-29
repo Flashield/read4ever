@@ -9,6 +9,12 @@ export interface CustomTheme {
   lineSpacing: number;
 }
 
+/* 标签页持久化描述（惰性：重启后激活 tab 立即打开，后台 tab 首次点击才加载） */
+export interface TabDescriptor {
+  path: string; // 打开的文件（zip 为复合路径；插件文件即其路径）
+  ratio: number; // 文本滚动位置 0..1
+}
+
 export interface Settings {
   themeName: string;
   customThemes: CustomTheme[];
@@ -35,6 +41,11 @@ export interface Settings {
   pluginSettings: Record<string, Record<string, number | boolean | string>>; // 插件固定设置
   folderTab: string; // 文件夹侧栏当前标签："" 本地 / "smb" 远程
   bookshelfActiveId: string; // 书架面板当前书架（失效时回退第一个）
+  openInNewTab: boolean; // 手动打开文件默认新标签页
+  tabSwitchPlayback: string; // "pause" | "continue"：切换标签页时后台媒体
+  tabLimit: number; // 标签页数量上限
+  tabs: TabDescriptor[]; // 启动恢复用标签页描述（惰性重建）
+  activeTabIndex: number; // 启动恢复时激活的 tab 下标
 }
 
 /* SMB 远程服务器配置（对应后端 SmbServer；username 空 = 访客） */

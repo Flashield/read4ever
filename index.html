@@ -273,6 +273,31 @@
       </div>
     </div>
 
+    <!-- 设置中心弹窗 -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header"><span>设置</span><button id="settings-close">✕</button></div>
+        <div class="modal-body settings-body">
+          <div class="settings-group">
+            <div class="settings-group-title">文件与标签页</div>
+            <label class="settings-row"><input type="checkbox" id="set-open-in-new-tab" /> 手动打开文件默认新标签页</label>
+            <label class="settings-row"><input type="checkbox" id="set-tab-switch-continue" /> 切换标签页时后台媒体继续播放</label>
+            <label class="settings-row">标签页数量上限 <input type="number" id="set-tab-limit" min="1" max="50" step="1" class="settings-num" /></label>
+            <label class="settings-row"><input type="checkbox" id="set-auto-restore" /> 启动时恢复上次阅读</label>
+            <label class="settings-row"><input type="checkbox" id="set-folder-auto-open" /> 启动时打开文件夹侧栏</label>
+            <label class="settings-row"><input type="checkbox" id="set-natural-sort" /> 文件名自然排序</label>
+            <label class="settings-row"><input type="checkbox" id="set-folder-recursive" /> 文件夹列表含子目录</label>
+          </div>
+          <div class="settings-group">
+            <div class="settings-group-title">播放与屏幕</div>
+            <label class="settings-row"><input type="checkbox" id="set-keep-awake" /> 滚屏/播放时保持屏幕常亮</label>
+            <label class="settings-row">页模式翻页间隔（秒） <input type="number" id="set-page-interval" min="1" max="3600" step="1" class="settings-num" /></label>
+          </div>
+        </div>
+        <div class="modal-footer"><button id="settings-done">完成</button></div>
+      </div>
+    </div>
+
     <!-- 全局遮罩 -->
     <div id="overlay" class="hidden"></div>
   </body>
