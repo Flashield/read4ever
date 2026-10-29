@@ -3,6 +3,7 @@ import * as app from "./app";
 import * as reader from "./reader";
 import * as folder from "./folder";
 import * as plugins from "./plugins/registry";
+import * as tabs from "./tabs";
 import { isFindOpen, closeFind, findNext, findPrev } from "./findbar";
 
 export function initShortcuts(): void {
@@ -82,6 +83,11 @@ export function initShortcuts(): void {
           e.preventDefault();
           void import("./settings").then((m) => m.openSettings());
           return;
+      }
+      if (key === "Tab") {
+        e.preventDefault();
+        tabs.cycleActive(e.shiftKey ? -1 : 1);
+        return;
       }
       if (key === "PageDown") {
         e.preventDefault();

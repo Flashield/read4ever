@@ -2344,3 +2344,68 @@ body.fs-immersive.show-bottom #media-dock {
     transform: none;
   }
 }
+
+/* ========== 标签页栏 ========== */
+#tab-bar {
+  height: 32px;
+  display: flex;
+  align-items: stretch;
+  background: var(--ui-bg);
+  border-bottom: 1px solid var(--ui-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+}
+#tab-bar.hidden {
+  display: none;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 90px;
+  max-width: 200px;
+  padding: 0 8px 0 10px;
+  color: var(--ui-text);
+  font-size: 12px;
+  border-right: 1px solid var(--ui-border);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.tab:hover {
+  background: var(--ui-hover);
+}
+.tab.active {
+  background: var(--panel-bg);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.tab-icon {
+  flex-shrink: 0;
+}
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab.error .tab-title::after {
+  content: " ⚠";
+  color: #e5a03c;
+}
+.tab-close {
+  min-width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: #999;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0;
+  flex-shrink: 0;
+}
+.tab-close:hover {
+  background: var(--ui-hover);
+  color: #fff;
+}

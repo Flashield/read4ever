@@ -1,0 +1,383 @@
+/* 多标签页：tab 表与切换（设计 docs/多标签页、媒体坞与设置中心方案.md §1）。
+   分层：一个 tab = 文本层快照 + 可选插件视图实例。app.state 始终代表激活 tab，
+   切换 = 快照回旧 tab（含进度/时长落账）→ 恢复目标 tab → 重渲染或换显视图面板。
+   后台 tab 的视图实例保活（面板 display:none，视频可按设置继续播放）。 */
+import * as app from "./app";
+import * as reader from "./reader";
+import * as plugins from "./plugins/registry";
+
+export interface TextSnapshot {
+  filePath: string; // zip 为复合路径
+  realPath: string;
+  zipEntry: string;
+  isZip: boolean;
+  fileName: string;
+  encoding: string;
+  ratio: number; // 滚动位置 0..1（插件视图覆盖期间取打开插件前最近一次快照）
+  readSeconds: number;
+  modified: boolean;
+  isHardLines: boolean;
+  raw: string | null; // 有未落盘修改时驻留内存；否则 null（激活时重读）
+}
+
+export interface Tab {
+  id: string;
+  title: string;
+  text: TextSnapshot | null;
+  viewId: string; // 插件视图实例 id（"" 无）
+  lazy: { path: string; ratio: number } | null; // 惰性恢复描述：首次激活才真正打开
+  error: boolean; // 打开失败（文件失效等），保留可手动关闭
+}
+
+const tabs: Tab[] = [];
+let activeId = "";
+
+const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
+
+export function list(): readonly Tab[] {
+  return tabs;
+}
+export function activeTab(): Tab | null {
+  return tabs.find((t) => t.id === activeId) ?? null;
+}
+export function count(): number {
+  return tabs.length;
+}
+
+/* ========== 快照与恢复 ========== */
+
+function snapshotFromState(): TextSnapshot | null {
+  const s = app.state;
+  if (!s.filePath) return null;
+  return {
+    filePath: s.filePath,
+    realPath: s.realPath,
+    zipEntry: s.zipEntry,
+    isZip: s.isZip,
+    fileName: s.fileName,
+    encoding: s.encoding,
+    ratio: plugins.isActive() ? 0 : reader.getRatio(),
+    readSeconds: s.readSeconds,
+    modified: s.modified,
+    isHardLines: s.isHardLines,
+    raw: s.modified ? s.raw : null,
+  };
+}
+
+function restoreStateFields(snap: TextSnapshot): void {
+  const s = app.state;
+  s.filePath = snap.filePath;
+  s.realPath = snap.realPath;
+  s.zipEntry = snap.zipEntry;
+  s.isZip = snap.isZip;
+  s.fileName = snap.fileName;
+  s.encoding = snap.encoding;
+  s.readSeconds = snap.readSeconds;
+  s.modified = snap.modified;
+  s.isHardLines = snap.isHardLines;
+  s.raw = snap.raw ?? "";
+  s.prevPositions = [];
+}
+
+/** 当前激活 tab 失活前的落账：快照 + 进度/时长写回历史（与关闭文件同语义） */
+function storeLiveInto(tab: Tab): void {
+  const snap = snapshotFromState();
+  tab.text = snap;
+  if (!snap) return;
+  tab.title = snap.fileName;
+  if (!plugins.isActive()) {
+    const h = app.state.store.history.find((x) => x.filePath === snap.filePath);
+    if (h) h.position = snap.ratio;
+    app.state.store.settings.lastFilePath = snap.filePath;
+    app.state.store.settings.lastScroll = snap.ratio;
+  }
+}
+
+/** 播放策略：切走后按设置暂停后台媒体（"continue" 时不打断） */
+function applyPlaybackPolicy(): void {
+  if (app.state.store.settings.tabSwitchPlayback === "continue") return;
+  for (const t of tabs) {
+    if (t.id === activeId || !t.viewId) continue;
+    const inst = plugins.instanceOf(t.viewId);
+    try {
+      if (inst?.isPlaying?.()) inst.togglePlay?.();
+    } catch {
+      /* 忽略 */
+    }
+  }
+}
+
+/* ========== 切换 / 新建 / 关闭 ========== */
+
+export function switchToTab(id: string): void {
+  if (id === activeId) return;
+  const cur = activeTab();
+  if (cur) storeLiveInto(cur);
+  const target = tabs.find((t) => t.id === id);
+  if (!target) return;
+  activeId = id;
+  activate(target);
+  applyPlaybackPolicy();
+  renderTabBar();
+  app.persist();
+}
+
+function activate(target: Tab): void {
+  reader.stopScroll();
+  if (target.lazy) {
+    const { path, ratio } = target.lazy;
+    target.lazy = null;
+    void app.openPath(path, { ratio, quiet: true, tab: "replace" });
+    return; // openPath 完成内容装载与 UI 更新
+  }
+  if (target.viewId) {
+    if (target.text) restoreStateFields(target.text); // 视图之下的文本层同步恢复（关视图回退用）
+    plugins.activateView(target.viewId);
+    return;
+  }
+  plugins.hideActiveView();
+  if (target.text) {
+    const snap = target.text;
+    restoreStateFields(snap);
+    if (snap.raw === null) {
+      // 无驻留修改：重读文件（编码沿用快照，不重猜）；短暂显示旧内容属可接受的加载间隙
+      void app.openPath(snap.filePath, {
+        ratio: snap.ratio,
+        encoding: snap.encoding || undefined,
+        quiet: true,
+        tab: "replace",
+      });
+    } else {
+      app.renderContent(snap.ratio);
+      (document.getElementById("reader-content") as HTMLElement).focus();
+      app.updateUI();
+    }
+    return;
+  }
+  reader.showWelcome();
+  app.updateUI();
+}
+
+export function createTab(title: string): Tab | null {
+  const limit = Math.max(1, app.state.store.settings.tabLimit || 20);
+  if (tabs.length >= limit) {
+    app.toast(`标签页已达上限（${limit}），请先关闭部分标签页`);
+    return null;
+  }
+  const cur = activeTab();
+  if (cur) storeLiveInto(cur);
+  const t: Tab = { id: crypto.randomUUID(), title, text: null, viewId: "", lazy: null, error: false };
+  tabs.push(t);
+  activeId = t.id;
+  reader.stopScroll();
+  plugins.hideActiveView(); // 旧 tab 的视图面板收起保活（归它自己的 tab）
+  renderTabBar();
+  return t;
+}
+
+export function closeTab(id: string): void {
+  const idx = tabs.findIndex((t) => t.id === id);
+  if (idx === -1) return;
+  const tab = tabs[idx];
+  if (tab.viewId) plugins.closeView(tab.viewId); // rb-view-closed → unbindView（幂等）
+  tabs.splice(idx, 1);
+  if (activeId === id) {
+    activeId = "";
+    const next = tabs[Math.min(idx, tabs.length - 1)];
+    if (next) {
+      switchToTab(next.id);
+      applyPlaybackPolicy();
+      return;
+    }
+    app.resetToWelcome();
+  }
+  renderTabBar();
+  app.persist();
+}
+
+export function closeActiveTab(): void {
+  if (activeId) closeTab(activeId);
+}
+
+/* ========== 绑定（app ↔ 视图实例） ========== */
+
+/** 替换当前 tab 内容前：销毁其插件视图（翻页/惰性恢复语义） */
+export function destroyActiveView(): void {
+  const t = activeTab();
+  if (t?.viewId) plugins.closeView(t.viewId);
+}
+
+/** 插件视图覆盖 reader 前抢存激活 tab 文本比例（display:none 后 getRatio 恒 0） */
+export function snapshotActiveRatio(): void {
+  const t = activeTab();
+  if (!t || plugins.isActive() || !app.state.filePath) return;
+  if (!t.text) storeLiveInto(t);
+  if (t.text) t.text.ratio = reader.getRatio();
+}
+
+/** 新打开的插件视图绑定到激活 tab */
+export function bindView(viewId: string): void {
+  const t = activeTab();
+  if (!t) {
+    plugins.closeView(viewId);
+    return;
+  }
+  t.viewId = viewId;
+  t.lazy = null;
+  t.error = false;
+  renderTabBar();
+}
+
+/** 视图关闭（✕/停用插件/单例被接管）：解除绑定，tab 回退文本层 */
+export function unbindView(viewId: string): void {
+  const t = tabs.find((x) => x.viewId === viewId);
+  if (!t) return;
+  t.viewId = "";
+  if (t.id === activeId && !t.text) {
+    reader.showWelcome();
+    app.updateUI();
+  }
+  renderTabBar();
+}
+
+/** 激活 tab 打开失败：标记错误态（保留可手动关闭） */
+export function markActiveError(): void {
+  const t = activeTab();
+  if (!t) return;
+  t.error = true;
+  renderTabBar();
+}
+
+/** 同文件已在某 tab（含惰性描述与插件视图当前路径）：返回该 tab */
+export function tabForPath(path: string): Tab | null {
+  const p = path.toLowerCase();
+  return (
+    tabs.find((t) => {
+      if (t.lazy && t.lazy.path.toLowerCase() === p) return true;
+      if (t.text && t.text.filePath.toLowerCase() === p) return true;
+      return !!(t.viewId && plugins.viewPath(t.viewId).toLowerCase() === p);
+    }) ?? null
+  );
+}
+
+/** 媒体坞迷你条点击：跳到持有该视图的 tab */
+export function switchToView(viewId: string): void {
+  const t = tabs.find((x) => x.viewId === viewId);
+  if (t) switchToTab(t.id);
+}
+
+export function cycleActive(delta: number): void {
+  if (tabs.length < 2) return;
+  const i = tabs.findIndex((t) => t.id === activeId);
+  const n = tabs[(i + delta + tabs.length) % tabs.length];
+  switchToTab(n.id);
+}
+
+/* ========== Tab bar 渲染 ========== */
+
+function iconOf(t: Tab): string {
+  if (t.viewId) {
+    const pid = plugins.pluginIdOfView(t.viewId);
+    if (pid === "video-viewer") return "🎬";
+    if (pid === "image-viewer") return "🖼️";
+    return "🧩";
+  }
+  return "📄";
+}
+
+export function renderTabBar(): void {
+  const bar = document.getElementById("tab-bar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  bar.classList.toggle("hidden", tabs.length === 0);
+  for (const t of tabs) {
+    const el = document.createElement("div");
+    el.className = "tab" + (t.id === activeId ? " active" : "") + (t.error ? " error" : "");
+    el.dataset.tabId = t.id;
+    const ic = document.createElement("span");
+    ic.className = "tab-icon";
+    ic.textContent = iconOf(t);
+    const ti = document.createElement("span");
+    ti.className = "tab-title";
+    ti.textContent = t.title || "未命名";
+    ti.title = t.title;
+    const x = document.createElement("button");
+    x.className = "tab-close";
+    x.textContent = "✕";
+    x.title = "关闭标签页 (Ctrl+W)";
+    el.append(ic, ti, x);
+    el.addEventListener("click", () => switchToTab(t.id));
+    el.addEventListener("auxclick", (e) => {
+      if (e.button === 1) closeTab(t.id);
+    });
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(t.id);
+    });
+    bar.appendChild(el);
+  }
+}
+
+/** 激活视图上报标题变化时同步 tab 标题（app.updateUI 调用） */
+export function setTitleByView(viewId: string, title: string): void {
+  const t = tabs.find((x) => x.viewId === viewId);
+  if (t && title) {
+    t.title = title;
+    renderTabBar();
+  }
+}
+
+/* ========== 持久化与启动恢复 ========== */
+
+export interface TabDescriptorLite {
+  path: string;
+  ratio: number;
+}
+
+/** 当前全部 tab 的持久化描述（app.persist 落盘前调用） */
+export function descriptors(): TabDescriptorLite[] {
+  const out: TabDescriptorLite[] = [];
+  for (const t of tabs) {
+    if (t.lazy) {
+      out.push({ path: t.lazy.path, ratio: t.lazy.ratio });
+    } else if (t.viewId) {
+      out.push({ path: plugins.viewPath(t.viewId), ratio: t.text?.ratio ?? 0 });
+    } else if (t.text) {
+      out.push({
+        path: t.text.filePath,
+        ratio: t.id === activeId && !plugins.isActive() ? reader.getRatio() : t.text.ratio,
+      });
+    } else if (t.id === activeId && !plugins.isActive() && app.state.filePath) {
+      // 激活 tab 尚无快照（t.text 仅在失活时落）：取活跃状态兜底，否则当前正读的 tab 重启即丢
+      out.push({ path: app.state.filePath, ratio: reader.getRatio() });
+    }
+  }
+  return out;
+}
+
+export function activeIndex(): number {
+  return tabs.findIndex((t) => t.id === activeId);
+}
+
+/** 启动惰性重建：仅激活 tab 立即打开，后台 tab 首次点击才加载 */
+export function restoreFrom(ds: TabDescriptorLite[], activeIdx: number): void {
+  for (const d of ds) {
+    if (!d.path) continue;
+    tabs.push({
+      id: crypto.randomUUID(),
+      title: baseName(d.path.split("::").pop() || d.path),
+      text: null,
+      viewId: "",
+      lazy: { path: d.path, ratio: d.ratio },
+      error: false,
+    });
+  }
+  const i = Math.max(0, Math.min(activeIdx, tabs.length - 1));
+  if (tabs[i]) switchToTab(tabs[i].id);
+  else renderTabBar();
+}
+
+/* 视图关闭事件 → 解绑（registry closeView 派发；模块级自注册） */
+document.addEventListener("rb-view-closed", (e) => {
+  unbindView(String((e as CustomEvent).detail));
+});

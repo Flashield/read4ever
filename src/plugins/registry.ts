@@ -312,9 +312,8 @@ function wrapSingleton(p: ReadBookPlugin): PluginViewInstance {
 }
 
 /** 让启用的插件接管打开一个文件（扩展名未命中返回 null）。
- *  多实例插件：新实例入表；单例插件：同插件旧视图先销毁（视图随新打开移动）。
- *  Task 2 阶段尚无 tab 绑定：新视图就绪后销毁旧激活视图，保持与旧版完全一致
- *  （内存不膨胀）；Task 3 起 tab 在打开后立即绑定，改为保活。 */
+ *  多实例插件：新实例入表并激活（旧视图面板隐藏保活，归属各自 tab）；
+ *  单例插件：同插件旧视图先销毁（视图随新打开移动）。 */
 export async function openFile(path: string): Promise<string | null> {
   const { zipPath, entry, base } = splitTarget(path);
   const ext = extOf(base);
@@ -387,10 +386,7 @@ export async function openFile(path: string): Promise<string | null> {
     };
     document.getElementById("plugin-view-host")!.appendChild(pane);
     await inst.open(ctx);
-    // Task 2 语义：同时只有一个视图——新视图就绪后清扫其余全部（与旧版 host.innerHTML="" 等价的竞态安全版）；Task 3 改 tab 绑定保活
-    for (const v of [...views.values()]) {
-      if (v.id !== id) closeView(v.id);
-    }
+    // 每个 tab 的视图随 tab 保活（Task 3 起由 tabs 层驱动 activateView/hideActiveView/closeView）
     activateView(id);
     return id;
   } catch (e) {

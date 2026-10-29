@@ -7,6 +7,7 @@ import { convertDisplay, type DisplayMode } from "./simp_trad";
 import { showDropdown, initDropdown } from "./dropdown";
 import { setKeepAwakeEnabled } from "./keepawake";
 import * as fullscreen from "./fullscreen";
+import * as tabs from "./tabs";
 import type { Bookshelf, BookshelfItem, FileContent, StoreData } from "./types";
 
 /* 路径文件名（含 smb:// 的 / 分隔）；viewName 额外剥掉 zip 复合路径的条目部分 */
@@ -117,6 +118,8 @@ function migrateBookshelves(data: StoreData): Bookshelf[] {
 
 let persistTimer = 0;
 export function persist(): void {
+  state.store.settings.tabs = tabs.descriptors();
+  state.store.settings.activeTabIndex = Math.max(0, tabs.activeIndex());
   window.clearTimeout(persistTimer);
   persistTimer = window.setTimeout(() => {
     api.saveStore(state.store).catch(() => {});
@@ -288,6 +291,8 @@ export interface OpenOpts {
   encoding?: string;
   /** 启动自动恢复等场景：失败只轻提示，不弹错误对话框 */
   quiet?: boolean;
+  /** tab 定位："new" 新开（默认按 openInNewTab），"replace" 替换当前 tab（翻页/zip 条目/惰性恢复） */
+  tab?: "new" | "replace";
 }
 
 /** zip 条目在历史/书签/设置里保存为「zip路径::条目名」的复合路径 */
@@ -295,56 +300,78 @@ const ZIP_COMBINED_RE = /^(.+\.zip)::(.+)$/i;
 
 export async function openPath(path: string, opts: OpenOpts = {}): Promise<void> {
   if (!path) return;
+  const tabOpt = opts.tab ?? (state.store.settings.openInNewTab ? "new" : "replace");
+  // zip 容器：先解出目标条目（可能弹层选择），确定目标后再走 tab 分流——不先建空 tab
+  const zm = path.match(ZIP_COMBINED_RE);
+  if (!zm && path.toLowerCase().endsWith(".zip")) {
+    const entries = await api.listZip(path, state.store.settings.naturalSort);
+    // 只列出当前可打开的条目：TXT 恒可；其余取决于启用的插件
+    const openable = entries.filter(
+      (n) => /\.(txt|zip)$/i.test(n) || plugins.handlerForExt(plugins.extOf(n))
+    );
+    if (openable.length === 0) {
+      showMessage("提示", "该 ZIP 压缩包中没有找到可打开的文件。");
+      return;
+    }
+    if (openable.length === 1) {
+      await openPath(`${path}::${openable[0]}`, { ...opts, tab: tabOpt });
+      return;
+    }
+    // 多个条目：弹出选择菜单（选择后按同一 tabOpt 打开）
+    const rect = (document.getElementById("reader-container") as HTMLElement).getBoundingClientRect();
+    showDropdown(
+      [
+        { label: `选择要阅读的文件（共 ${openable.length} 个）：`, disabled: true },
+        { sep: true },
+        ...openable.map((entry) => ({
+          label: entry,
+          action: () => void openPath(`${path}::${entry}`, { ...opts, tab: tabOpt }),
+        })),
+      ],
+      rect.left + rect.width / 2 - 150,
+      rect.top + 40
+    );
+    return;
+  }
+  // —— 目标已确定：同文件跳转 → 新建 tab / 替换当前 tab ——
+  if (tabOpt === "new") {
+    const exist = tabs.tabForPath(path);
+    if (exist) {
+      tabs.switchToTab(exist.id);
+      return;
+    }
+    const t = tabs.createTab(viewName(path));
+    if (!t) return; // 超出 tabLimit
+  } else {
+    tabs.destroyActiveView(); // 同 tab 换文件：旧视图销毁（翻页/惰性恢复语义）
+  }
   reader.stopScroll();
-  saveCurrentProgress();
+  if (tabOpt === "replace") saveCurrentProgress(); // 新 tab 的落账已由 createTab 完成
   try {
-    const zm = path.match(ZIP_COMBINED_RE);
     if (zm) {
       // 条目扩展名命中启用插件（如图片）→ 插件接管
       if (plugins.handlerForExt(plugins.extOf(zm[2]))) {
-        await plugins.openFile(path);
+        // 快照激活 tab 文本位置（插件视图覆盖后 reader 比例不可读）
+        tabs.snapshotActiveRatio();
+        const vid = await plugins.openFile(path);
+        if (vid) tabs.bindView(vid);
+        else tabs.markActiveError();
         return;
       }
       await openZipEntry(zm[1], zm[2], opts);
       return;
     }
-    if (path.toLowerCase().endsWith(".zip")) {
-      const entries = await api.listZip(path, state.store.settings.naturalSort);
-      // 只列出当前可打开的条目：TXT 恒可；其余取决于启用的插件
-      const openable = entries.filter(
-        (n) => /\.(txt|zip)$/i.test(n) || plugins.handlerForExt(plugins.extOf(n))
-      );
-      if (openable.length === 0) {
-        showMessage("提示", "该 ZIP 压缩包中没有找到可打开的文件。");
-        return;
-      }
-      if (openable.length === 1) {
-        await openPath(`${path}::${openable[0]}`, opts);
-        return;
-      }
-      // 多个条目：弹出选择菜单
-      const rect = (document.getElementById("reader-container") as HTMLElement).getBoundingClientRect();
-      showDropdown(
-        [
-          { label: `选择要阅读的文件（共 ${openable.length} 个）：`, disabled: true },
-          { sep: true },
-          ...openable.map((entry) => ({
-            label: entry,
-            action: () => openPath(`${path}::${entry}`, opts),
-          })),
-        ],
-        rect.left + rect.width / 2 - 150,
-        rect.top + 40
-      );
-      return;
-    }
     if (plugins.handlerForExt(plugins.extOf(path))) {
-      await plugins.openFile(path);
+      tabs.snapshotActiveRatio();
+      const vid = await plugins.openFile(path);
+      if (vid) tabs.bindView(vid);
+      else tabs.markActiveError();
       return;
     }
     const fc = await api.openText(path, opts.encoding);
     loadFileContent(fc, { isZip: false, zipPath: "", zipEntry: "" }, opts);
   } catch (e) {
+    tabs.markActiveError();
     if (opts.quiet) {
       toast(`未能恢复上次阅读：${String(e).slice(0, 60)}`);
     } else {
@@ -378,30 +405,29 @@ export async function openFileDialog(): Promise<void> {
 
 /* ========== 关闭文件（逐层：插件视图 → 文本） ========== */
 
+/** Ctrl+W：关闭当前标签页（含其插件视图实例）；最后一个关闭回欢迎页 */
 export function closeFile(): void {
-  if (plugins.isActive()) {
-    plugins.deactivateActive();
-    // 底下无文本（比如启动后直接打开的图片/视频）→ 欢迎页
-    if (!state.filePath) reader.showWelcome();
-    updateUI();
-    return;
+  tabs.closeActiveTab();
+}
+
+/** 全部标签页关完：清空单文件状态与自动恢复锚点（tabs.closeTab 调用） */
+export function resetToWelcome(): void {
+  if (state.filePath) {
+    saveCurrentProgress();
+    state.filePath = "";
+    state.realPath = "";
+    state.zipEntry = "";
+    state.isZip = false;
+    state.fileName = "";
+    state.raw = "";
+    state.encoding = "";
+    state.modified = false;
+    state.isHardLines = false;
+    state.prevPositions = [];
+    state.readSeconds = 0;
   }
-  if (!state.filePath) return;
   reader.stopScroll();
-  saveCurrentProgress(); // 最终位置与时长写入历史
-  state.filePath = "";
-  state.realPath = "";
-  state.zipEntry = "";
-  state.isZip = false;
-  state.fileName = "";
-  state.raw = "";
-  state.encoding = "";
-  state.modified = false;
-  state.isHardLines = false;
-  state.prevPositions = [];
-  state.readSeconds = 0;
   reader.showWelcome();
-  // 清掉自动恢复锚点，否则下次启动又把这本书"复活"
   state.store.settings.lastFilePath = "";
   state.store.settings.lastScroll = 0;
   persist();
@@ -414,7 +440,6 @@ function loadFileContent(
   opts: OpenOpts
 ): void {
   if (fc.note) toast(fc.note); // SMB 离线兜底等附加提示
-  plugins.deactivateActive(); // 若当前显示插件视图（如图片），先退回文本渲染
   state.filePath = fc.filePath;
   state.realPath = src.isZip ? src.zipPath : fc.filePath;
   state.zipEntry = src.zipEntry;
@@ -443,6 +468,13 @@ function loadFileContent(
   (document.getElementById("reader-content") as HTMLElement).focus();
   updateUI();
   persist();
+  const at = tabs.activeTab();
+  if (at) {
+    at.title = state.fileName;
+    at.error = false;
+    at.lazy = null;
+  }
+  tabs.renderTabBar();
   notifyContentChanged();
 }
 
@@ -460,7 +492,7 @@ export async function gotoNextFile(): Promise<void> {
   }
   if (!state.realPath) return;
   const n = await api.nextFile(state.realPath, state.store.settings.naturalSort);
-  if (n) openPath(n);
+  if (n) openPath(n, { tab: "replace" });
   else toast("没有下一个文件");
 }
 
@@ -477,7 +509,7 @@ export async function gotoPrevFile(): Promise<void> {
   }
   if (!state.realPath) return;
   const p2 = await api.prevFile(state.realPath, state.store.settings.naturalSort);
-  if (p2) openPath(p2);
+  if (p2) openPath(p2, { tab: "replace" });
   else toast("没有上一个文件");
 }
 
@@ -1107,6 +1139,8 @@ export function updateUI(): void {
     const name = pst.title ?? plugins.getActiveOpenedName();
     api.setTitle(`ReadBook - ${name || "未打开文件"}`);
     if (fileInfo) fileInfo.textContent = name || "未打开文件";
+    const vId = plugins.activeViewId();
+    if (vId) tabs.setTitleByView(vId, name || "未打开文件");
   } else {
     const modifiedMark = state.modified ? " *" : "";
     const topName = state.realPath ? baseName(state.realPath) : "";
@@ -1254,6 +1288,7 @@ export async function boot(): Promise<void> {
   initDragDrop();
   fullscreen.initFullscreen();
   document.addEventListener("rb-fullscreen-changed", updateUI);
+  document.addEventListener("rb-dock-focus", (e) => tabs.switchToView(String((e as CustomEvent).detail)));
 
   // 滚屏/播放保持屏幕常亮：初始同步用户设置（关闭时聚合器直接短路）
   setKeepAwakeEnabled(s.keepAwake);
@@ -1263,9 +1298,14 @@ export async function boot(): Promise<void> {
 
   window.addEventListener("beforeunload", () => persistNow());
 
-  // 启动自动恢复上次阅读（失败只轻提示，不弹错误框）
-  if (s.autoRestore && s.lastFilePath) {
-    openPath(s.lastFilePath, { ratio: s.lastScroll, quiet: true });
+  // 启动自动恢复：tab 描述优先；无描述沿用旧单文件锚点（作为一个 tab 恢复）
+  if (s.autoRestore) {
+    const ds = (s.tabs || []).filter((d) => d && d.path);
+    if (ds.length) {
+      tabs.restoreFrom(ds, s.activeTabIndex || 0);
+    } else if (s.lastFilePath) {
+      tabs.restoreFrom([{ path: s.lastFilePath, ratio: s.lastScroll }], 0);
+    }
   }
 
   // 启动自动打开文件夹侧栏（记住上次文件夹）
