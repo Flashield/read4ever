@@ -417,7 +417,7 @@ export async function openFileDialog(): Promise<void> {
   if (p) openPath(p);
 }
 
-/* ========== 关闭文件（逐层：插件视图 → 文本） ========== */
+/* ========== 关闭标签页（含其插件视图实例） ========== */
 
 /** Ctrl+W：关闭当前标签页（含其插件视图实例）；最后一个关闭回欢迎页 */
 export function closeFile(): void {

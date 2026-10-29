@@ -101,7 +101,7 @@ export interface ReadBookPlugin {
   /** 打开文件（单例接口）：把视图渲染到 ctx.host。
    *  实现 createView 的多实例插件可省略（视图逻辑在实例的 open 中） */
   open?(ctx: PluginOpenContext): void | Promise<void>;
-  /** 视图被关闭/切走时的清理（如 revoke Blob URL） */
+  /** 实例被销毁时的清理（如 revoke Blob URL）；切走标签页只转后台保活，不调用本方法 */
   deactivate?(): void;
   /** 播放/暂停切换（可选）：宿主「滚屏/播放」公共入口在插件视图激活时调用。
    *  图片类：按上次选择的模式（滚屏或幻灯）开始，播放中则全部停止；
