@@ -414,15 +414,25 @@ function menuForServer(s: SmbServer, x: number, y: number): void {
   );
 }
 
+/** 共享根判定：smb://<id>（服务器根别名）与 smb://<id>/<share>（规范共享根）都不可重命名/移动/删除 */
+function isShareRoot(path: string): boolean {
+  const segs = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  return segs[0] === "smb:" && segs.length <= 3;
+}
+
 function menuForDir(path: string, x: number, y: number): void {
-  showDropdown(
-    [
-      { label: "在下方列出文件", action: () => void selectDir(path) },
-      { label: "刷新目录", action: () => void refreshDir(path) },
-    ],
-    x,
-    y
-  );
+  const items: MenuItemDef[] = [
+    { label: "在下方列出文件", action: () => void selectDir(path) },
+    { label: "刷新目录", action: () => void refreshDir(path) },
+    { label: "新建文件夹", action: () => void startMkdir(path) },
+  ];
+  if (!isShareRoot(path)) {
+    items.push({ label: "重命名", action: () => startRename(path, pathToName(path)) });
+    items.push({ label: "移动到…", action: () => moveToDir(path, pathToName(path)) });
+    items.push({ sep: true });
+    items.push({ label: "删除", action: () => confirmDelete(path, pathToName(path), x, y) });
+  }
+  showDropdown(items, x, y);
 }
 
 function menuForFile(e: SmbFileEntry, x: number, y: number): void {
@@ -434,6 +444,10 @@ function menuForFile(e: SmbFileEntry, x: number, y: number): void {
     label: e.cached ? "更新缓存" : "缓存到本地",
     action: () => void cacheFile(e.path, e.name),
   });
+  items.push({ label: "重命名", action: () => startRename(e.path, e.name) });
+  items.push({ label: "移动到…", action: () => moveToDir(e.path, e.name) });
+  items.push({ sep: true });
+  items.push({ label: "删除", action: () => confirmDelete(e.path, e.name, x, y) });
   showDropdown(items, x, y);
 }
 
@@ -441,6 +455,271 @@ function entryByPath(path: string): SmbFileEntry | null {
   const dir = parentDir(path);
   const entries = childrenCache.get(dir);
   return entries?.find((x) => x.path === path) ?? null;
+}
+
+/* ========== 远程写操作（删除为永久操作，无回收站） ========== */
+
+/** 行内重命名：名字元素原地换输入框，Enter/失焦提交，Esc 还原（交互同 folder.ts） */
+function startRename(path: string, oldName: string): void {
+  const row = rowByPath(path);
+  const nameEl = row?.querySelector(".ft-name, .fl-name") as HTMLElement | null;
+  if (!nameEl || nameEl.querySelector("input")) return;
+  const input = document.createElement("input");
+  input.className = "ft-rename-input";
+  input.value = oldName;
+  input.maxLength = 100;
+  nameEl.textContent = "";
+  nameEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = (save: boolean): void => {
+    if (done) return;
+    done = true;
+    const newName = input.value.trim();
+    if (!save || !newName || newName === oldName) {
+      void refreshDir(parentDir(path) || path); // 还原显示
+      return;
+    }
+    void (async () => {
+      try {
+        await api.smbRename(path, newName);
+        app.toast(`已重命名为「${newName}」`);
+        // 旧路径子树缓存残留会让同名重建目录命中旧数据，照 confirmDelete 清扫
+        for (const k of [...childrenCache.keys()]) {
+          if (k === path || k.startsWith(path + "/")) childrenCache.delete(k);
+        }
+        for (const k of [...expanded]) {
+          if (k === path || k.startsWith(path + "/")) expanded.delete(k);
+        }
+      } catch (e) {
+        app.showMessage("重命名失败", String(e));
+      }
+      await refreshDir(parentDir(path) || path);
+    })();
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // 防止全局快捷键（Esc 关面板等）打断
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+/** 新建文件夹：目标目录树节点下插入行内输入行（节点未展开先展开），交互同 folder.ts */
+async function startMkdir(dir: string): Promise<void> {
+  expanded.add(dir);
+  await renderTree();
+  const node = nodeRows.get(dir);
+  if (!node) return;
+  const kids = node.querySelector(":scope > .ft-kids") as HTMLElement | null;
+  const row = document.createElement("div");
+  row.className = "ft-row ft-mkdir";
+  row.style.paddingLeft = 18 + "px";
+  const input = document.createElement("input");
+  input.className = "ft-rename-input";
+  input.value = "新建文件夹";
+  input.maxLength = 100;
+  row.appendChild(input);
+  if (kids) kids.insertBefore(row, kids.firstChild);
+  else node.appendChild(row);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = (save: boolean): void => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    if (!save || !name) {
+      void renderTree(); // 还原
+      return;
+    }
+    void (async () => {
+      try {
+        await api.smbMkdir(dir, name);
+        app.toast(`已创建「${name}」`);
+      } catch (e) {
+        app.showMessage("创建失败", String(e));
+      }
+      await refreshDir(dir);
+    })();
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+/** 删除两段式确认：二级菜单里再点一次「删除」才真正执行。SMB 无回收站，删除不可恢复 */
+function confirmDelete(path: string, name: string, x: number, y: number): void {
+  showDropdown(
+    [
+      { label: `确认永久删除「${name}」？（无回收站，不可恢复）`, disabled: true },
+      {
+        label: "删除",
+        action: async () => {
+          try {
+            const isCurrent = app.state.realPath === path || app.state.filePath === path;
+            // 删除前记录列表顺序：删除的是当前阅读文件时，用来接续下一个
+            const orderBefore = [...document.querySelectorAll("#smb-list .fl-row")].map((r) =>
+              r.getAttribute("data-path")
+            );
+            await api.smbDelete(path);
+            app.toast(`已删除「${name}」`);
+            const parent = parentDir(path);
+            if (parent && parent !== path) {
+              dropDirCache(parent);
+              // 被删目录可能已展开/在列表缓存中：一并失效
+              for (const k of [...childrenCache.keys()]) {
+                if (k === path || k.startsWith(path + "/")) childrenCache.delete(k);
+              }
+              for (const k of [...expanded]) {
+                if (k === path || k.startsWith(path + "/")) expanded.delete(k);
+              }
+              // 下方列表正展示被删目录（或其子目录）时回退到父目录
+              if (selectedDir === path || selectedDir.startsWith(path + "/")) selectedDir = parent;
+            }
+            await renderAll();
+            if (isCurrent) await openNextAfterDeletion(path, orderBefore);
+          } catch (e) {
+            app.showMessage("删除失败", String(e));
+          }
+        },
+      },
+      { label: "取消", action: () => {} },
+    ],
+    x,
+    y
+  );
+}
+
+/** 删除的是正在阅读的文件：自动打开列表中它原位置的下一个文件，保持阅读连续 */
+async function openNextAfterDeletion(
+  deletedPath: string,
+  orderBefore: (string | null)[]
+): Promise<void> {
+  const after = [...document.querySelectorAll("#smb-list .fl-row")].map((r) =>
+    r.getAttribute("data-path")
+  );
+  if (after.length === 0) {
+    app.toast("目录中已没有可打开的文件");
+    return;
+  }
+  const idx = orderBefore.indexOf(deletedPath);
+  if (idx < 0) return; // 删除的文件不在当前下方列表：不开任意文件
+  const nextPath = after[Math.min(Math.max(idx, 0), after.length - 1)];
+  if (nextPath) {
+    app.toast("已自动接续下一个文件");
+    await app.openPath(nextPath);
+  }
+}
+
+/** SMB 目录选择弹窗：浏览共享内目录选目标（本地走系统目录选择器，SMB 用不了） */
+function pickSmbDir(
+  startDir: string,
+  selfPath: string,
+  fromDir: string,
+  onPick: (dir: string) => void
+): void {
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `
+    <div class="modal-content">
+      <div class="modal-header"><span>移动到…</span><button type="button">✕</button></div>
+      <div class="dirpick-body" style="max-height:50vh;overflow:auto;padding:4px 0"></div>
+      <div class="modal-footer">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+        <button type="button" class="dirpick-ok msg-ok">移动到这里</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const body = m.querySelector(".dirpick-body") as HTMLElement;
+  const curLabel = m.querySelector(".modal-footer span") as HTMLElement;
+  const okBtn = m.querySelector(".dirpick-ok") as HTMLButtonElement;
+  let cur = startDir;
+  let seq = 0; // render 重入守卫序号
+
+  /** 目标落在被移动项自身或其子目录内时禁止确认（后端也拦，这里是交互层提示） */
+  const isInsideSelf = (dir: string): boolean =>
+    dir === selfPath || dir.startsWith(selfPath.replace(/\/+$/, "") + "/");
+  const close = (): void => m.remove();
+  m.querySelector(".modal-header button")?.addEventListener("click", close);
+  m.addEventListener("mousedown", (e) => {
+    if (e.target === m) close();
+  });
+
+  const render = async (): Promise<void> => {
+    const my = ++seq; // 重入守卫：快速点目录时旧请求的子项不得 append 进新目录的 body
+    curLabel.textContent = cur;
+    okBtn.disabled = isInsideSelf(cur) || cur === fromDir;
+    body.innerHTML = "";
+    const up = parentDir(cur);
+    if (up && up !== cur) {
+      const r = document.createElement("div");
+      r.textContent = "📁 ..（上级目录）";
+      r.style.cssText = "padding:6px 10px;cursor:pointer";
+      r.addEventListener("click", () => {
+        cur = up;
+        void render();
+      });
+      body.appendChild(r);
+    }
+    const entries = await loadChildren(cur);
+    if (my !== seq) return; // 期间已切到别的目录，丢弃本次结果
+    for (const e of entries) {
+      if (!e.isDir) continue;
+      const r = document.createElement("div");
+      r.textContent = "📁 " + e.name;
+      r.style.cssText = "padding:6px 10px;cursor:pointer";
+      r.addEventListener("click", () => {
+        cur = e.path;
+        void render();
+      });
+      body.appendChild(r);
+    }
+  };
+  okBtn.addEventListener("click", () => {
+    close();
+    onPick(cur);
+  });
+  void render();
+}
+
+function moveToDir(path: string, name: string): void {
+  const from = parentDir(path);
+  pickSmbDir(from || path, path, from || "", (to) => {
+    void (async () => {
+      try {
+        await api.smbMove(path, to);
+        app.toast(`已移动「${name}」到「${pathToName(to)}」`);
+        // 旧路径子树缓存残留会让同名重建目录命中旧数据，照 confirmDelete 清扫
+        for (const k of [...childrenCache.keys()]) {
+          if (k === path || k.startsWith(path + "/")) childrenCache.delete(k);
+        }
+        for (const k of [...expanded]) {
+          if (k === path || k.startsWith(path + "/")) expanded.delete(k);
+        }
+      } catch (e) {
+        app.showMessage("移动失败", String(e));
+        return;
+      }
+      dropDirCache(from);
+      dropDirCache(to);
+      await renderAll();
+    })();
+  });
 }
 
 /* ========== 服务器编辑弹窗 ========== */

@@ -186,6 +186,7 @@ export default {
 /* ========== 内存虚拟文件系统（文件夹侧栏演示） ========== */
 
 type MockFsNode = { dir: true; children: Map<string, MockFsNode> } | { dir: false; content: string; mtime: number };
+type MockDirNode = Extract<MockFsNode, { dir: true }>;
 
 const MOCK_FOLDER = "C:\\demo\\书库";
 const MOCK_MTIME = Date.now();
@@ -613,6 +614,89 @@ window.__TAURI_INTERNALS__ = {
         const node = smbGet(p);
         const bytes = cached && node && !node.dir ? node.content.length : 0;
         return Promise.resolve({ cached, fresh: cached, bytes });
+      }
+      case "smb_delete": {
+        const p = String(args.path);
+        const parts = smbParts(p);
+        const name = parts.pop();
+        let node: MockDirNode = smbFsRoot as MockDirNode;
+        for (const seg of parts) {
+          const nx = node.children.get(seg);
+          if (!nx || !nx.dir) return Promise.reject("未找到: " + p);
+          node = nx;
+        }
+        if (!name || !node.children.has(name)) return Promise.reject("未找到: " + p);
+        node.children.delete(name);
+        // 同步清掉被删路径（含子树）的缓存标记，避免同名重建后出幽灵「已缓存」
+        for (const c of [...smbCached]) {
+          if (c === p || c.startsWith(p + "/")) smbCached.delete(c);
+        }
+        return Promise.resolve(null);
+      }
+      case "smb_rename": {
+        const p = String(args.path);
+        const parts = smbParts(p);
+        const name = parts.pop();
+        const newName = String(args.newName).trim();
+        let node: MockDirNode = smbFsRoot as MockDirNode;
+        for (const seg of parts) {
+          const nx = node.children.get(seg);
+          if (!nx || !nx.dir) return Promise.reject("未找到: " + p);
+          node = nx;
+        }
+        if (!name || !node.children.has(name) || !newName || node.children.has(newName)) {
+          return Promise.reject("重命名失败");
+        }
+        const target = node.children.get(name)!;
+        node.children.delete(name);
+        node.children.set(newName, target);
+        // 缓存标记跟随新名
+        if (smbCached.has(p)) {
+          smbCached.delete(p);
+          smbCached.add(p.slice(0, p.length - name.length) + newName);
+        }
+        return Promise.resolve(null);
+      }
+      case "smb_move": {
+        const p = String(args.path);
+        const fromParts = smbParts(p);
+        const name = fromParts.pop();
+        const toDirPath = String(args.toDir);
+        const toDir = smbGet(toDirPath);
+        if (!name || !toDir || !toDir.dir) return Promise.reject("移动失败");
+        let srcNode: MockDirNode = smbFsRoot as MockDirNode;
+        for (const seg of fromParts) {
+          const nx = srcNode.children.get(seg);
+          if (!nx || !nx.dir) return Promise.reject("移动失败");
+          srcNode = nx;
+        }
+        if (!srcNode.children.has(name)) return Promise.reject("移动失败");
+        if (toDir === srcNode) return Promise.reject("目标目录与当前所在目录相同");
+        if (toDir.children.has(name)) return Promise.reject("移动失败: 目标已存在同名条目");
+        const moved = srcNode.children.get(name)!;
+        srcNode.children.delete(name);
+        toDir.children.set(name, moved);
+        // 缓存标记跟随目标目录（服务器根别名先归一为规范共享根，与 mockSmbList 一致）
+        if (smbCached.has(p)) {
+          smbCached.delete(p);
+          let toCanon = toDirPath.replace(/\/+$/, "");
+          const toSegs = toCanon.split("/").filter(Boolean);
+          if (toSegs.length === 2) {
+            const srv = smbServers.find((s) => s.id === toSegs[1]);
+            toCanon = `smb://${toSegs[1]}/${srv ? srv.share : "books"}`;
+          }
+          smbCached.add(toCanon + "/" + name);
+        }
+        return Promise.resolve(null);
+      }
+      case "smb_mkdir": {
+        const parent = smbGet(String(args.parent));
+        const name = String(args.name).trim();
+        if (!parent || !parent.dir || !name || parent.children.has(name)) {
+          return Promise.reject("创建失败");
+        }
+        parent.children.set(name, mockDir({}));
+        return Promise.resolve(null);
       }
       case "smb_clear_cache": {
         let freed = 0;
