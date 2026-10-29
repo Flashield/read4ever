@@ -445,8 +445,12 @@ function loadFileContent(
 export async function gotoNextFile(): Promise<void> {
   const p = plugins.activePlugin();
   if (p) {
-    if (p.navFile) p.navFile(1);
-    else toast("当前插件不支持切换文件");
+    try {
+      if (p.navFile) p.navFile(1);
+      else toast("当前插件视图不支持切换文件");
+    } catch (e) {
+      console.error("[plugin] navFile 失败:", e);
+    }
     return;
   }
   if (!state.realPath) return;
@@ -458,8 +462,12 @@ export async function gotoNextFile(): Promise<void> {
 export async function gotoPrevFile(): Promise<void> {
   const p = plugins.activePlugin();
   if (p) {
-    if (p.navFile) p.navFile(-1);
-    else toast("当前插件不支持切换文件");
+    try {
+      if (p.navFile) p.navFile(-1);
+      else toast("当前插件视图不支持切换文件");
+    } catch (e) {
+      console.error("[plugin] navFile 失败:", e);
+    }
     return;
   }
   if (!state.realPath) return;
@@ -536,7 +544,14 @@ function startReadTicker(): void {
 /** 当前视图是否播放中：插件视图看插件 isPlaying，文本视图看滚屏状态（按钮高亮/菜单文案用） */
 export function isPlaying(): boolean {
   const p = plugins.activePlugin();
-  if (p) return p.isPlaying?.() ?? false;
+  if (p) {
+    try {
+      return p.isPlaying?.() ?? false;
+    } catch (e) {
+      console.error("[plugin] isPlaying 失败:", e);
+      return false;
+    }
+  }
   return reader.isScrolling();
 }
 
@@ -546,8 +561,12 @@ export function isPlaying(): boolean {
 export function togglePlayback(): void {
   const p = plugins.activePlugin();
   if (p) {
-    if (p.togglePlay) p.togglePlay();
-    else toast("当前插件视图不支持播放控制");
+    try {
+      if (p.togglePlay) p.togglePlay();
+      else toast("当前插件视图不支持播放控制");
+    } catch (e) {
+      console.error("[plugin] togglePlay 失败:", e);
+    }
     updateUI();
     return;
   }

@@ -9,7 +9,11 @@ export function initShortcuts(): void {
   window.addEventListener("keydown", (e: KeyboardEvent) => {
     const t = e.target as HTMLElement | null;
     const typing =
-      !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+      !!t &&
+      (t.tagName === "INPUT" ||
+        t.tagName === "SELECT" ||
+        t.tagName === "TEXTAREA" ||
+        t.isContentEditable);
 
     if (e.key === "Escape") {
       if (isFindOpen()) {
