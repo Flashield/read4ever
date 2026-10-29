@@ -117,6 +117,12 @@ pub struct Settings {
     /// 书架面板当前书架 id（失效时前端回退第一个）
     #[serde(default)]
     pub bookshelf_active_id: String,
+    /// 滚屏/播放时保持屏幕常亮
+    #[serde(default = "default_true")]
+    pub keep_awake: bool,
+    /// 文件名自然排序
+    #[serde(default = "default_true")]
+    pub natural_sort: bool,
     /// 手动打开文件默认新标签页
     #[serde(default = "default_true")]
     pub open_in_new_tab: bool,
@@ -164,6 +170,8 @@ impl Default for Settings {
             plugin_settings: std::collections::HashMap::new(),
             folder_tab: String::new(),
             bookshelf_active_id: String::new(),
+            keep_awake: true,
+            natural_sort: true,
             open_in_new_tab: true,
             tab_switch_playback: "pause".to_string(),
             tab_limit: 20,
