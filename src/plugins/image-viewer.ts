@@ -1037,6 +1037,11 @@ class ImageView implements PluginViewInstance {
     else void this.retreat();
   }
 
+  /** 是否播放中（幻灯或自动滚屏任一进行中）：宿主按钮高亮/菜单文案同步用 */
+  isPlaying(): boolean {
+    return this.slideOn || this.scrollOn;
+  }
+
   /** 仅激活 tab 的实例接收全局事件（当前无 window 级监听，滚轮挂在面板内随面板销毁）；存值备用 */
   setActive(on: boolean): void {
     this.activeVisible = on;

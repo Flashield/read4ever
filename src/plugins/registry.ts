@@ -374,7 +374,9 @@ export async function openFile(path: string): Promise<string | null> {
       getSetting: <T,>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
-      setKeepAwake: (on) => holdAwake(`view:${id}`, on),
+      setKeepAwake: (on) => {
+        if (views.has(id)) holdAwake(`view:${id}`, on); // 视图已销毁：忽略迟到的持有请求
+      },
       togglePlayback: () => app.togglePlayback(),
     };
     document.getElementById("plugin-view-host")!.appendChild(pane);
