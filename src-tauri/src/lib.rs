@@ -1,5 +1,6 @@
 mod commands;
 pub mod encoding; // pub：src-tauri/tests 集成测试访问
+mod natural;
 mod plugin_pkg;
 mod reorder;
 mod seqfile;
