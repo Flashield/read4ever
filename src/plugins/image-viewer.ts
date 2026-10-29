@@ -30,6 +30,7 @@ let direction: Direction = pluginSetting<Direction>(PID, "direction", "down");
 let stitch = pluginSetting<boolean>(PID, "stitch", true);
 let slideSeconds = pluginSetting<number>(PID, "slideSeconds", 5);
 let scrollPxPerSec = pluginSetting<number>(PID, "scrollPxPerSec", 100);
+let playMode = pluginSetting<"scroll" | "slide">(PID, "playMode", "scroll"); // 宿主播放按钮按此模式开始
 
 function saveSetting(key: string, val: string | number | boolean): void {
   setPluginSetting(PID, key, val);
@@ -930,6 +931,8 @@ async function goTo(index: number): Promise<void> {
 function setSlideshow(on: boolean): void {
   slideOn = on;
   if (on) {
+    playMode = "slide";
+    saveSetting("playMode", "slide");
     scrollOn = false;
     stopTimers();
     slideTimer = window.setInterval(() => void advance(), Math.max(1, slideSeconds) * 1000);
@@ -945,6 +948,8 @@ function setAutoScroll(on: boolean): void {
   scrollOn = on;
   scrollSuspended = false;
   if (on) {
+    playMode = "scroll";
+    saveSetting("playMode", "scroll");
     slideOn = false;
     clearInterval(slideTimer);
     slideTimer = 0;
@@ -967,6 +972,23 @@ function stopPlayback(): void {
   advancing = false;
   stopTimers();
   syncButtons();
+}
+
+/** 宿主「滚屏/播放」入口：播放中→全部停止；未播放→按上次选择的模式（滚屏/幻灯）开始 */
+function togglePlayback(): void {
+  if (slideOn || scrollOn) {
+    stopPlayback();
+    app.toast("已停止播放");
+    return;
+  }
+  if (playMode === "slide") setSlideshow(true);
+  else setAutoScroll(true);
+}
+
+/** 宿主「上一个/下一个文件」入口：上一张/下一张（跨目录/压缩包接续由 advance/retreat 处理） */
+function navFile(delta: number): void {
+  if (delta > 0) void advance();
+  else void retreat();
 }
 
 function syncButtons(): void {
@@ -1150,10 +1172,13 @@ function onResize(): void {
 export const imageViewerPlugin: ReadBookPlugin = {
   id: PID,
   name: "图片查看",
-  version: "1.4.0",
+  version: "1.5.0",
   description:
     "查看常见图片格式：缩放（滚轮以鼠标为焦点）/旋转/缩放模式下拉（适应窗口·适宽·适高·原始大小），幻灯播放，自动滚屏（向下/向右/向左，无缝拼接预加载，跨目录与跨压缩包接续）",
   extensions: EXTENSIONS,
+  togglePlay: togglePlayback,
+  navFile,
+  isPlaying: () => slideOn || scrollOn,
   menu,
   open(c: PluginOpenContext): void {
     ctx = c;
