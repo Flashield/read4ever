@@ -319,7 +319,7 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
       await openPath(`${path}::${openable[0]}`, { ...opts, tab: tabOpt });
       return;
     }
-    // 多个条目：弹出选择菜单（选择后按同一 tabOpt 打开）
+    // 多个条目：弹出选择菜单（选择后固定当前 tab 打开；决策记录：多条目选择 = 当前 tab）
     const rect = (document.getElementById("reader-container") as HTMLElement).getBoundingClientRect();
     showDropdown(
       [
@@ -340,7 +340,8 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
   // 插件视图覆盖后 reader 比例不可读，必须赶在打开前抢存）
   tabs.snapshotActiveRatio();
   // —— 目标已确定：同文件跳转 → 新建 tab / 替换当前 tab ——
-  if (tabOpt === "new") {
+  // 欢迎态（零 tab）也走新建：replace 分支没有可替换的激活 tab，内容会落进无处安放的状态
+  if (tabOpt === "new" || !tabs.activeTab()) {
     const exist = tabs.tabForPath(path);
     if (exist) {
       // 书签/历史跳转到已打开文件：先把目标比例写进快照（切走后需重读的 tab 激活时吸附），再切换
@@ -484,7 +485,6 @@ function loadFileContent(
   state.store.settings.lastScroll = ratio ?? 0;
   (document.getElementById("reader-content") as HTMLElement).focus();
   updateUI();
-  persist();
   const at = tabs.activeTab();
   if (at) {
     at.title = state.fileName;
@@ -492,6 +492,7 @@ function loadFileContent(
     at.lazy = null;
     tabs.adoptActiveText(); // 以装载后的活跃状态建文本快照（descriptors 据此描述本 tab）
   }
+  persist(); // 在 tab 同步之后：descriptors 描述的是刚装载的文件，而非旧快照
   tabs.renderTabBar();
   notifyContentChanged();
 }
