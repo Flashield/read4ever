@@ -408,6 +408,7 @@ class VideoView implements PluginViewInstance {
     });
     progress.addEventListener("change", () => (this.seeking = false));
     progress.addEventListener("pointerup", () => (this.seeking = false));
+    progress.addEventListener("lostpointercapture", () => (this.seeking = false)); // 双保险：指针捕获丢失时解锁
     this.sessionEl = el;
   }
 

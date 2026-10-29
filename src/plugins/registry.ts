@@ -459,8 +459,8 @@ export function initPluginSystem(toggle: (id: string, on: boolean) => void): voi
     const inst = views.get(String((e as CustomEvent).detail))?.inst;
     try {
       inst?.togglePlay?.();
-    } catch {
-      /* 忽略后台实例异常 */
+    } catch (e) {
+      console.error("[rb-dock-toggle] togglePlay 失败:", e);
     }
   });
 }

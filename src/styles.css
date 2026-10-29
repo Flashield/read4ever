@@ -2315,7 +2315,7 @@ body.fs-immersive #media-dock {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: var(--status-bar-h);
   z-index: 400;
   transform: translateY(100%);
   transition: transform 0.18s;

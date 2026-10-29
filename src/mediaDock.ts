@@ -9,13 +9,18 @@ export interface MediaSession {
   id: string; // = 插件视图实例 id
   kind: "video" | "audio";
   title: string;
-  element: HTMLElement; // 完整控制行 DOM（实例自建自管，dock 只做挂载/摘除）
+  element: HTMLElement; // 完整控制行 DOM（实例自建自管，dock 挂入后常驻，不随 render 摘挂）
   isPlaying(): boolean;
 }
 
 const sessions = new Map<string, MediaSession>();
 let activeViewId = "";
 let dock: HTMLElement | null = null;
+/** 完整行容器：常驻 #media-dock 首位，激活会话的 element 只在成为激活时挂入一次，
+ *  跨 render 保留在 DOM（播放态高频 refresh 不再摘挂，拖动滑杆不中断） */
+let fullWrap: HTMLElement | null = null;
+/** 迷你条 (id,标题,播放态) 指纹：相同跳过重建，消除播放态高频 churn */
+let miniKey = "";
 
 function el(): HTMLElement {
   if (!dock) dock = document.getElementById("media-dock")!;
@@ -53,20 +58,30 @@ export function setActiveView(id: string): void {
 
 function render(): void {
   const d = el();
-  d.innerHTML = "";
   const active = activeViewId ? sessions.get(activeViewId) : null;
   const minis = [...sessions.values()].filter((s) => s.id !== activeViewId && s.isPlaying());
   if (!active && minis.length === 0) {
     d.classList.add("hidden");
-    return;
+    return; // 仅隐藏不摘 DOM：完整行保持挂载，再次显示零成本
   }
   d.classList.remove("hidden");
   if (active) {
-    const full = document.createElement("div");
-    full.className = "md-full";
-    full.appendChild(active.element);
-    d.appendChild(full);
+    if (!fullWrap) {
+      fullWrap = document.createElement("div");
+      fullWrap.className = "md-full";
+    }
+    if (fullWrap.parentElement !== d) d.prepend(fullWrap); // 保持首位（迷你条在其后）
+    fullWrap.classList.remove("hidden");
+    if (active.element.parentElement !== fullWrap)
+      fullWrap.replaceChildren(active.element); // 换挂新激活会话，同时清掉已销毁实例的遗留 element
+  } else {
+    fullWrap?.classList.add("hidden"); // 无激活会话：完整行隐藏但保留挂载，不摘 DOM
   }
+  // 迷你条区：指纹（id+标题+播放态）相同则跳过重建
+  const key = minis.map((s) => `${s.id} ${s.title} ${s.isPlaying()}`).join("");
+  if (key === miniKey) return;
+  miniKey = key;
+  d.querySelectorAll(".md-mini").forEach((n) => n.remove());
   for (const s of minis) {
     const mini = document.createElement("div");
     mini.className = "md-mini";
