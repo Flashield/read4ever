@@ -860,11 +860,12 @@ async function advance(): Promise<void> {
     // 容器已到最后一张：跨容器接续（找下一个有图的容器，预热缓存命中 → 即时）
     const wasPlaying = slideOn || scrollOn; // 等待前的播放意图
     const imgs = await nextContainerWithImages();
+    if (!ctx) return; // 等待期间视图已关闭：放弃过期切换
     if (!imgs) {
+      if (wasPlaying) stopPlayback(); // 播放已到尽头：停掉定时器并同步宿主按钮状态
       app.toast("播放结束：后面没有更多图片了");
       return;
     }
-    if (!ctx) return; // 等待期间视图已关闭：放弃过期切换
     if (wasPlaying && !slideOn && !scrollOn) return; // 等待期间播放已被停止：放弃过期切换
     if (stitch && scrollOn) {
       // 拼接滚屏：只追加新容器首帧，当前帧与滚动位置都不动——旧容器尾帧占住 tapeCur
@@ -908,11 +909,12 @@ async function retreat(): Promise<void> {
     // 容器内已是第一张：跨到上一个有图的容器的最后一张
     const wasPlaying = slideOn || scrollOn; // 等待前的播放意图
     const imgs = await prevContainerWithImages();
+    if (!ctx) return; // 等待期间视图已关闭：放弃过期切换
     if (!imgs) {
+      if (wasPlaying) stopPlayback(); // 已是起点：停掉定时器并同步宿主按钮状态
       app.toast("已经是第一张：前面没有更多图片了");
       return;
     }
-    if (!ctx) return; // 等待期间视图已关闭：放弃过期切换
     if (wasPlaying && !slideOn && !scrollOn) return; // 等待期间播放已被停止：放弃过期切换
     ctx.siblings = imgs;
     ctx.path = imgs[imgs.length - 1];
