@@ -342,8 +342,10 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
   if (tabOpt === "new") {
     const exist = tabs.tabForPath(path);
     if (exist) {
+      // 书签/历史跳转到已打开文件：先把目标比例写进快照（切走后需重读的 tab 激活时吸附），再切换
+      if (opts.ratio !== undefined) tabs.applyJumpRatio(exist.id, opts.ratio);
       tabs.switchToTab(exist.id);
-      // 书签/历史跳转到已打开文件：切换后补应用目标位置（插件视图激活时不适用）
+      // 仍在当前 tab（未重读）时切换后补应用目标位置（插件视图激活时不适用）
       if (opts.ratio !== undefined && !plugins.isActive()) renderContent(opts.ratio);
       return;
     }

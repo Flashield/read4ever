@@ -10,6 +10,7 @@
    用户偏好（自动连播/倍速）保持模块级共享。 */
 import * as app from "../app";
 import { toggle as fsToggle } from "../fullscreen";
+import * as mediaDock from "../mediaDock";
 import { activeViewId, instanceOf, pluginSetting, setPluginSetting } from "./registry";
 import type { MenuItemDef } from "../dropdown";
 import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
@@ -63,6 +64,11 @@ class VideoView implements PluginViewInstance {
   private video: HTMLVideoElement | null = null;
   private globalIdx = 0;
   private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
+  private sessionEl: HTMLElement | null = null; // 媒体坞完整控制行（挂在 #media-dock，不在 host 内）
+  private mdPlay: HTMLButtonElement | null = null;
+  private mdCur: HTMLElement | null = null;
+  private mdProgress: HTMLInputElement | null = null;
+  private mdDur: HTMLElement | null = null;
   private currentStream = false; // 当前视频是否走流式 URL（错误回退判断用）
   private urlCache = new Map<string, string>();
   private streamFailed = new Set<string>(); // 流式失败的目标（压缩 zip 条目等）：会话内回退整读
@@ -118,6 +124,7 @@ class VideoView implements PluginViewInstance {
       this.hideError();
       this.updateLabels();
       this.syncStatus();
+      mediaDock.update(this.viewId, { title: baseName(path) }); // 连播/手动切换后迷你条标题跟随
       if (autoplay) {
         try {
           await this.video.play();
@@ -292,15 +299,9 @@ class VideoView implements PluginViewInstance {
         <video class="vv-video" playsinline preload="metadata"></video>
         <div class="vv-error hidden"></div>
       </div>
-      <div class="vv-seekrow plugin-bottombar">
-        <span class="vv-cur">0:00</span>
-        <input class="vv-progress" type="range" min="0" max="1000" step="1" value="0" title="播放进度（←/→ 快退/快进 5 秒）" />
-        <span class="vv-dur">0:00</span>
-      </div>
     </div>`;
 
     this.video = this.q<HTMLVideoElement>(".vv-video")!;
-    const progress = this.q<HTMLInputElement>(".vv-progress")!;
     const video = this.video;
 
     this.ctx.host.querySelector(".vv-bar")?.addEventListener("click", (e) => {
@@ -332,36 +333,27 @@ class VideoView implements PluginViewInstance {
       if (muteBtn) muteBtn.textContent = this.video.muted || this.video.volume === 0 ? "🔇" : "🔊";
     });
 
-    progress.addEventListener("pointerdown", () => (this.seeking = true));
-    progress.addEventListener("input", () => {
-      if (this.video && Number.isFinite(this.video.duration) && this.video.duration > 0)
-        this.video.currentTime = (Number(progress.value) / 1000) * this.video.duration;
-    });
-    progress.addEventListener("change", () => (this.seeking = false));
-    progress.addEventListener("pointerup", () => (this.seeking = false));
-
     video.addEventListener("timeupdate", () => {
       if (!this.video || !this.ctx) return;
-      if (!this.seeking && Number.isFinite(this.video.duration) && this.video.duration > 0)
-        progress.value = String(Math.round((this.video.currentTime / this.video.duration) * 1000));
-      const cur = this.q<HTMLElement>(".vv-cur");
-      if (cur) cur.textContent = fmtTime(this.video.currentTime);
-      const dur = this.q<HTMLElement>(".vv-dur");
-      if (dur) dur.textContent = fmtTime(this.video.duration);
+      if (!this.seeking && Number.isFinite(video.duration) && video.duration > 0 && this.mdProgress)
+        this.mdProgress.value = String(Math.round((video.currentTime / video.duration) * 1000));
+      if (this.mdCur) this.mdCur.textContent = fmtTime(video.currentTime);
+      if (this.mdDur) this.mdDur.textContent = fmtTime(video.duration);
       this.syncStatus();
     });
 
     video.addEventListener("loadedmetadata", () => {
       const p = this.ctx?.siblings[this.globalIdx] || this.ctx?.path;
       if (p) this.streamRetried.delete(p); // 新一轮请求真拿到数据：恢复一次重试机会
-      const dur = this.q<HTMLElement>(".vv-dur");
-      if (dur && this.video) dur.textContent = fmtTime(this.video.duration);
+      if (this.mdDur && this.video) this.mdDur.textContent = fmtTime(this.video.duration);
       this.syncStatus();
     });
 
     const syncPlayBtn = () => {
       const btn = this.q<HTMLElement>('button[data-act="play"]');
       if (btn && this.video) btn.textContent = this.video.paused ? "▶" : "⏸";
+      if (this.mdPlay && this.video) this.mdPlay.textContent = this.video.paused ? "▶" : "⏸";
+      mediaDock.refresh(); // 同步刷新迷你条播放态
       this.ctx?.setKeepAwake(!!this.video && !this.video.paused && !this.video.ended); // 播放中保持常亮（幂等）
       this.syncStatus();
     };
@@ -392,6 +384,33 @@ class VideoView implements PluginViewInstance {
     window.addEventListener("keydown", this.onKey);
   }
 
+  /** 媒体坞会话控件：完整控制行（播放/进度/时间），由 dock 负责挂载/摘除。
+   *  控件活在 dock 里、不在 ctx.host 内，故用直接引用而非 q() */
+  private buildSession(): void {
+    const el = document.createElement("div");
+    el.className = "md-session";
+    el.innerHTML = `
+      <button class="md-play" title="播放/暂停（Space）">▶</button>
+      <span class="md-cur">0:00</span>
+      <input class="md-progress" type="range" min="0" max="1000" step="1" value="0" title="播放进度（←/→ 快退/快进 5 秒）" />
+      <span class="md-dur">0:00</span>`;
+    this.mdPlay = el.querySelector(".md-play");
+    this.mdCur = el.querySelector(".md-cur");
+    this.mdProgress = el.querySelector(".md-progress");
+    this.mdDur = el.querySelector(".md-dur");
+    this.mdPlay!.addEventListener("click", () => this.togglePlay());
+    const progress = this.mdProgress!;
+    progress.addEventListener("pointerdown", () => (this.seeking = true));
+    progress.addEventListener("input", () => {
+      const v = this.video;
+      if (v && Number.isFinite(v.duration) && v.duration > 0)
+        v.currentTime = (Number(progress.value) / 1000) * v.duration;
+    });
+    progress.addEventListener("change", () => (this.seeking = false));
+    progress.addEventListener("pointerup", () => (this.seeking = false));
+    this.sessionEl = el;
+  }
+
   /* ========== 实例生命周期 ========== */
 
   open(c: PluginOpenContext): void {
@@ -399,11 +418,26 @@ class VideoView implements PluginViewInstance {
     this.viewId = c.viewId;
     this.globalIdx = Math.max(0, Math.min(c.siblingIndex, c.siblings.length - 1));
     this.buildView();
+    this.buildSession();
+    const startPath = c.siblings[this.globalIdx] || c.path;
+    mediaDock.attach({
+      id: c.viewId,
+      kind: "video",
+      title: baseName(startPath),
+      element: this.sessionEl!,
+      isPlaying: () => this.isPlaying(),
+    });
     c.setKeepAwake(false); // 同实例换文件重开：重置常亮持有（play 事件会重新持有）
     void this.loadVideo(this.globalIdx, true);
   }
 
   deactivate(): void {
+    mediaDock.detach(this.viewId); // registry closeView 亦会 detach，此处幂等兜底
+    this.sessionEl = null;
+    this.mdPlay = null;
+    this.mdCur = null;
+    this.mdProgress = null;
+    this.mdDur = null;
     window.removeEventListener("keydown", this.onKey);
     if (this.video) {
       this.video.pause();

@@ -1162,23 +1162,6 @@ body.folder-open #reader-container {
   background: #141414;
 }
 
-.vv-seekrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  background: var(--panel-bg);
-  border-top: 1px solid var(--ui-border);
-  flex-shrink: 0;
-  font-size: 11px;
-  color: #999;
-}
-
-.vv-seekrow input[type="range"] {
-  flex: 1;
-  accent-color: var(--accent);
-}
-
 /* 触屏/窄屏（iOS移植方案 D3）：控制条允许换行；
    音量控件仅触屏隐藏——iOS WKWebView 的音量由系统控制，页内滑杆无效 */
 @media ((hover: none) and (pointer: coarse)), (max-width: 760px) {

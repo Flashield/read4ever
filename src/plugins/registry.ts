@@ -454,6 +454,15 @@ export function initPluginSystem(toggle: (id: string, on: boolean) => void): voi
   document.addEventListener("rb-escape", () => {
     if (curActiveViewId) closeView(curActiveViewId);
   });
+  // 媒体坞迷你条 ⏸/▶：按会话 id 分发到对应实例（后台实例也响应——视频隐藏面板中可继续控制）
+  document.addEventListener("rb-dock-toggle", (e) => {
+    const inst = views.get(String((e as CustomEvent).detail))?.inst;
+    try {
+      inst?.togglePlay?.();
+    } catch {
+      /* 忽略后台实例异常 */
+    }
+  });
 }
 
 function renderPluginPanel(): void {

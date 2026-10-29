@@ -242,6 +242,14 @@ export function snapshotActiveRatio(): void {
   if (t.text) t.text.ratio = reader.getRatio();
 }
 
+/** 书签/历史跳转：把目标比例写进目标 tab 的快照/惰性描述（激活重读时吸附） */
+export function applyJumpRatio(id: string, ratio: number): void {
+  const t = tabs.find((x) => x.id === id);
+  if (!t) return;
+  if (t.lazy) t.lazy.ratio = ratio;
+  if (t.text) t.text.ratio = ratio;
+}
+
 /** 新打开的插件视图绑定到激活 tab */
 export function bindView(viewId: string): void {
   const t = activeTab();
