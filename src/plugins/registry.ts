@@ -325,7 +325,6 @@ export async function openFile(path: string): Promise<string | null> {
       if (v.plugin.id === plugin.id) closeView(v.id);
     }
   }
-  const prevActiveId = curActiveViewId;
   let id = "";
   try {
     // wantsStream 的插件：本地与 SMB 普通文件跳过整文件预读（2GB+ 视频必需），改由流式协议按需分块
@@ -355,7 +354,14 @@ export async function openFile(path: string): Promise<string | null> {
     views.set(id, e0);
     const owner = e0;
     const ctx: PluginOpenContext = {
-      path,
+      // 存取器直写实例表：插件跨容器推进写 ctx.path 时宿主 activeFilePath() 随之更新
+      //（与旧实现 activeCtx 同对象别名语义一致）
+      get path() {
+        return owner.ctxPath;
+      },
+      set path(p: string) {
+        owner.ctxPath = p;
+      },
       name: owner.file,
       ext,
       bytes,
@@ -371,7 +377,7 @@ export async function openFile(path: string): Promise<string | null> {
         Object.assign(owner.status, s);
         if (curActiveViewId === id) app.updateUI(); // 后台实例只更新表内状态，不动 UI
       },
-      getSetting: <T,>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
+      getSetting: <T>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
       setKeepAwake: (on) => {
@@ -381,8 +387,10 @@ export async function openFile(path: string): Promise<string | null> {
     };
     document.getElementById("plugin-view-host")!.appendChild(pane);
     await inst.open(ctx);
-    // Task 2 语义：新视图就绪后销毁旧激活视图（与旧版一致）；Task 3 改为 tab 绑定保活
-    if (prevActiveId && prevActiveId !== id) closeView(prevActiveId);
+    // Task 2 语义：同时只有一个视图——新视图就绪后清扫其余全部（与旧版 host.innerHTML="" 等价的竞态安全版）；Task 3 改 tab 绑定保活
+    for (const v of [...views.values()]) {
+      if (v.id !== id) closeView(v.id);
+    }
     activateView(id);
     return id;
   } catch (e) {

@@ -242,6 +242,7 @@ class ImageView implements PluginViewInstance {
     if (flying) return flying;
     const task = (async () => {
       const bytes = await loadBytes(path);
+      if (!this.ctx) throw new Error("视图已关闭"); // 等待期间被关闭：不创建 Blob URL（否则建在已销毁实例的 map 里永不 revoke）
       const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: extMime(path) });
       const url = URL.createObjectURL(blob);
       this.urlCache.set(path, url);
@@ -300,6 +301,7 @@ class ImageView implements PluginViewInstance {
       : [this.ctx.siblings[this.globalIdx]];
 
     const urls = await Promise.all(paths.map((p) => this.ensureUrl(p)));
+    if (!this.ctx) return; // 慢加载等待期间视图已关闭：放弃渲染（否则操作已脱离宿主的 DOM 抛 TypeError）
     const dims: { w: number; h: number }[] = [];
     for (let i = 0; i < paths.length; i++) {
       const hit = dimCache.get(paths[i]);
