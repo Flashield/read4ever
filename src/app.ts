@@ -293,6 +293,8 @@ export interface OpenOpts {
   quiet?: boolean;
   /** tab 定位："new" 新开（默认按 openInNewTab），"replace" 替换当前 tab（翻页/zip 条目/惰性恢复） */
   tab?: "new" | "replace";
+  /** 内部：打开发起时的 tab epoch（跨 await 后校验，过期则丢弃结果） */
+  epoch?: number;
 }
 
 /** zip 条目在历史/书签/设置里保存为「zip路径::条目名」的复合路径 */
@@ -333,11 +335,16 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
     );
     return;
   }
+  // 快照激活 tab 文本位置（tab 分流切换 activeId 之前，比例才归属旧 tab；
+  // 插件视图覆盖后 reader 比例不可读，必须赶在打开前抢存）
+  tabs.snapshotActiveRatio();
   // —— 目标已确定：同文件跳转 → 新建 tab / 替换当前 tab ——
   if (tabOpt === "new") {
     const exist = tabs.tabForPath(path);
     if (exist) {
       tabs.switchToTab(exist.id);
+      // 书签/历史跳转到已打开文件：切换后补应用目标位置（插件视图激活时不适用）
+      if (opts.ratio !== undefined && !plugins.isActive()) renderContent(opts.ratio);
       return;
     }
     const t = tabs.createTab(viewName(path));
@@ -346,32 +353,40 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
     tabs.destroyActiveView(); // 同 tab 换文件：旧视图销毁（翻页/惰性恢复语义）
   }
   reader.stopScroll();
-  if (tabOpt === "replace") saveCurrentProgress(); // 新 tab 的落账已由 createTab 完成
+  // 仅在实际换文件时落账：同文件重读/编码切换不把旧 DOM 比例写进同文件历史
+  const changing = !!state.filePath && state.filePath.toLowerCase() !== path.toLowerCase();
+  if (tabOpt === "replace" && changing) saveCurrentProgress(); // 新 tab 的落账已由 createTab 完成
+  const ep = tabs.currentEpoch(); // 此后跨 await 的结果过期即丢
   try {
     if (zm) {
       // 条目扩展名命中启用插件（如图片）→ 插件接管
       if (plugins.handlerForExt(plugins.extOf(zm[2]))) {
-        // 快照激活 tab 文本位置（插件视图覆盖后 reader 比例不可读）
-        tabs.snapshotActiveRatio();
         const vid = await plugins.openFile(path);
+        if (tabs.currentEpoch() !== ep) {
+          if (vid) plugins.closeView(vid); // 打开期间已切 tab：销毁孤儿视图
+          return;
+        }
         if (vid) tabs.bindView(vid);
         else tabs.markActiveError();
         return;
       }
-      await openZipEntry(zm[1], zm[2], opts);
+      await openZipEntry(zm[1], zm[2], { ...opts, epoch: ep });
       return;
     }
     if (plugins.handlerForExt(plugins.extOf(path))) {
-      tabs.snapshotActiveRatio();
       const vid = await plugins.openFile(path);
+      if (tabs.currentEpoch() !== ep) {
+        if (vid) plugins.closeView(vid); // 打开期间已切 tab：销毁孤儿视图
+        return;
+      }
       if (vid) tabs.bindView(vid);
       else tabs.markActiveError();
       return;
     }
     const fc = await api.openText(path, opts.encoding);
-    loadFileContent(fc, { isZip: false, zipPath: "", zipEntry: "" }, opts);
+    loadFileContent(fc, { isZip: false, zipPath: "", zipEntry: "" }, { ...opts, epoch: ep });
   } catch (e) {
-    tabs.markActiveError();
+    if (tabs.currentEpoch() === ep) tabs.markActiveError(); // 过期失败不打扰新激活 tab
     if (opts.quiet) {
       toast(`未能恢复上次阅读：${String(e).slice(0, 60)}`);
     } else {
@@ -389,11 +404,8 @@ export async function openZipEntry(
     const fc = await api.readZip(zipPath, entry, opts.encoding);
     loadFileContent(fc, { isZip: true, zipPath, zipEntry: entry }, opts);
   } catch (e) {
-    if (opts.quiet) {
-      toast(`未能恢复上次阅读：${String(e).slice(0, 60)}`);
-    } else {
-      showMessage("打开失败", String(e));
-    }
+    if (opts.quiet) throw e; // 惰性恢复场景：上抛给 openPath 统一落 tab 错误态 + 轻提示
+    showMessage("打开失败", String(e));
   }
 }
 
@@ -439,6 +451,8 @@ function loadFileContent(
   src: { isZip: boolean; zipPath: string; zipEntry: string },
   opts: OpenOpts
 ): void {
+  // 跨 await 后 tab 已切换：本次打开过期，内容与 state 一律不写（避免渲染错 tab 的内容）
+  if (opts.epoch !== undefined && tabs.currentEpoch() !== opts.epoch) return;
   if (fc.note) toast(fc.note); // SMB 离线兜底等附加提示
   state.filePath = fc.filePath;
   state.realPath = src.isZip ? src.zipPath : fc.filePath;
@@ -473,6 +487,7 @@ function loadFileContent(
     at.title = state.fileName;
     at.error = false;
     at.lazy = null;
+    at.text = null; // tab 内换文件：旧文本快照作废（活跃状态由 descriptors 兜底分支接住）
   }
   tabs.renderTabBar();
   notifyContentChanged();
@@ -949,7 +964,8 @@ async function reopenWithEncoding(encoding?: string): Promise<void> {
   if (state.isZip) {
     await openZipEntry(state.realPath, state.zipEntry, { ratio, encoding });
   } else {
-    await openPath(state.filePath, { ratio, encoding });
+    // tab:"replace"：同文件编码重开必须走替换语义（默认 new 会命中同文件跳转而早退）
+    await openPath(state.filePath, { ratio, encoding, tab: "replace" });
   }
   toast(encoding ? `已按 ${encoding} 重新打开` : "已按自动检测重新打开");
 }

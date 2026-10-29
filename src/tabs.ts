@@ -32,6 +32,16 @@ export interface Tab {
 const tabs: Tab[] = [];
 let activeId = "";
 
+/* 打开竞态防护：tab 集合/激活变化即递增，跨 await 的打开流程完成时校验，
+   过期结果（内容/绑定/错误标记）一律丢弃，避免写进已失活的 tab */
+let epoch = 0;
+export function currentEpoch(): number {
+  return epoch;
+}
+function bumpEpoch(): void {
+  epoch++;
+}
+
 const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export function list(): readonly Tab[] {
@@ -81,10 +91,12 @@ function restoreStateFields(snap: TextSnapshot): void {
 
 /** 当前激活 tab 失活前的落账：快照 + 进度/时长写回历史（与关闭文件同语义） */
 function storeLiveInto(tab: Tab): void {
+  const prev = tab.text;
   const snap = snapshotFromState();
   tab.text = snap;
   if (!snap) return;
   tab.title = snap.fileName;
+  if (plugins.isActive() && prev) snap.ratio = prev.ratio; // 视图覆盖期间 getRatio 恒 0：保留此前抢存的文本比例
   if (!plugins.isActive()) {
     const h = app.state.store.history.find((x) => x.filePath === snap.filePath);
     if (h) h.position = snap.ratio;
@@ -116,10 +128,29 @@ export function switchToTab(id: string): void {
   const target = tabs.find((t) => t.id === id);
   if (!target) return;
   activeId = id;
+  bumpEpoch();
   activate(target);
   applyPlaybackPolicy();
   renderTabBar();
   app.persist();
+}
+
+/** 文本 tab 内容装载（activate 与 unbindView 关视图回退共用）：
+ *  有驻留修改直接重渲染；否则重读文件（编码沿用快照，不重猜） */
+function renderTextTab(snap: TextSnapshot): void {
+  if (snap.raw === null) {
+    // 无驻留修改：重读文件；短暂显示旧内容属可接受的加载间隙
+    void app.openPath(snap.filePath, {
+      ratio: snap.ratio,
+      encoding: snap.encoding || undefined,
+      quiet: true,
+      tab: "replace",
+    });
+  } else {
+    app.renderContent(snap.ratio);
+    (document.getElementById("reader-content") as HTMLElement).focus();
+    app.updateUI();
+  }
 }
 
 function activate(target: Tab): void {
@@ -139,19 +170,7 @@ function activate(target: Tab): void {
   if (target.text) {
     const snap = target.text;
     restoreStateFields(snap);
-    if (snap.raw === null) {
-      // 无驻留修改：重读文件（编码沿用快照，不重猜）；短暂显示旧内容属可接受的加载间隙
-      void app.openPath(snap.filePath, {
-        ratio: snap.ratio,
-        encoding: snap.encoding || undefined,
-        quiet: true,
-        tab: "replace",
-      });
-    } else {
-      app.renderContent(snap.ratio);
-      (document.getElementById("reader-content") as HTMLElement).focus();
-      app.updateUI();
-    }
+    renderTextTab(snap);
     return;
   }
   reader.showWelcome();
@@ -169,8 +188,10 @@ export function createTab(title: string): Tab | null {
   const t: Tab = { id: crypto.randomUUID(), title, text: null, viewId: "", lazy: null, error: false };
   tabs.push(t);
   activeId = t.id;
+  bumpEpoch();
   reader.stopScroll();
   plugins.hideActiveView(); // 旧 tab 的视图面板收起保活（归它自己的 tab）
+  applyPlaybackPolicy(); // 新 tab 时后台媒体按设置暂停，与 switchToTab 一致
   renderTabBar();
   return t;
 }
@@ -183,6 +204,7 @@ export function closeTab(id: string): void {
   tabs.splice(idx, 1);
   if (activeId === id) {
     activeId = "";
+    bumpEpoch();
     const next = tabs[Math.min(idx, tabs.length - 1)];
     if (next) {
       switchToTab(next.id);
@@ -201,10 +223,15 @@ export function closeActiveTab(): void {
 
 /* ========== 绑定（app ↔ 视图实例） ========== */
 
-/** 替换当前 tab 内容前：销毁其插件视图（翻页/惰性恢复语义） */
+/** 替换当前 tab 内容前：销毁其插件视图（翻页/惰性恢复语义）。
+ *  先清 viewId 再 closeView：unbindView 找不到归属 tab，跳过文本层回退渲染——
+ *  紧随其后的 loadFileContent 会装载新内容，回退渲染只会造成竞态。 */
 export function destroyActiveView(): void {
   const t = activeTab();
-  if (t?.viewId) plugins.closeView(t.viewId);
+  if (!t?.viewId) return;
+  const vid = t.viewId;
+  t.viewId = "";
+  plugins.closeView(vid);
 }
 
 /** 插件视图覆盖 reader 前抢存激活 tab 文本比例（display:none 后 getRatio 恒 0） */
@@ -228,14 +255,21 @@ export function bindView(viewId: string): void {
   renderTabBar();
 }
 
-/** 视图关闭（✕/停用插件/单例被接管）：解除绑定，tab 回退文本层 */
+/** 视图关闭（✕/停用插件/单例被接管）：解除绑定，激活 tab 完整回退文本层
+ *  （DOM 此前显示的可能是别的 tab 的文本，必须重渲染，否则状态栏与内容错位） */
 export function unbindView(viewId: string): void {
   const t = tabs.find((x) => x.viewId === viewId);
   if (!t) return;
   t.viewId = "";
-  if (t.id === activeId && !t.text) {
-    reader.showWelcome();
-    app.updateUI();
+  if (t.id === activeId) {
+    if (t.text) {
+      const snap = t.text;
+      restoreStateFields(snap);
+      renderTextTab(snap);
+    } else {
+      reader.showWelcome();
+      app.updateUI();
+    }
   }
   renderTabBar();
 }
@@ -321,7 +355,7 @@ export function renderTabBar(): void {
 /** 激活视图上报标题变化时同步 tab 标题（app.updateUI 调用） */
 export function setTitleByView(viewId: string, title: string): void {
   const t = tabs.find((x) => x.viewId === viewId);
-  if (t && title) {
+  if (t && title && title !== "未打开文件") {
     t.title = title;
     renderTabBar();
   }
@@ -361,8 +395,9 @@ export function activeIndex(): number {
 
 /** 启动惰性重建：仅激活 tab 立即打开，后台 tab 首次点击才加载 */
 export function restoreFrom(ds: TabDescriptorLite[], activeIdx: number): void {
-  for (const d of ds) {
-    if (!d.path) continue;
+  // 先过滤空 path 再入表：activeIdx 基于过滤后数组 clamp，空描述不再错位激活相邻 tab
+  const list = ds.filter((d) => d && d.path);
+  for (const d of list) {
     tabs.push({
       id: crypto.randomUUID(),
       title: baseName(d.path.split("::").pop() || d.path),
@@ -372,6 +407,7 @@ export function restoreFrom(ds: TabDescriptorLite[], activeIdx: number): void {
       error: false,
     });
   }
+  bumpEpoch();
   const i = Math.max(0, Math.min(activeIdx, tabs.length - 1));
   if (tabs[i]) switchToTab(tabs[i].id);
   else renderTabBar();

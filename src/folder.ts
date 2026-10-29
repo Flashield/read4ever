@@ -398,7 +398,7 @@ async function openNextAfterDeletion(deletedPath: string, orderBefore: (string |
   }
   const idx = orderBefore.indexOf(deletedPath);
   const nextPath = after[Math.min(Math.max(idx, 0), after.length - 1)];
-  if (nextPath) await app.openPath(nextPath);
+  if (nextPath) await app.openPath(nextPath, { tab: "replace" }); // 阅读连续性：当前 tab 接续，不新开
 }
 
 async function moveToDir(path: string): Promise<void> {
