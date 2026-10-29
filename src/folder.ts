@@ -129,7 +129,7 @@ async function loadChildren(dir: string): Promise<FileEntry[]> {
   const cached = childrenCache.get(dir);
   if (cached) return cached;
   try {
-    const entries = await api.listDir(dir);
+    const entries = await api.listDir(dir, app.state.store.settings.naturalSort);
     childrenCache.set(dir, entries);
     return entries;
   } catch (e) {
@@ -509,8 +509,9 @@ async function startMkdir(dirPath: string): Promise<void> {
   input.addEventListener("blur", () => finish(true));
 }
 
-/** 插件启停等能力变化后刷新面板（面板未打开时忽略） */
+/** 插件启停、排序开关等变化后刷新面板（面板未打开时只清缓存不重渲染） */
 export async function refreshPanel(): Promise<void> {
+  childrenCache.clear(); // 侧栏未开也要清：开关切换后重开面板不能命中旧序缓存
   if (!open) return;
   await refresh();
 }

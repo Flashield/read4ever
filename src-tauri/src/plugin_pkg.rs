@@ -150,7 +150,7 @@ fn safe_rel(name: &str) -> Result<PathBuf, String> {
 /// 从 .rbplugin（zip）安装：校验 manifest 后解包全部条目到 plugins/<id>/。
 /// 已存在同 id 时覆盖安装（先删旧目录）。zip 解析复用自研宽容 zipfile。
 pub async fn install_plugin(app: &AppHandle, zip_path: &str) -> Result<PluginPkgInfo, String> {
-    let entries = crate::zipfile::list_zip_files(zip_path).await?;
+    let entries = crate::zipfile::list_zip_files(zip_path, false).await?; // 插件包条目保持包内顺序
     let manifest_raw = crate::zipfile::read_zip_entry_raw(zip_path, "manifest.json")
         .await
         .map_err(|_| "包内缺少根级 manifest.json".to_string())?;

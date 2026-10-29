@@ -27,7 +27,7 @@ async function loadChildren(dir: string): Promise<SmbFileEntry[]> {
   if (cached) return cached;
   let entries: SmbFileEntry[];
   try {
-    entries = await api.smbListDir(dir);
+    entries = await api.smbListDir(dir, app.state.store.settings.naturalSort);
   } catch (e) {
     app.toast(String(e).slice(0, 60));
     childrenCache.set(dir, []);

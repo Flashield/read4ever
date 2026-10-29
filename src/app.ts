@@ -304,7 +304,7 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
       return;
     }
     if (path.toLowerCase().endsWith(".zip")) {
-      const entries = await api.listZip(path);
+      const entries = await api.listZip(path, state.store.settings.naturalSort);
       // 只列出当前可打开的条目：TXT 恒可；其余取决于启用的插件
       const openable = entries.filter(
         (n) => /\.(txt|zip)$/i.test(n) || plugins.handlerForExt(plugins.extOf(n))
@@ -444,14 +444,14 @@ function loadFileContent(
 /* 按序号打开上一个/下一个文件 */
 export async function gotoNextFile(): Promise<void> {
   if (!state.realPath) return;
-  const n = await api.nextFile(state.realPath);
+  const n = await api.nextFile(state.realPath, state.store.settings.naturalSort);
   if (n) openPath(n);
   else toast("没有下一个文件");
 }
 
 export async function gotoPrevFile(): Promise<void> {
   if (!state.realPath) return;
-  const p = await api.prevFile(state.realPath);
+  const p = await api.prevFile(state.realPath, state.store.settings.naturalSort);
   if (p) openPath(p);
   else toast("没有上一个文件");
 }

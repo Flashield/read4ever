@@ -70,8 +70,8 @@ pub(crate) fn seq_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// 列出目录中与当前文件同扩展名的文件，按智能序号排序
-fn list_sibling_files(current: &Path) -> Vec<PathBuf> {
+/// 列出目录中与当前文件同扩展名的文件（natural=true 自然排序，false 序号排序）
+fn list_sibling_files(current: &Path, natural: bool) -> Vec<PathBuf> {
     let dir = match current.parent() {
         Some(d) => d,
         None => return Vec::new(),
@@ -100,17 +100,21 @@ fn list_sibling_files(current: &Path) -> Vec<PathBuf> {
     }
 
     files.sort_by(|a, b| {
-        seq_cmp(
-            a.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-            b.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-        )
+        let na = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let nb = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if natural {
+            crate::natural::natural_cmp(na, nb)
+        } else {
+            seq_cmp(na, nb)
+        }
     });
     files
 }
 
 /// 已排序名字表中 current 的下一个名字：
 /// idx 命中 → 后继；未命中（如输入名与条目名不完全一致）→ n+1 前缀兜底 → 首文件兜底。
-/// idx 由调用方计算：本地按 canonicalize 等价匹配，SMB 按名字精确匹配
+/// idx 由调用方计算：本地按 canonicalize 等价匹配，SMB 按名字精确匹配。
+/// 兜底固定按序号语义（num+1），不随 natural 参数切换；仅在当前名字不在排序表中时触发
 pub(crate) fn next_among(sorted: &[String], current: &str, idx: Option<usize>) -> Option<String> {
     if let Some(i) = idx {
         return sorted.get(i + 1).cloned();
@@ -148,12 +152,12 @@ fn path_of_name(siblings: &[PathBuf], name: &str) -> Option<String> {
         .and_then(|f| f.to_str().map(|s| s.to_string()))
 }
 
-/// 找到当前文件的下一个文件（按序号逻辑）
-/// 如果当前文件 A1.txt，同目录有 A1..A10，则下一个是 A2.txt（而非 A10.txt）
-pub fn find_next_file(current_path: &str) -> Option<String> {
+/// 找到当前文件的下一个文件（natural=true 自然排序，false 按序号逻辑）
+/// 序号逻辑：如果当前文件 A1.txt，同目录有 A1..A10，则下一个是 A2.txt（而非 A10.txt）
+pub fn find_next_file(current_path: &str, natural: bool) -> Option<String> {
     let current = Path::new(current_path);
     let cur_name = current.file_name()?.to_str()?.to_string();
-    let siblings = list_sibling_files(current);
+    let siblings = list_sibling_files(current, natural);
     let cur_canonical = current.canonicalize().ok()?;
     let names: Vec<String> = siblings
         .iter()
@@ -167,11 +171,11 @@ pub fn find_next_file(current_path: &str) -> Option<String> {
     path_of_name(&siblings, &name)
 }
 
-/// 找到当前文件的上一个文件
-pub fn find_prev_file(current_path: &str) -> Option<String> {
+/// 找到当前文件的上一个文件（natural=true 自然排序，false 按序号逻辑）
+pub fn find_prev_file(current_path: &str, natural: bool) -> Option<String> {
     let current = Path::new(current_path);
     let cur_canonical = current.canonicalize().ok()?;
-    let siblings = list_sibling_files(current);
+    let siblings = list_sibling_files(current, natural);
 
     for (i, f) in siblings.iter().enumerate() {
         if let Ok(c) = f.canonicalize() {

@@ -59,13 +59,14 @@ pub async fn open_text_file(
     })
 }
 
-/// 打开 zip，返回内部全部文件条目（类型过滤由前端按插件能力决定）
+/// 打开 zip，返回内部全部文件条目（类型过滤由前端按插件能力决定）。
+/// natural=true 条目自然排序，false 保持包内原始顺序
 #[tauri::command]
-pub async fn open_zip_file(app: AppHandle, path: String) -> Result<Vec<String>, String> {
+pub async fn open_zip_file(app: AppHandle, path: String, natural: bool) -> Result<Vec<String>, String> {
     if smb::is_smb_path(&path) {
-        return smb::list_zip(&path, &smb_cache_dir(&app)?).await;
+        return smb::list_zip(&path, &smb_cache_dir(&app)?, natural).await;
     }
-    crate::zipfile::list_zip_files(&path).await
+    crate::zipfile::list_zip_files(&path, natural).await
 }
 
 /// 读取磁盘文件原始字节（二进制插件用；前端 invoke 得到 ArrayBuffer）
@@ -140,22 +141,22 @@ pub fn reorder(content: String) -> String {
     reorder_text(&content)
 }
 
-/// 按序号找下一个文件
+/// 按序号找下一个文件（natural=true 自然排序，false 序号逻辑）
 #[tauri::command]
-pub async fn find_next(app: AppHandle, path: String) -> Result<Option<String>, String> {
+pub async fn find_next(app: AppHandle, path: String, natural: bool) -> Result<Option<String>, String> {
     if smb::is_smb_path(&path) {
-        return smb::find_sibling(&path, true, &smb_cache_dir(&app)?).await;
+        return smb::find_sibling(&path, true, natural, &smb_cache_dir(&app)?).await;
     }
-    Ok(find_next_file(&path))
+    Ok(find_next_file(&path, natural))
 }
 
-/// 按序号找上一个文件
+/// 按序号找上一个文件（natural=true 自然排序，false 序号逻辑）
 #[tauri::command]
-pub async fn find_prev(app: AppHandle, path: String) -> Result<Option<String>, String> {
+pub async fn find_prev(app: AppHandle, path: String, natural: bool) -> Result<Option<String>, String> {
     if smb::is_smb_path(&path) {
-        return smb::find_sibling(&path, false, &smb_cache_dir(&app)?).await;
+        return smb::find_sibling(&path, false, natural, &smb_cache_dir(&app)?).await;
     }
-    Ok(find_prev_file(&path))
+    Ok(find_prev_file(&path, natural))
 }
 
 /// 加载持久化数据
@@ -232,13 +233,14 @@ pub struct FileEntry {
     pub mtime: u64, // 毫秒时间戳
 }
 
-/// 列出单层目录：目录优先、按名称排序，跳过隐藏文件。
+/// 列出单层目录：目录优先，跳过隐藏文件。natural=true 名称自然排序，
+/// false 名称不区分大小写典序排序。
 /// smb:// 路径分发到远程实现（插件 listContainer 由此免改获得 SMB 能力），
 /// 远程条目的 cached 标记在此丢弃——带标记的列表走 smb_list_dir。
 #[tauri::command]
-pub async fn list_dir(app: AppHandle, path: String) -> Result<Vec<FileEntry>, String> {
+pub async fn list_dir(app: AppHandle, path: String, natural: bool) -> Result<Vec<FileEntry>, String> {
     if smb::is_smb_path(&path) {
-        let entries = smb::list_dir(&path, &smb_cache_dir(&app)?).await?;
+        let entries = smb::list_dir(&path, &smb_cache_dir(&app)?, natural).await?;
         return Ok(entries.into_iter().map(|e| e.entry).collect());
     }
     let rd = fs::read_dir(&path).map_err(|e| format!("无法读取目录 {}: {}", path, e))?;
@@ -267,7 +269,13 @@ pub async fn list_dir(app: AppHandle, path: String) -> Result<Vec<FileEntry>, St
     entries.sort_by(|a, b| match (b.is_dir, a.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        _ => {
+            if natural {
+                crate::natural::natural_cmp(&a.name, &b.name)
+            } else {
+                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            }
+        }
     });
     Ok(entries)
 }
@@ -428,10 +436,11 @@ fn smb_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("无法定位缓存目录: {}", e))
 }
 
-/// 远程目录列表（FileEntry + cached 标记，远程面板用）
+/// 远程目录列表（FileEntry + cached 标记，远程面板用）。
+/// natural=true 名称自然排序，false 名称不区分大小写典序排序
 #[tauri::command]
-pub async fn smb_list_dir(app: AppHandle, path: String) -> Result<Vec<smb::SmbFileEntry>, String> {
-    smb::list_dir(&path, &smb_cache_dir(&app)?).await
+pub async fn smb_list_dir(app: AppHandle, path: String, natural: bool) -> Result<Vec<smb::SmbFileEntry>, String> {
+    smb::list_dir(&path, &smb_cache_dir(&app)?, natural).await
 }
 
 /// 「缓存到本地」：返回本地缓存文件路径

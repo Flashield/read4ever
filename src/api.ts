@@ -14,7 +14,8 @@ import type {
 export const api = {
   openText: (path: string, encoding?: string) =>
     invoke<FileContent>("open_text_file", { path, encoding: encoding ?? null }),
-  listZip: (path: string) => invoke<string[]>("open_zip_file", { path }),
+  listZip: (path: string, natural: boolean) =>
+    invoke<string[]>("open_zip_file", { path, natural }),
   readZip: (path: string, entryName: string, encoding?: string) =>
     invoke<FileContent>("read_zip_entry", { path, entryName, encoding: encoding ?? null }),
   saveText: (path: string, content: string, encoding: string) =>
@@ -22,8 +23,10 @@ export const api = {
   editSave: (path: string, content: string, encoding: string) =>
     invoke<void>("edit_save", { path, content, encoding }),
   reorder: (content: string) => invoke<string>("reorder", { content }),
-  nextFile: (path: string) => invoke<string | null>("find_next", { path }),
-  prevFile: (path: string) => invoke<string | null>("find_prev", { path }),
+  nextFile: (path: string, natural: boolean) =>
+    invoke<string | null>("find_next", { path, natural }),
+  prevFile: (path: string, natural: boolean) =>
+    invoke<string | null>("find_prev", { path, natural }),
   loadStore: () => invoke<StoreData>("load_store"),
   saveStore: (data: StoreData) => invoke<void>("save_store", { data }),
   setTitle: (title: string) => invoke<void>("set_window_title", { title }),
@@ -32,7 +35,8 @@ export const api = {
   setKeepAwake: (on: boolean) => invoke<void>("set_keep_awake", { on }),
 
   /* 文件夹侧栏 */
-  listDir: (path: string) => invoke<FileEntry[]>("list_dir", { path }),
+  listDir: (path: string, natural: boolean) =>
+    invoke<FileEntry[]>("list_dir", { path, natural }),
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   moveTo: (from: string, toDir: string) => invoke<string>("move_path", { from, toDir }),
   renamePath: (from: string, newName: string) =>
@@ -55,7 +59,8 @@ export const api = {
   smbPutServers: (servers: SmbServer[]) =>
     invoke<void>("smb_put_servers", { servers }),
   smbTest: (server: SmbServer) => invoke<string>("smb_test_connection", { server }),
-  smbListDir: (path: string) => invoke<SmbFileEntry[]>("smb_list_dir", { path }),
+  smbListDir: (path: string, natural: boolean) =>
+    invoke<SmbFileEntry[]>("smb_list_dir", { path, natural }),
   smbCacheFile: (path: string) => invoke<string>("smb_cache_file", { path }),
   smbCachedStatus: (path: string) => invoke<SmbCacheStatus>("smb_cached_status", { path }),
   smbClearCache: () => invoke<number>("smb_clear_cache"),

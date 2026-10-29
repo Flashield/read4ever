@@ -159,13 +159,13 @@ async function listImages(c: Container): Promise<string[]> {
   let out: string[] = [];
   try {
     if (c.type === "zip") {
-      const all = await api.listZip(c.path);
+      const all = await api.listZip(c.path, app.state.store.settings.naturalSort);
       out = all
         .filter((n) => IMAGE_RE.test(n))
         .sort((a, b) => a.localeCompare(b, "zh"))
         .map((n) => `${c.path}::${n}`);
     } else {
-      const entries = await api.listDir(c.path);
+      const entries = await api.listDir(c.path, app.state.store.settings.naturalSort);
       out = entries
         .filter((e) => !e.isDir && IMAGE_RE.test(e.name))
         .sort((a, b) => a.name.localeCompare(b.name, "zh"))
@@ -181,7 +181,7 @@ async function listImages(c: Container): Promise<string[]> {
 /** 播完当前容器后，取同级的下一个容器（list_dir 顺序：目录在前，zip 文件随后） */
 async function nextContainer(c: Container): Promise<Container | null> {
   try {
-    const entries = await api.listDir(parentOf(c.path));
+    const entries = await api.listDir(parentOf(c.path), app.state.store.settings.naturalSort);
     const containers: Container[] = [];
     for (const e of entries) {
       if (e.isDir) containers.push({ type: "dir", path: e.path });
@@ -198,7 +198,7 @@ async function nextContainer(c: Container): Promise<Container | null> {
 /** 后退跨容器：取同级的上一个容器（与 nextContainer 同序反向） */
 async function prevContainer(c: Container): Promise<Container | null> {
   try {
-    const entries = await api.listDir(parentOf(c.path));
+    const entries = await api.listDir(parentOf(c.path), app.state.store.settings.naturalSort);
     const containers: Container[] = [];
     for (const e of entries) {
       if (e.isDir) containers.push({ type: "dir", path: e.path });

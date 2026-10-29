@@ -43,7 +43,7 @@ async fn cached_reads_repeat_and_list_matches() {
         .await
         .expect("第二次读取（缓存）");
     assert_eq!(a, b);
-    let all = list_zip_files(BROKEN_ZIP).await.expect("列出条目");
+    let all = list_zip_files(BROKEN_ZIP, false).await.expect("列出条目");
     assert!(all.iter().any(|n| n.ends_with(".txt")));
 }
 
@@ -55,7 +55,7 @@ async fn perf_network_zip_diag() {
         return;
     }
     let t0 = std::time::Instant::now();
-    let names = list_zip_files(P).await.expect("列出条目");
+    let names = list_zip_files(P, false).await.expect("列出条目");
     println!("缓存构建+列出条目({}): {:?}", names.len(), t0.elapsed());
     let imgs: Vec<String> = names
         .iter()

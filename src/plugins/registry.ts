@@ -180,8 +180,8 @@ async function loadBytes(path: string): Promise<Uint8Array> {
 
 async function listContainer(): Promise<string[]> {
   try {
-    if (scopeZip) return api.listZip(scopeZip);
-    const entries: FileEntry[] = await api.listDir(scopeDir);
+    if (scopeZip) return api.listZip(scopeZip, app.state.store.settings.naturalSort);
+    const entries: FileEntry[] = await api.listDir(scopeDir, app.state.store.settings.naturalSort);
     return entries.filter((e) => !e.isDir).map((e) => e.path);
   } catch {
     return [];
@@ -192,13 +192,13 @@ async function computeSiblings(path: string, ext: string): Promise<{ siblings: s
   const { zipPath, entry, base } = splitTarget(path);
   try {
     if (entry) {
-      const all = await api.listZip(zipPath);
+      const all = await api.listZip(zipPath, app.state.store.settings.naturalSort);
       const sibs = all.filter((n) => extOf(n) === ext).map((n) => `${zipPath}::${n}`);
       return { siblings: sibs, index: Math.max(0, sibs.indexOf(path)) };
     }
     const sep = base.includes("\\") ? "\\" : "/";
     const dir = base.slice(0, Math.max(base.lastIndexOf(sep), 0));
-    const entries: FileEntry[] = await api.listDir(dir);
+    const entries: FileEntry[] = await api.listDir(dir, app.state.store.settings.naturalSort);
     const sibs = entries.filter((e) => !e.isDir && extOf(e.name) === ext).map((e) => e.path);
     return { siblings: sibs, index: Math.max(0, sibs.indexOf(path)) };
   } catch {

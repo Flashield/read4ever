@@ -12,17 +12,22 @@ use crate::encoding::{decode_with, detect_and_decode};
 /// 此函数保留给宽容解析测试与潜在调用方。
 #[allow(dead_code)]
 pub async fn list_zip_txt(path: &str) -> Result<Vec<String>, String> {
-    Ok(list_zip_files(path)
+    Ok(list_zip_files(path, false)
         .await?
         .into_iter()
         .filter(|n| n.to_ascii_uppercase().ends_with(".TXT"))
         .collect())
 }
 
-/// 列出 zip 内全部文件条目（含路径，不过滤类型）
-pub async fn list_zip_files(path: &str) -> Result<Vec<String>, String> {
+/// 列出 zip 内全部文件条目（含路径，不过滤类型）。
+/// natural=true 按自然排序返回，false 保持包内原始顺序
+pub async fn list_zip_files(path: &str, natural: bool) -> Result<Vec<String>, String> {
     let entry = cache_entry(path).await?;
-    Ok(entry.index.entries.iter().map(|e| e.name.clone()).collect())
+    let mut entries: Vec<String> = entry.index.entries.iter().map(|e| e.name.clone()).collect();
+    if natural {
+        entries.sort_by(|a, b| crate::natural::natural_cmp(a, b));
+    }
+    Ok(entries)
 }
 
 /// 读取 zip 内指定条目的原始字节（不做文本解码）。

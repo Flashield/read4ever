@@ -241,8 +241,9 @@ fn evict_session(id: &str, e: &smb2::Error) {
     }
 }
 
-/// 列出 share 内单层目录（smb://…/share[/子路径]）：目录优先、名称排序，跳 . .. 隐藏项
-pub async fn list_dir(path: &str, cache_dir: &Path) -> Result<Vec<SmbFileEntry>, String> {
+/// 列出 share 内单层目录（smb://…/share[/子路径]）：目录优先，跳 . .. 隐藏项。
+/// natural=true 名称自然排序，false 名称不区分大小写典序排序
+pub async fn list_dir(path: &str, cache_dir: &Path, natural: bool) -> Result<Vec<SmbFileEntry>, String> {
     let (cfg, rel) = resolve(path)?;
     let ses = session_for(&cfg.id).await?;
     // list_directory 的目录参数带尾斜杠（share 根传空串）
@@ -295,7 +296,13 @@ pub async fn list_dir(path: &str, cache_dir: &Path) -> Result<Vec<SmbFileEntry>,
     out.sort_by(|a, b| match (b.entry.is_dir, a.entry.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.entry.name.to_lowercase().cmp(&b.entry.name.to_lowercase()),
+        _ => {
+            if natural {
+                crate::natural::natural_cmp(&a.entry.name, &b.entry.name)
+            } else {
+                a.entry.name.to_lowercase().cmp(&b.entry.name.to_lowercase())
+            }
+        }
     });
     Ok(out)
 }
@@ -790,13 +797,17 @@ async fn open_smb_reader(
     Ok(reader)
 }
 
-/// 列出远程 zip 条目
-pub async fn list_zip(path: &str, cache_dir: &Path) -> Result<Vec<String>, String> {
+/// 列出远程 zip 条目（natural=true 自然排序，false 保持包内原始顺序）
+pub async fn list_zip(path: &str, cache_dir: &Path, natural: bool) -> Result<Vec<String>, String> {
     if let Some(bin) = local_zip_copy(path, cache_dir).await? {
-        return crate::zipfile::list_zip_files(&bin.to_string_lossy()).await;
+        return crate::zipfile::list_zip_files(&bin.to_string_lossy(), natural).await;
     }
     let index = zip_index(path).await?;
-    Ok(index.entries.iter().map(|e| e.name.clone()).collect())
+    let mut entries: Vec<String> = index.entries.iter().map(|e| e.name.clone()).collect();
+    if natural {
+        entries.sort_by(|a, b| crate::natural::natural_cmp(a, b));
+    }
+    Ok(entries)
 }
 
 /// 读取远程 zip 条目原始字节：新鲜缓存 → 本地；否则索引 + 定位读条目区间
@@ -832,11 +843,13 @@ pub async fn read_zip_entry_text(
     crate::zipfile::decode_bytes(&buf, forced)
 }
 
-/// 远程上一集/下一集：列远程父目录 → 同扩展名过滤 → 智能序号排序 → 纯函数定位。
+/// 远程上一集/下一集：列远程父目录 → 同扩展名过滤 → 排序（natural=true 自然 /
+/// false 智能序号）→ 纯函数定位。
 /// 返回完整 smb:// 路径。连载场景 zip→zip 接续同样覆盖（realPath 即 zip 的 smb 路径）。
 pub async fn find_sibling(
     path: &str,
     forward: bool,
+    natural: bool,
     cache_dir: &Path,
 ) -> Result<Option<String>, String> {
     let pure = path.split("::").next().unwrap_or(path);
@@ -847,7 +860,7 @@ pub async fn find_sibling(
     if cur_name.is_empty() {
         return Ok(None);
     }
-    let entries = list_dir(&parent_smb, cache_dir).await?;
+    let entries = list_dir(&parent_smb, cache_dir, natural).await?;
     // 与本地 list_sibling_files 同语义：同扩展名文件（无扩展名按 txt）
     let ext = cur_name
         .rsplit_once('.')
@@ -865,7 +878,13 @@ pub async fn find_sibling(
         })
         .map(|e| (e.entry.name.clone(), e.entry.path.clone()))
         .collect();
-    files.sort_by(|a, b| crate::seqfile::seq_cmp(&a.0, &b.0));
+    files.sort_by(|a, b| {
+        if natural {
+            crate::natural::natural_cmp(&a.0, &b.0)
+        } else {
+            crate::seqfile::seq_cmp(&a.0, &b.0)
+        }
+    });
     let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
     let idx = names.iter().position(|n| n == &cur_name);
     let picked = if forward {
