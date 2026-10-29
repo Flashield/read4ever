@@ -443,6 +443,30 @@ pub async fn smb_list_dir(app: AppHandle, path: String, natural: bool) -> Result
     smb::list_dir(&path, &smb_cache_dir(&app)?, natural).await
 }
 
+/// 删除远程文件/目录（递归）。SMB 无回收站，前端已做两段式确认
+#[tauri::command]
+pub async fn smb_delete(path: String) -> Result<(), String> {
+    smb::delete_path(&path).await
+}
+
+/// 远程同目录重命名
+#[tauri::command]
+pub async fn smb_rename(path: String, new_name: String) -> Result<(), String> {
+    smb::rename_path(&path, &new_name).await
+}
+
+/// 远程同共享内移动（重命名到另一目录）
+#[tauri::command]
+pub async fn smb_move(path: String, to_dir: String) -> Result<(), String> {
+    smb::move_path(&path, &to_dir).await
+}
+
+/// 远程新建文件夹
+#[tauri::command]
+pub async fn smb_mkdir(parent: String, name: String) -> Result<(), String> {
+    smb::make_dir(&parent, &name).await
+}
+
 /// 「缓存到本地」：返回本地缓存文件路径
 #[tauri::command]
 pub async fn smb_cache_file(app: AppHandle, path: String) -> Result<String, String> {

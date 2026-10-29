@@ -15,7 +15,9 @@
      （HandleInvalidated），长读循环里失败要经 stat 触发重连后重开句柄续读。
    规范路径：smb://<服务器id>/<share>/<相对路径>，zip 条目再追加 "::条目名"。
    凭证表由前端启动/增删后经 smb_put_servers 推入（避免读到防抖 save_store 的旧数据）。
-   远程侧只读：不调用 delete/rename/write 类接口。 */
+   远程写操作（2026-10-29 起反转只读 spike 决定）：delete/rename/mkdir 走 client
+   便捷方法。注意：与读路径不同，写操作断线不重放（防双写）——报错由 evict_session
+   摘除会话，本次操作需重试，下次操作自动重建；删除为永久操作，无回收站。 */
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -894,4 +896,229 @@ pub async fn find_sibling(
         idx.and_then(|i| crate::seqfile::prev_among(&names, i))
     };
     Ok(picked.and_then(|n| files.iter().find(|(x, _)| x == &n).map(|(_, p)| p.clone())))
+}
+
+/* ========== 远程写操作（2026-10-29 起，反转「远程侧只读」spike 决定） ==========
+   递归删除链接策略：列表层 is_link 命中的只删链接本身不进目标；Samba 会把 unix
+   符号链接按目标类型列出，故递归进子目录前额外 stat 查 is_link 兜底（勿「优化」掉）。 */
+
+/// 删除远程文件或目录（目录递归）。SMB 无回收站，前端负责两段式确认后再调。
+pub async fn delete_path(path: &str) -> Result<(), String> {
+    if path.contains("::") {
+        return Err("路径不是远程文件或目录".into());
+    }
+    let (cfg, rel) = resolve(path)?;
+    if rel.is_empty() {
+        return Err("不能删除共享根目录".into());
+    }
+    let ses = session_for(&cfg.id).await?;
+    let mut core = ses.core.lock().await;
+    let SmbCore { client, tree } = &mut *core;
+    delete_locked(&cfg.id, client, tree, &rel).await
+}
+
+/// 递归删除 rel（文件或目录）。要求调用方已持会话锁。
+/// 递归中途失败即返回错误（尽力而为，不回滚；剩余部分可重新删除续删）。
+/// 链接（junction/符号链接）只删链接本身，绝不跟随进目标删内容：
+/// 列表层 e.is_link() 命中的直接 del_link_locked；Samba 会把 unix 符号链接
+/// 按目标类型列出（列表层 is_link 为 false），兜底靠递归入口的 stat——
+/// 每个子目录递归前必先经入口 stat 查 FileInfo::is_link()，为真即删链接
+/// 不再下钻（勿「优化」掉这次 stat）。
+async fn delete_locked(
+    id: &str,
+    client: &mut SmbClient,
+    tree: &mut Tree,
+    rel: &str,
+) -> Result<(), String> {
+    let info = match with_timeout("访问远程文件", client.stat(tree, rel)).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            evict_session(id, &e);
+            return Err(format!("无法访问 {}: {}（已删部分不可恢复，重试可续删）", rel, e));
+        }
+        Err(msg) => return Err(msg),
+    };
+    if info.is_link() {
+        return del_link_locked(id, client, tree, rel).await;
+    }
+    if !info.is_directory {
+        return del_file_locked(id, client, tree, rel).await;
+    }
+    // list_directory 的目录参数带尾斜杠（同 pub list_dir 惯例）
+    let list_path = format!("{}/", rel);
+    let entries = match with_timeout("列目录", client.list_directory(tree, &list_path)).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            evict_session(id, &e);
+            return Err(format!("无法读取目录 {}: {}（已删部分不可恢复，重试可续删）", rel, e));
+        }
+        Err(msg) => return Err(msg),
+    };
+    for e in entries {
+        if e.name == "." || e.name == ".." {
+            continue;
+        }
+        let child = format!("{}/{}", rel, e.name);
+        if e.is_link() {
+            // 列表层已标记链接：只删链接本身，不进目标
+            del_link_locked(id, client, tree, &child)
+                .await
+                .map_err(|m| format!("{m}（已删部分不可恢复，重试可续删）"))?;
+        } else if e.is_directory {
+            // Samba 列表层会把 unix 符号链接按目录列出：递归入口的 stat
+            // is_link 检查是兜底，命中则只删链接（见函数头注释）
+            // async 递归须 Box::pin 打破无限大小 future
+            Box::pin(delete_locked(id, client, tree, &child)).await?;
+        } else {
+            del_file_locked(id, client, tree, &child)
+                .await
+                .map_err(|m| format!("{m}（已删部分不可恢复，重试可续删）"))?;
+        }
+    }
+    match with_timeout("删除目录", client.delete_directory(tree, rel)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            evict_session(id, &e);
+            Err(format!("删除目录 {} 失败: {}（已删部分不可恢复，重试可续删）", rel, e))
+        }
+        Err(msg) => Err(msg),
+    }
+}
+
+async fn del_file_locked(
+    id: &str,
+    client: &mut SmbClient,
+    tree: &mut Tree,
+    rel: &str,
+) -> Result<(), String> {
+    match with_timeout("删除文件", client.delete_file(tree, rel)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            evict_session(id, &e);
+            Err(format!("删除 {} 失败: {}", rel, e))
+        }
+        Err(msg) => Err(msg),
+    }
+}
+
+/// 删除链接本身（junction/符号链接），目标内容不动（crate 内带 FILE_OPEN_REPARSE_POINT）
+async fn del_link_locked(
+    id: &str,
+    client: &mut SmbClient,
+    tree: &mut Tree,
+    rel: &str,
+) -> Result<(), String> {
+    match with_timeout("删除链接", client.delete_link(tree, rel)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            evict_session(id, &e);
+            Err(format!("删除链接 {} 失败: {}", rel, e))
+        }
+        Err(msg) => Err(msg),
+    }
+}
+
+/// 远程同目录重命名
+pub async fn rename_path(path: &str, new_name: &str) -> Result<(), String> {
+    if path.contains("::") {
+        return Err("路径不是远程文件或目录".into());
+    }
+    let new_name = new_name.trim();
+    if new_name.is_empty()
+        || new_name.contains('/')
+        || new_name.contains('\\')
+        || new_name == "."
+        || new_name == ".."
+    {
+        return Err("名称不能为空，不能是 . 或 ..，且不能包含 / \\ 字符".into());
+    }
+    let (cfg, rel) = resolve(path)?;
+    if rel.is_empty() {
+        return Err("共享根不能重命名".into());
+    }
+    let parent = rel.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    let target = format!("{}/{}", parent, new_name);
+    let ses = session_for(&cfg.id).await?;
+    let mut core = ses.core.lock().await;
+    let SmbCore { client, tree } = &mut *core;
+    rename_locked(&cfg.id, client, tree, &rel, &target, "重命名").await
+}
+
+/// 远程同共享内移动（重命名到另一目录）。跨服务器/跨共享明确不支持。
+pub async fn move_path(path: &str, to_dir: &str) -> Result<(), String> {
+    if path.contains("::") || to_dir.contains("::") {
+        return Err("路径不是远程文件或目录".into());
+    }
+    let (cfg, rel) = resolve(path)?;
+    if rel.is_empty() {
+        return Err("共享根不能移动".into());
+    }
+    let (cfg_to, rel_to) = resolve(to_dir)?;
+    if cfg.id != cfg_to.id {
+        return Err("跨服务器移动暂不支持".into());
+    }
+    if rel_to == rel || rel_to.starts_with(&format!("{}/", rel)) {
+        return Err("不能移动到自身或其子目录内".into());
+    }
+    let src_parent = rel.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    if rel_to == src_parent {
+        return Err("目标目录与当前所在目录相同".into());
+    }
+    let name = rel.rsplit_once('/').map(|(_, n)| n).unwrap_or(&rel);
+    let target = format!("{}/{}", rel_to, name);
+    let ses = session_for(&cfg.id).await?;
+    let mut core = ses.core.lock().await;
+    let SmbCore { client, tree } = &mut *core;
+    rename_locked(&cfg.id, client, tree, &rel, &target, "移动").await
+}
+
+async fn rename_locked(
+    id: &str,
+    client: &mut SmbClient,
+    tree: &mut Tree,
+    from: &str,
+    to: &str,
+    what: &str,
+) -> Result<(), String> {
+    match with_timeout(what, client.rename(tree, from, to)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            evict_session(id, &e);
+            Err(format!("{}失败: {}", what, e))
+        }
+        Err(msg) => Err(msg),
+    }
+}
+
+/// 远程新建文件夹
+pub async fn make_dir(parent: &str, name: &str) -> Result<(), String> {
+    if parent.contains("::") {
+        return Err("路径不是远程文件或目录".into());
+    }
+    let name = name.trim();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name == "."
+        || name == ".."
+    {
+        return Err("名称不能为空，不能是 . 或 ..，且不能包含 / \\ 字符".into());
+    }
+    let (cfg, rel) = resolve(parent)?;
+    let target = if rel.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", rel, name)
+    };
+    let ses = session_for(&cfg.id).await?;
+    let mut core = ses.core.lock().await;
+    let SmbCore { client, tree } = &mut *core;
+    match with_timeout("新建文件夹", client.create_directory(tree, &target)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            evict_session(&cfg.id, &e);
+            Err(format!("创建失败: {}", e))
+        }
+        Err(msg) => Err(msg),
+    }
 }

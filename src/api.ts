@@ -64,6 +64,13 @@ export const api = {
   smbCacheFile: (path: string) => invoke<string>("smb_cache_file", { path }),
   smbCachedStatus: (path: string) => invoke<SmbCacheStatus>("smb_cached_status", { path }),
   smbClearCache: () => invoke<number>("smb_clear_cache"),
+  smbDelete: (path: string) => invoke<void>("smb_delete", { path }),
+  smbRename: (path: string, newName: string) =>
+    invoke<void>("smb_rename", { path, newName }),
+  smbMove: (path: string, toDir: string) =>
+    invoke<void>("smb_move", { path, toDir }),
+  smbMkdir: (parent: string, name: string) =>
+    invoke<void>("smb_mkdir", { parent, name }),
 
   /* 文件对话框 */
   pickOpenFile: async (extraExts: string[] = []): Promise<string | null> => {

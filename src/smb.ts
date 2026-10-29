@@ -1,7 +1,7 @@
 /* 左侧面板「远程」标签：SMB 服务器树 + 目录文件列表。
    只读浏览 + 打开（openPath 直通后端 smb:// 分发，无新打开代码）+ 显式「缓存到本地」。
    服务器配置存 store.smbServers，增删改后推 smbPutServers 供后端重建会话。
-   远程侧不提供删除/重命名/移动等破坏性操作。 */
+   远程写操作（删除/重命名/移动/新建文件夹）自 2026-10-29 起提供，删除为永久操作。 */
 import { api } from "./api";
 import * as app from "./app";
 import { showDropdown, type MenuItemDef } from "./dropdown";

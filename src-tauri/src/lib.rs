@@ -78,6 +78,10 @@ pub fn run() {
             commands::smb_cache_file,
             commands::smb_cached_status,
             commands::smb_clear_cache,
+            commands::smb_delete,
+            commands::smb_rename,
+            commands::smb_move,
+            commands::smb_mkdir,
             wake::set_keep_awake,
         ])
         .on_window_event(|window, event| {
