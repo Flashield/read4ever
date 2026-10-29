@@ -446,12 +446,12 @@ function loadFileContent(
   notifyContentChanged();
 }
 
-/* 按序号打开上一个/下一个文件；插件视图激活时分发给插件的 navFile（图片/视频上一张/下一个） */
+/* 按序号打开上一个/下一个文件；插件视图激活时分发给激活实例的 navFile（图片/视频上一张/下一个） */
 export async function gotoNextFile(): Promise<void> {
-  const p = plugins.activePlugin();
-  if (p) {
+  const inst = plugins.activeInstance();
+  if (inst) {
     try {
-      if (p.navFile) p.navFile(1);
+      if (inst.navFile) inst.navFile(1);
       else toast("当前插件视图不支持切换文件");
     } catch (e) {
       console.error("[plugin] navFile 失败:", e);
@@ -465,10 +465,10 @@ export async function gotoNextFile(): Promise<void> {
 }
 
 export async function gotoPrevFile(): Promise<void> {
-  const p = plugins.activePlugin();
-  if (p) {
+  const inst = plugins.activeInstance();
+  if (inst) {
     try {
-      if (p.navFile) p.navFile(-1);
+      if (inst.navFile) inst.navFile(-1);
       else toast("当前插件视图不支持切换文件");
     } catch (e) {
       console.error("[plugin] navFile 失败:", e);
@@ -546,12 +546,12 @@ function startReadTicker(): void {
 
 /* ========== 滚屏/播放（公共入口：按视图类型分发） ========== */
 
-/** 当前视图是否播放中：插件视图看插件 isPlaying，文本视图看滚屏状态（按钮高亮/菜单文案用） */
+/** 当前视图是否播放中：插件视图看激活实例 isPlaying，文本视图看滚屏状态（按钮高亮/菜单文案用） */
 export function isPlaying(): boolean {
-  const p = plugins.activePlugin();
-  if (p) {
+  const inst = plugins.activeInstance();
+  if (inst) {
     try {
-      return p.isPlaying?.() ?? false;
+      return inst.isPlaying?.() ?? false;
     } catch (e) {
       console.error("[plugin] isPlaying 失败:", e);
       return false;
@@ -561,13 +561,13 @@ export function isPlaying(): boolean {
 }
 
 /** 滚屏/播放公共入口（菜单栏按钮 / Space / 插件经 ctx.togglePlayback 调用）：
- *  插件视图 → 插件的 togglePlay（图片按所选滚屏/幻灯模式播放，视频暂停/继续）；
+ *  插件视图 → 激活实例的 togglePlay（图片按所选滚屏/幻灯模式播放，视频暂停/继续）；
  *  文本视图 → 连续滚屏 / 页模式自动翻页开关 */
 export function togglePlayback(): void {
-  const p = plugins.activePlugin();
-  if (p) {
+  const inst = plugins.activeInstance();
+  if (inst) {
     try {
-      if (p.togglePlay) p.togglePlay();
+      if (inst.togglePlay) inst.togglePlay();
       else toast("当前插件视图不支持播放控制");
     } catch (e) {
       console.error("[plugin] togglePlay 失败:", e);

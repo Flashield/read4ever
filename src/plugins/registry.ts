@@ -4,10 +4,11 @@
 import { api } from "../api";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as app from "../app";
-import { holdAwake, releasePluginAwake } from "../keepawake";
+import { holdAwake, releaseAwake } from "../keepawake";
+import * as mediaDock from "../mediaDock";
 import type { MenuItemDef } from "../dropdown";
 import type { FileEntry, PluginPkgInfo } from "../types";
-import type { PluginOpenContext, PluginViewStatus, ReadBookPlugin } from "./types";
+import type { PluginOpenContext, PluginViewInstance, PluginViewStatus, ReadBookPlugin } from "./types";
 
 const TEXT_RE = /\.(txt|zip)$/i;
 
@@ -50,14 +51,39 @@ let loadErrors: PluginLoadError[] = [];
 
 /** 插件 id → 是否启用；未列出的默认启用 */
 let enabledMap: Record<string, boolean> = {};
-let active: ReadBookPlugin | null = null;
-/** 激活插件上报的视图状态与当前文件名；视图关闭时清空（宿主随之恢复文本状态） */
-let activeStatus: PluginViewStatus | null = null;
-let activeFile = "";
-/** 打开的文件名（zip 内条目为 zip 自身文件名） */
-let activeOpenedName = "";
-/** 激活插件的打开上下文：activeFilePath 取其 path（插件跨容器推进时会自行更新） */
-let activeCtx: PluginOpenContext | null = null;
+
+/** 插件视图实例表：多标签页下每个 tab 可持有一个视图（Task 3 接管生命周期归属） */
+export interface ViewEntry {
+  id: string; // 实例 id（常亮来源 view:<id> / 媒体坞会话 id）
+  plugin: ReadBookPlugin;
+  inst: PluginViewInstance;
+  pane: HTMLElement; // .plugin-view-pane，宿主于 #plugin-view-host
+  status: PluginViewStatus;
+  file: string; // 当前查看的文件名（zip 条目为条目名）
+  openedName: string; // 打开的文件名（zip 内条目为 zip 自身文件名）
+  ctxPath: string; // 当前文件路径（插件跨容器推进随之变化）
+  scopeZip: string;
+  scopeDir: string;
+}
+
+const views = new Map<string, ViewEntry>();
+let curActiveViewId = "";
+
+export function activeEntry(): ViewEntry | null {
+  return views.get(curActiveViewId) ?? null;
+}
+export function activeViewId(): string {
+  return curActiveViewId;
+}
+export function instanceOf(id: string): PluginViewInstance | null {
+  return views.get(id)?.inst ?? null;
+}
+export function viewPath(id: string): string {
+  return views.get(id)?.ctxPath ?? "";
+}
+export function pluginIdOfView(id: string): string {
+  return views.get(id)?.plugin.id ?? "";
+}
 
 export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {
   if (plugins.some((x) => x.id === p.id)) return false;
@@ -66,11 +92,13 @@ export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {
   return true;
 }
 
-/** 移除插件注册（外部插件卸载时）；若正是激活视图则先关闭 */
+/** 移除插件注册（外部插件卸载时）；停用插件销毁其全部实例 */
 export function unregister(id: string): boolean {
   const i = plugins.findIndex((x) => x.id === id);
   if (i === -1) return false;
-  if (active?.id === id) deactivateActive();
+  for (const v of [...views.values()]) {
+    if (v.plugin.id === id) closeView(v.id);
+  }
   plugins.splice(i, 1);
   externalPkgs.delete(id);
   return true;
@@ -123,31 +151,36 @@ export function pluginExts(): string[] {
 /* ========== 插件视图状态（右上角文件名/状态栏的上报与查询） ========== */
 
 export function isActive(): boolean {
-  return !!active;
+  return curActiveViewId !== "";
 }
 
 export function getActiveStatus(): PluginViewStatus | null {
-  return activeStatus;
+  return activeEntry()?.status ?? null;
 }
 
 /** 激活插件视图期间右上角显示的文件名（未上报 title 时的兜底） */
 export function getActiveFile(): string {
-  return activeFile;
+  return activeEntry()?.file ?? "";
 }
 
 /** 插件视图打开的文件名（zip 内条目为 zip 自身文件名；未上报 title 时的兜底） */
 export function getActiveOpenedName(): string {
-  return activeOpenedName;
+  return activeEntry()?.openedName ?? "";
 }
 
 /** 插件视图当前查看的文件路径（跨容器推进后随之变化；未激活为 ""）。收藏书架等以它为准 */
 export function activeFilePath(): string {
-  return activeCtx ? activeCtx.path : "";
+  return activeEntry()?.ctxPath ?? "";
 }
 
 /** 当前激活插件（未激活为 null）：宿主「滚屏/播放」「上一个/下一个文件」公共入口按它分发 */
 export function activePlugin(): ReadBookPlugin | null {
-  return active;
+  return activeEntry()?.plugin ?? null;
+}
+
+/** 激活视图实例：宿主「滚屏/播放」「上一个/下一个」公共入口按它分发 */
+export function activeInstance(): PluginViewInstance | null {
+  return activeEntry()?.inst ?? null;
 }
 
 function splitTarget(path: string): { zipPath: string; entry: string; base: string } {
@@ -163,19 +196,16 @@ const parentOf = (p: string): string => {
 
 const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
-/** 本次打开的容器（zip 路径或文件所在目录）——ctx.loadBytes/listContainer 的安全边界 */
-let scopeZip = "";
-let scopeDir = "";
-
-function inScope(path: string): boolean {
+/** 实例作用域（scopeZip/scopeDir 迁入 entry）——ctx.loadBytes/listContainer 的安全边界 */
+function inScope(e: ViewEntry, path: string): boolean {
   const t = splitTarget(path);
-  if (t.entry) return t.zipPath === scopeZip;
-  if (scopeZip) return false; // 打开的是 zip 条目：不允许借道读外部磁盘文件
-  return parentOf(t.base) === scopeDir;
+  if (t.entry) return t.zipPath === e.scopeZip;
+  if (e.scopeZip) return false; // 打开的是 zip 条目：不允许借道读外部磁盘文件
+  return parentOf(t.base) === e.scopeDir;
 }
 
-async function loadBytes(path: string): Promise<Uint8Array> {
-  if (!inScope(path)) throw new Error(`插件只能访问当前文件所在目录/压缩包内的文件: ${path}`);
+async function loadBytesIn(e: ViewEntry, path: string): Promise<Uint8Array> {
+  if (!inScope(e, path)) throw new Error(`插件只能访问当前文件所在目录/压缩包内的文件: ${path}`);
   const { zipPath, entry } = splitTarget(path);
   const buf = entry
     ? await api.readZipBytes(zipPath, entry)
@@ -183,11 +213,11 @@ async function loadBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
-async function listContainer(): Promise<string[]> {
+async function listContainerIn(e: ViewEntry): Promise<string[]> {
   try {
-    if (scopeZip) return api.listZip(scopeZip, app.state.store.settings.naturalSort);
-    const entries: FileEntry[] = await api.listDir(scopeDir, app.state.store.settings.naturalSort);
-    return entries.filter((e) => !e.isDir).map((e) => e.path);
+    if (e.scopeZip) return api.listZip(e.scopeZip, app.state.store.settings.naturalSort);
+    const entries: FileEntry[] = await api.listDir(e.scopeDir, app.state.store.settings.naturalSort);
+    return entries.filter((x) => !x.isDir).map((x) => x.path);
   } catch {
     return [];
   }
@@ -211,39 +241,92 @@ async function computeSiblings(path: string, ext: string): Promise<{ siblings: s
   }
 }
 
-/** 关闭当前插件视图并恢复文本渲染（无插件视图时为空操作） */
-export function deactivateActive(): void {
-  if (!active) return;
-  const p = active;
-  active = null;
-  activeStatus = null;
-  activeFile = "";
-  activeOpenedName = "";
-  activeCtx = null;
-  releasePluginAwake(p.id); // 兜底：外部插件忘关也不永久常亮
+/** 关闭并销毁一个视图实例（tab 关闭/插件停用/单例被接管/用户点关闭） */
+export function closeView(id: string): void {
+  const v = views.get(id);
+  if (!v) return;
+  if (curActiveViewId === id) {
+    curActiveViewId = "";
+    document.getElementById("plugin-view-host")?.classList.add("hidden");
+    document.getElementById("reader-content")?.classList.remove("hidden");
+    mediaDock.setActiveView("");
+  }
+  releaseAwake(`view:${id}`);
   try {
-    p.deactivate?.();
+    v.inst.deactivate();
   } catch (e) {
     console.error("[plugin] deactivate 失败:", e);
   }
-  const h = document.getElementById("plugin-view-host");
-  if (h) {
-    h.innerHTML = "";
-    h.classList.add("hidden");
-  }
-  document.getElementById("reader-content")?.classList.remove("hidden");
+  v.pane.remove();
+  views.delete(id);
+  mediaDock.detach(id);
+  document.dispatchEvent(new CustomEvent("rb-view-closed", { detail: id }));
   app.updateUI();
 }
 
-/** 让启用的插件接管打开一个文件（扩展名未命中时为空操作）。
- *  旧插件视图保持显示直到新视图就绪——切换图片等场景不会闪现文本。 */
-export async function openFile(path: string): Promise<void> {
+/** 关闭当前激活视图（Esc / 兼容旧调用方） */
+export function deactivateActive(): void {
+  if (curActiveViewId) closeView(curActiveViewId);
+}
+
+/** 换显某实例面板为可见（tab 切换/新视图打开）：旧激活面板隐藏但保活 */
+export function activateView(id: string): void {
+  const v = views.get(id);
+  if (!v) return;
+  if (curActiveViewId && curActiveViewId !== id) {
+    const prev = views.get(curActiveViewId);
+    prev?.pane.classList.add("hidden");
+    prev?.inst.setActive?.(false);
+  }
+  curActiveViewId = id;
+  v.pane.classList.remove("hidden");
+  v.inst.setActive?.(true);
+  document.getElementById("plugin-view-host")?.classList.remove("hidden");
+  document.getElementById("reader-content")?.classList.add("hidden");
+  mediaDock.setActiveView(id);
+  app.updateUI();
+}
+
+/** 收起激活视图面板但不销毁（tab 切到文本 tab 时用） */
+export function hideActiveView(): void {
+  const v = views.get(curActiveViewId);
+  if (!v) return;
+  v.pane.classList.add("hidden");
+  v.inst.setActive?.(false);
+  curActiveViewId = "";
+  document.getElementById("plugin-view-host")?.classList.add("hidden");
+  document.getElementById("reader-content")?.classList.remove("hidden");
+  mediaDock.setActiveView("");
+  app.updateUI();
+}
+
+/** 旧单例接口插件 → 实例包装：插件对象自身持状态，包装层转发 */
+function wrapSingleton(p: ReadBookPlugin): PluginViewInstance {
+  return {
+    open: (ctx) => p.open?.(ctx),
+    deactivate: () => p.deactivate?.(),
+    togglePlay: () => p.togglePlay?.(),
+    navFile: (d) => p.navFile?.(d),
+    isPlaying: () => p.isPlaying?.() ?? false,
+  };
+}
+
+/** 让启用的插件接管打开一个文件（扩展名未命中返回 null）。
+ *  多实例插件：新实例入表；单例插件：同插件旧视图先销毁（视图随新打开移动）。
+ *  Task 2 阶段尚无 tab 绑定：新视图就绪后销毁旧激活视图，保持与旧版完全一致
+ *  （内存不膨胀）；Task 3 起 tab 在打开后立即绑定，改为保活。 */
+export async function openFile(path: string): Promise<string | null> {
   const { zipPath, entry, base } = splitTarget(path);
   const ext = extOf(base);
   const plugin = handlerForExt(ext);
-  if (!plugin) return;
-  const prev = active;
-  let switched = false;
+  if (!plugin) return null;
+  if (!plugin.createView) {
+    for (const v of [...views.values()]) {
+      if (v.plugin.id === plugin.id) closeView(v.id);
+    }
+  }
+  const prevActiveId = curActiveViewId;
+  let id = "";
   try {
     // wantsStream 的插件：本地与 SMB 普通文件跳过整文件预读（2GB+ 视频必需），改由流式协议按需分块
     const wantStream = !!plugin.wantsStream && isTauri() && !isSmbComposite(path);
@@ -253,70 +336,71 @@ export async function openFile(path: string): Promise<void> {
           entry ? await api.readZipBytes(zipPath, entry) : await api.readFileBytes(path)
         );
     const { siblings, index } = await computeSiblings(path, ext);
-    const host = document.getElementById("plugin-view-host")!;
-    // 就绪后才切换：清旧 DOM、建新视图（旧插件资源随后清理）
-    host.innerHTML = "";
-    host.classList.remove("hidden");
-    document.getElementById("reader-content")?.classList.add("hidden");
-    active = plugin;
-    switched = true;
-    activeStatus = {};
-    activeFile = baseName(base);
-    activeOpenedName = baseName(zipPath || path);
-    scopeZip = zipPath;
-    scopeDir = zipPath ? "" : parentOf(base);
-    const status: PluginViewStatus = {};
-    const owner = plugin;
+    id = crypto.randomUUID();
+    const pane = document.createElement("div");
+    pane.className = "plugin-view-pane";
+    const inst = plugin.createView ? plugin.createView() : wrapSingleton(plugin);
+    const e0: ViewEntry = {
+      id,
+      plugin,
+      inst,
+      pane,
+      status: {},
+      file: baseName(base),
+      openedName: baseName(zipPath || path),
+      ctxPath: path,
+      scopeZip: zipPath,
+      scopeDir: zipPath ? "" : parentOf(base),
+    };
+    views.set(id, e0);
+    const owner = e0;
     const ctx: PluginOpenContext = {
       path,
-      name: activeFile,
+      name: owner.file,
       ext,
       bytes,
-      host,
+      host: pane,
+      viewId: id,
+      closeView: () => closeView(id),
       siblings,
       siblingIndex: index,
-      loadBytes: (p) => loadBytes(p),
-      listContainer,
+      loadBytes: (p) => loadBytesIn(owner, p),
+      listContainer: () => listContainerIn(owner),
       streamUrlFor: wantStream ? streamUrlFor : undefined,
       setStatus: (s) => {
-        if (active !== owner) return; // 视图已切走/关闭：丢弃过期上报
-        Object.assign(status, s);
-        activeStatus = status;
-        app.updateUI();
+        Object.assign(owner.status, s);
+        if (curActiveViewId === id) app.updateUI(); // 后台实例只更新表内状态，不动 UI
       },
-      getSetting: <T>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
+      getSetting: <T,>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
-      setKeepAwake: (on) => {
-        if (active !== owner) return; // 视图已切走/关闭：丢弃过期请求，防止僵尸定时器重新挂起常亮
-        holdAwake(`plugin:${owner.id}`, on);
-      },
+      setKeepAwake: (on) => holdAwake(`view:${id}`, on),
       togglePlayback: () => app.togglePlayback(),
     };
-    activeCtx = ctx;
-    await plugin.open(ctx);
-    if (prev && prev !== plugin) {
-      try {
-        releasePluginAwake(prev.id); // 同 deactivateActive 的兜底语义
-        prev.deactivate?.();
-      } catch (e) {
-        console.error("[plugin] deactivate 失败:", e);
-      }
-    }
+    document.getElementById("plugin-view-host")!.appendChild(pane);
+    await inst.open(ctx);
+    // Task 2 语义：新视图就绪后销毁旧激活视图（与旧版一致）；Task 3 改为 tab 绑定保活
+    if (prevActiveId && prevActiveId !== id) closeView(prevActiveId);
+    activateView(id);
+    return id;
   } catch (e) {
-    // open 失败也要收尾 prev 插件（成功路径的 prev 释放/停用在 try 内 await 之后，抛错时不可达）
-    if (prev && prev !== plugin) {
-      releasePluginAwake(prev.id);
-      if (switched) { // 仅当视图已切到新插件：deactivateActive 不再负责 prev
+    if (id) {
+      const v = views.get(id);
+      if (v) {
+        releaseAwake(`view:${id}`);
         try {
-          prev.deactivate?.();
+          v.inst.deactivate();
         } catch (de) {
           console.error("[plugin] deactivate 失败:", de);
         }
+        v.pane.remove();
+        views.delete(id);
+        mediaDock.detach(id);
       }
+      id = "";
     }
-    deactivateActive();
     app.showMessage("打开失败", String(e));
+    return null;
   }
 }
 
@@ -362,7 +446,7 @@ export function initPluginSystem(toggle: (id: string, on: boolean) => void): voi
     if (!document.getElementById("plugin-panel")?.classList.contains("hidden")) renderPluginPanel();
   });
   document.addEventListener("rb-escape", () => {
-    if (active) deactivateActive();
+    if (curActiveViewId) closeView(curActiveViewId);
   });
 }
 
@@ -412,7 +496,11 @@ function renderPluginPanel(): void {
     cb.checked = isEnabled(p);
     cb.addEventListener("change", () => {
       toggleFn(p.id, cb.checked);
-      if (!cb.checked && active?.id === p.id) deactivateActive();
+      if (!cb.checked) {
+        for (const v of [...views.values()]) {
+          if (v.plugin.id === p.id) closeView(v.id);
+        }
+      }
     });
     toggleLabel.append(cb, document.createTextNode("启用"));
     ops.appendChild(toggleLabel);

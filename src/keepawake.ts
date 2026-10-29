@@ -14,7 +14,7 @@ function sync(): void {
   api.setKeepAwake(want).catch((e) => console.warn("[keepawake]", e));
 }
 
-/** 持有/释放一个常亮来源（阅读侧 "reading"；插件侧 "plugin:<id>"）。幂等。 */
+/** 持有/释放一个常亮来源（阅读侧 "reading"；插件视图侧 "view:<实例id>"）。幂等。 */
 export function holdAwake(source: string, on: boolean): void {
   const had = sources.has(source);
   if (on === had) return;
@@ -23,9 +23,10 @@ export function holdAwake(source: string, on: boolean): void {
   sync();
 }
 
-/** 清掉某插件的常亮来源（视图关闭时宿主兜底，防外部插件忘关导致永久常亮） */
-export function releasePluginAwake(pluginId: string): void {
-  if (sources.delete(`plugin:${pluginId}`)) sync();
+/** 清掉指定来源（视图关闭时宿主兜底，防外部插件忘关导致永久常亮）。
+ *  多实例下来源键由 registry 分配（view:<实例id>），不再按插件 id。 */
+export function releaseAwake(source: string): void {
+  if (sources.delete(source)) sync();
 }
 
 /** 用户设置开关：翻转标志并强制同步（来源集合保留，重新开启后按当前来源恢复） */

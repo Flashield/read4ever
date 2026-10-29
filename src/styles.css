@@ -2239,3 +2239,108 @@ body.fs-immersive.panel-open #find-bar {
 .settings-num {
   width: 70px;
 }
+
+/* ========== 插件视图实例面板 ========== */
+.plugin-view-pane {
+  position: absolute;
+  inset: 0;
+}
+.plugin-view-pane.hidden {
+  display: none;
+}
+
+/* ========== 媒体坞底部栏 ========== */
+#media-dock {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--ui-bg);
+  border-top: 1px solid var(--ui-border);
+  flex-shrink: 0;
+}
+#media-dock.hidden {
+  display: none;
+}
+.md-full {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.md-session {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.md-session button,
+.md-mini-play {
+  min-width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--ui-text);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.md-session button:hover,
+.md-mini-play:hover {
+  background: var(--ui-hover);
+}
+.md-cur,
+.md-dur {
+  font-size: 12px;
+  color: #aaa;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.md-progress {
+  flex: 1;
+  min-width: 120px;
+}
+.md-mini {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.md-mini:hover {
+  background: var(--ui-hover);
+}
+.md-mini-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ui-text);
+}
+/* 沉浸全屏：与状态栏同一套吸附机制（Task 4 再接入 fullscreen.ts 命中集合） */
+body.fs-immersive #media-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 400;
+  transform: translateY(100%);
+  transition: transform 0.18s;
+}
+body.fs-immersive.show-bottom #media-dock {
+  transform: none;
+}
+@media ((hover: none)) {
+  body.fs-immersive #media-dock {
+    position: static;
+    transform: none;
+  }
+}

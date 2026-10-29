@@ -5,12 +5,14 @@
    协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（远程 zip 条目、压缩条目等）自动回退字节整读。
    移动端就绪（docs/iOS移植方案.md D3/D4）：<video playsinline>、纯点击交互、
    触屏隐藏音量控件（iOS 音量由系统控制）、
-   全屏走宿主公共沉浸模块（fullscreen.ts）；自动播放被策略拒绝时静默停在首帧。 */
+   全屏走宿主公共沉浸模块（fullscreen.ts）；自动播放被策略拒绝时静默停在首帧。
+   多实例：视图态全部迁入 VideoView 类（每个标签页独立实例）；
+   用户偏好（自动连播/倍速）保持模块级共享。 */
 import * as app from "../app";
 import { toggle as fsToggle } from "../fullscreen";
-import { deactivateActive, pluginSetting, setPluginSetting } from "./registry";
+import { activeViewId, instanceOf, pluginSetting, setPluginSetting } from "./registry";
 import type { MenuItemDef } from "../dropdown";
-import type { PluginOpenContext, ReadBookPlugin } from "./types";
+import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
 
 const PID = "video-viewer";
 const EXTENSIONS = [".mp4", ".m4v", ".webm", ".mov", ".ogv", ".mkv"];
@@ -26,23 +28,16 @@ const MIME: Record<string, string> = {
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-/* 固定设置（持久化于 settings.pluginSettings） */
+/* 固定设置（持久化于 settings.pluginSettings；模块级共享用户偏好） */
 let autoplayNext = pluginSetting<boolean>(PID, "autoplayNext", true);
 let defaultRate = pluginSetting<number>(PID, "rate", 1);
 
-/* 视图状态 */
-let ctx: PluginOpenContext | null = null;
-let video: HTMLVideoElement | null = null;
-let globalIdx = 0;
-let seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
-let currentStream = false; // 当前视频是否走流式 URL（错误回退判断用）
-const urlCache = new Map<string, string>();
-const streamFailed = new Set<string>(); // 流式失败的目标（压缩 zip 条目等）：会话内回退整读
-/** 流式失败后的自愈重试标记（每路径每次失败至多重试一次；元数据成功加载即重置） */
-const streamRetried = new Set<string>();
-
-const q = <T extends Element>(sel: string): T | null =>
-  ctx ? (ctx.host.querySelector(sel) as T | null) : null;
+/** 菜单动作的视图侧落点：当前激活视图若为本插件的实例则返回之
+ *  （无视图/其他插件视图激活时为 null，菜单只改设置不动视图，与旧版行为一致） */
+function liveView(): VideoView | null {
+  const inst = instanceOf(activeViewId());
+  return inst instanceof VideoView ? inst : null;
+}
 
 const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
@@ -60,183 +55,221 @@ const fmtTime = (sec: number): string => {
   return (h > 0 ? `${h}:` : "") + `${mm}:${String(s).padStart(2, "0")}`;
 };
 
-/* ========== 字节 / URL ========== */
+/* ========== 视图实例 ========== */
 
-async function ensureUrl(path: string): Promise<string> {
-  const hit = urlCache.get(path);
-  if (hit) return hit;
-  if (!ctx) throw new Error("视图已关闭");
-  const bytes = await ctx.loadBytes(path);
-  if (!ctx) throw new Error("视图已关闭"); // 等待期间被关闭：不创建 URL
-  const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: extMime(path) });
-  const url = URL.createObjectURL(blob);
-  urlCache.set(path, url);
-  if (urlCache.size > 4) {
-    // 淘汰最旧的非当前条目
-    const cur = ctx.siblings[globalIdx];
-    const oldest = [...urlCache.keys()].find((k) => k !== cur);
-    if (oldest) {
-      const u = urlCache.get(oldest);
-      urlCache.delete(oldest);
-      if (u) URL.revokeObjectURL(u);
-    }
+class VideoView implements PluginViewInstance {
+  viewId = "";
+  private ctx: PluginOpenContext | null = null;
+  private video: HTMLVideoElement | null = null;
+  private globalIdx = 0;
+  private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
+  private currentStream = false; // 当前视频是否走流式 URL（错误回退判断用）
+  private urlCache = new Map<string, string>();
+  private streamFailed = new Set<string>(); // 流式失败的目标（压缩 zip 条目等）：会话内回退整读
+  /** 流式失败后的自愈重试标记（每路径每次失败至多重试一次；元数据成功加载即重置） */
+  private streamRetried = new Set<string>();
+  private activeVisible = false; // 仅激活 tab 的实例响应键盘
+
+  /* ========== DOM 查询（实例面板内） ========== */
+
+  private q<T extends Element>(sel: string): T | null {
+    return this.ctx ? (this.ctx.host.querySelector(sel) as T | null) : null;
   }
-  return url;
-}
 
-/* ========== 加载与切换 ========== */
+  /* ========== 字节 / URL ========== */
 
-async function loadVideo(index: number, autoplay: boolean): Promise<void> {
-  if (!ctx || !video) return;
-  globalIdx = Math.max(0, Math.min(index, ctx.siblings.length - 1));
-  const path = ctx.siblings[globalIdx] || ctx.path;
-  try {
-    // 优先流式（2GB+ 文件按 Range 分块拉取，本地/本地 zip 存储型条目/SMB 普通文件）；失败过/不可流式（远程 zip 条目、浏览器演示）→ 字节整读
-    const stream = !streamFailed.has(path) ? ctx.streamUrlFor?.(path) ?? null : null;
-    const url = stream ?? (await ensureUrl(path));
-    if (!ctx || !video) return;
-    currentStream = !!stream;
-    video.src = url;
-    video.playbackRate = defaultRate;
-    hideError();
-    updateLabels();
-    syncStatus();
-    if (autoplay) {
-      try {
-        await video.play();
-      } catch {
-        /* 自动播放被拒（移动端策略）：停在首帧，点击播放按钮开始 */
+  private async ensureUrl(path: string): Promise<string> {
+    const hit = this.urlCache.get(path);
+    if (hit) return hit;
+    const c = this.ctx;
+    if (!c) throw new Error("视图已关闭");
+    const bytes = await c.loadBytes(path);
+    if (!this.ctx) throw new Error("视图已关闭"); // 等待期间被关闭：不创建 URL
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: extMime(path) });
+    const url = URL.createObjectURL(blob);
+    this.urlCache.set(path, url);
+    if (this.urlCache.size > 4) {
+      // 淘汰最旧的非当前条目
+      const cur = this.ctx.siblings[this.globalIdx];
+      const oldest = [...this.urlCache.keys()].find((k) => k !== cur);
+      if (oldest) {
+        const u = this.urlCache.get(oldest);
+        this.urlCache.delete(oldest);
+        if (u) URL.revokeObjectURL(u);
       }
     }
-  } catch (e) {
-    showError(`无法读取视频：${String(e)}`);
+    return url;
   }
-}
 
-/** 上一个/下一个；fromEnded=true 表示播完自动连播（越界只提示不重复报） */
-async function nav(delta: number, fromEnded = false): Promise<void> {
-  if (!ctx) return;
-  const target = globalIdx + delta;
-  if (target < 0) {
-    app.toast("已经是第一个视频");
-    return;
+  /* ========== 加载与切换 ========== */
+
+  private async loadVideo(index: number, autoplay: boolean): Promise<void> {
+    if (!this.ctx || !this.video) return;
+    this.globalIdx = Math.max(0, Math.min(index, this.ctx.siblings.length - 1));
+    const path = this.ctx.siblings[this.globalIdx] || this.ctx.path;
+    try {
+      // 优先流式（2GB+ 文件按 Range 分块拉取，本地/本地 zip 存储型条目/SMB 普通文件）；失败过/不可流式（远程 zip 条目、浏览器演示）→ 字节整读
+      const stream = !this.streamFailed.has(path) ? this.ctx.streamUrlFor?.(path) ?? null : null;
+      const url = stream ?? (await this.ensureUrl(path));
+      if (!this.ctx || !this.video) return;
+      this.currentStream = !!stream;
+      this.video.src = url;
+      this.video.playbackRate = defaultRate;
+      this.hideError();
+      this.updateLabels();
+      this.syncStatus();
+      if (autoplay) {
+        try {
+          await this.video.play();
+        } catch {
+          /* 自动播放被拒（移动端策略）：停在首帧，点击播放按钮开始 */
+        }
+      }
+    } catch (e) {
+      this.showError(`无法读取视频：${String(e)}`);
+    }
   }
-  if (target >= ctx.siblings.length) {
-    app.toast(fromEnded ? "播放结束：后面没有更多视频了" : "已经是最后一个视频");
-    return;
+
+  /** 上一个/下一个；fromEnded=true 表示播完自动连播（越界只提示不重复报） */
+  private async nav(delta: number, fromEnded = false): Promise<void> {
+    if (!this.ctx) return;
+    const target = this.globalIdx + delta;
+    if (target < 0) {
+      app.toast("已经是第一个视频");
+      return;
+    }
+    if (target >= this.ctx.siblings.length) {
+      app.toast(fromEnded ? "播放结束：后面没有更多视频了" : "已经是最后一个视频");
+      return;
+    }
+    // 保持播放状态：手动切换与连播都继续播
+    const wasPlaying = fromEnded || !(this.video?.paused ?? true);
+    await this.loadVideo(target, wasPlaying);
   }
-  // 保持播放状态：手动切换与连播都继续播
-  const wasPlaying = fromEnded || !(video?.paused ?? true);
-  await loadVideo(target, wasPlaying);
-}
 
-function togglePlay(): void {
-  if (!video) return;
-  if (video.paused || video.ended) void video.play().catch(() => {});
-  else video.pause();
-}
-
-function toggleMute(btn: HTMLElement): void {
-  if (!video) return;
-  video.muted = !video.muted;
-  btn.textContent = video.muted || video.volume === 0 ? "🔇" : "🔊";
-}
-
-function bumpVolume(d: number): void {
-  if (!video) return;
-  video.volume = Math.min(1, Math.max(0, video.volume + d));
-  const vol = q<HTMLInputElement>(".vv-volume");
-  if (vol) vol.value = String(video.volume);
-  const muteBtn = q<HTMLElement>('button[data-act="mute"]');
-  if (muteBtn) muteBtn.textContent = video.muted || video.volume === 0 ? "🔇" : "🔊";
-}
-
-/** 全屏走公共沉浸模块：播放区随宿主铺满，插件栏吸附屏幕边缘碰边呼出；
-   触屏下 requestFullscreen 被拒自动降级纯 CSS 沉浸（触屏 media query 保底常显插件栏） */
-async function toggleFullscreen(): Promise<void> {
-  await fsToggle();
-}
-
-/* ========== 标签与状态上报 ========== */
-
-function updateLabels(): void {
-  if (!ctx) return;
-  const path = ctx.siblings[globalIdx] || ctx.path;
-  const nameEl = q<HTMLElement>(".vv-name");
-  if (nameEl) {
-    nameEl.textContent = baseName(path);
-    nameEl.title = path;
+  togglePlay(): void {
+    if (!this.video) return;
+    if (this.video.paused || this.video.ended) void this.video.play().catch(() => {});
+    else this.video.pause();
   }
-  const pageEl = q<HTMLElement>(".vv-page");
-  if (pageEl)
-    pageEl.textContent = ctx.siblings.length > 1 ? `${globalIdx + 1}/${ctx.siblings.length}` : "";
-}
 
-/** 向宿主上报：窗口标题/右上角=打开的文件（zip 显示 zip 名），状态栏文件格=当前视频、
- *  位置格=播放时间、模式格=播放状态+倍速、显示格=连播状态。 */
-function syncStatus(): void {
-  if (!ctx || !video) return;
-  const path = ctx.siblings[globalIdx] || ctx.path;
-  const m = path.match(/^(.+\.zip)::/i);
-  const playing = !video.paused && !video.ended;
-  const state = playing ? "播放中" : video.ended ? "已播完" : "已暂停";
-  ctx.setStatus({
-    title: baseName(m ? m[1] : path),
-    file: baseName(path),
-    encoding: video.videoWidth
-      ? `${ctx.ext.replace(".", "").toUpperCase()} ${video.videoWidth}×${video.videoHeight}`
-      : undefined,
-    position: `${fmtTime(video.currentTime)} / ${fmtTime(video.duration)}`,
-    mode: `${state} ${video.playbackRate}×`,
-    display: autoplayNext ? "连播开" : "连播关",
-  });
-}
-
-function showError(text: string): void {
-  const el = q<HTMLElement>(".vv-error");
-  if (!el) return;
-  el.textContent = text;
-  el.classList.remove("hidden");
-}
-
-function hideError(): void {
-  q<HTMLElement>(".vv-error")?.classList.add("hidden");
-}
-
-/* ========== 键盘（插件视图内；桌面增强，触屏全部功能有按钮可达） ========== */
-
-function onKey(e: KeyboardEvent): void {
-  const t = e.target as HTMLElement | null;
-  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-    return;
-  switch (e.key) {
-    case "ArrowLeft":
-      if (video) video.currentTime = Math.max(0, video.currentTime - 5);
-      break;
-    case "ArrowRight":
-      if (video && Number.isFinite(video.duration))
-        video.currentTime = Math.min(video.duration, video.currentTime + 5);
-      break;
-    case "ArrowUp":
-      e.preventDefault();
-      bumpVolume(0.1);
-      break;
-    case "ArrowDown":
-      e.preventDefault();
-      bumpVolume(-0.1);
-      break;
-    case "f":
-    case "F":
-      void toggleFullscreen();
-      break;
+  navFile(delta: number): void {
+    void this.nav(delta);
   }
-}
 
-/* ========== 视图构建 ========== */
+  isPlaying(): boolean {
+    return !!this.video && !this.video.paused && !this.video.ended;
+  }
 
-function buildView(): void {
-  if (!ctx) return;
-  ctx.host.innerHTML = `
+  /** 仅激活 tab 的实例接收全局事件（键盘）；后台实例挂起 */
+  setActive(on: boolean): void {
+    this.activeVisible = on;
+  }
+
+  private toggleMute(btn: HTMLElement): void {
+    if (!this.video) return;
+    this.video.muted = !this.video.muted;
+    btn.textContent = this.video.muted || this.video.volume === 0 ? "🔇" : "🔊";
+  }
+
+  private bumpVolume(d: number): void {
+    if (!this.video) return;
+    this.video.volume = Math.min(1, Math.max(0, this.video.volume + d));
+    const vol = this.q<HTMLInputElement>(".vv-volume");
+    if (vol) vol.value = String(this.video.volume);
+    const muteBtn = this.q<HTMLElement>('button[data-act="mute"]');
+    if (muteBtn) muteBtn.textContent = this.video.muted || this.video.volume === 0 ? "🔇" : "🔊";
+  }
+
+  /** 全屏走公共沉浸模块：播放区随宿主铺满，插件栏吸附屏幕边缘碰边呼出；
+     触屏下 requestFullscreen 被拒自动降级纯 CSS 沉浸（触屏 media query 保底常显插件栏） */
+  private async toggleFullscreen(): Promise<void> {
+    await fsToggle();
+  }
+
+  /* ========== 标签与状态上报 ========== */
+
+  private updateLabels(): void {
+    if (!this.ctx) return;
+    const path = this.ctx.siblings[this.globalIdx] || this.ctx.path;
+    const nameEl = this.q<HTMLElement>(".vv-name");
+    if (nameEl) {
+      nameEl.textContent = baseName(path);
+      nameEl.title = path;
+    }
+    const pageEl = this.q<HTMLElement>(".vv-page");
+    if (pageEl)
+      pageEl.textContent =
+        this.ctx.siblings.length > 1 ? `${this.globalIdx + 1}/${this.ctx.siblings.length}` : "";
+  }
+
+  /** 向宿主上报：窗口标题/右上角=打开的文件（zip 显示 zip 名），状态栏文件格=当前视频、
+   *  位置格=播放时间、模式格=播放状态+倍速、显示格=连播状态。 */
+  private syncStatus(): void {
+    if (!this.ctx || !this.video) return;
+    const path = this.ctx.siblings[this.globalIdx] || this.ctx.path;
+    const m = path.match(/^(.+\.zip)::/i);
+    const playing = !this.video.paused && !this.video.ended;
+    const state = playing ? "播放中" : this.video.ended ? "已播完" : "已暂停";
+    this.ctx.setStatus({
+      title: baseName(m ? m[1] : path),
+      file: baseName(path),
+      encoding: this.video.videoWidth
+        ? `${this.ctx.ext.replace(".", "").toUpperCase()} ${this.video.videoWidth}×${this.video.videoHeight}`
+        : undefined,
+      position: `${fmtTime(this.video.currentTime)} / ${fmtTime(this.video.duration)}`,
+      mode: `${state} ${this.video.playbackRate}×`,
+      display: autoplayNext ? "连播开" : "连播关",
+    });
+  }
+
+  private showError(text: string): void {
+    const el = this.q<HTMLElement>(".vv-error");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove("hidden");
+  }
+
+  private hideError(): void {
+    this.q<HTMLElement>(".vv-error")?.classList.add("hidden");
+  }
+
+  /* ========== 键盘（插件视图内；桌面增强，触屏全部功能有按钮可达） ========== */
+
+  /** 类字段箭头函数：注册/移除引用同一函数对象，且 this 恒绑定本实例 */
+  private readonly onKey = (e: KeyboardEvent): void => {
+    if (!this.activeVisible) return; // 后台实例不响应键盘
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable))
+      return;
+    switch (e.key) {
+      case "ArrowLeft":
+        if (this.video) this.video.currentTime = Math.max(0, this.video.currentTime - 5);
+        break;
+      case "ArrowRight":
+        if (this.video && Number.isFinite(this.video.duration))
+          this.video.currentTime = Math.min(this.video.duration, this.video.currentTime + 5);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        this.bumpVolume(0.1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        this.bumpVolume(-0.1);
+        break;
+      case "f":
+      case "F":
+        void this.toggleFullscreen();
+        break;
+    }
+  };
+
+  /* ========== 视图构建 ========== */
+
+  private buildView(): void {
+    if (!this.ctx) return;
+    this.ctx.host.innerHTML = `
     <div class="vv">
       <div class="vv-bar plugin-topbar">
         <span class="vv-name"></span>
@@ -266,96 +299,140 @@ function buildView(): void {
       </div>
     </div>`;
 
-  video = q<HTMLVideoElement>(".vv-video")!;
-  const progress = q<HTMLInputElement>(".vv-progress")!;
+    this.video = this.q<HTMLVideoElement>(".vv-video")!;
+    const progress = this.q<HTMLInputElement>(".vv-progress")!;
+    const video = this.video;
 
-  ctx.host.querySelector(".vv-bar")?.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest("button[data-act]") as HTMLElement | null;
-    if (!btn) return;
-    switch (btn.dataset.act) {
-      case "prev": void nav(-1); break;
-      case "next": void nav(1); break;
-      case "play": togglePlay(); break;
-      case "mute": toggleMute(btn); break;
-      case "fs": void toggleFullscreen(); break;
-      case "close": deactivateActive(); break;
-    }
-  });
+    this.ctx.host.querySelector(".vv-bar")?.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("button[data-act]") as HTMLElement | null;
+      if (!btn) return;
+      switch (btn.dataset.act) {
+        case "prev": void this.nav(-1); break;
+        case "next": void this.nav(1); break;
+        case "play": this.togglePlay(); break;
+        case "mute": this.toggleMute(btn); break;
+        case "fs": void this.toggleFullscreen(); break;
+        case "close": this.ctx?.closeView(); break;
+      }
+    });
 
-  const rateSel = q<HTMLSelectElement>(".vv-rate")!;
-  rateSel.value = String(defaultRate);
-  rateSel.addEventListener("change", () => {
-    defaultRate = Number(rateSel.value) || 1;
-    setPluginSetting(PID, "rate", defaultRate);
-    if (video) video.playbackRate = defaultRate;
-    syncStatus();
-  });
+    const rateSel = this.q<HTMLSelectElement>(".vv-rate")!;
+    rateSel.value = String(defaultRate);
+    rateSel.addEventListener("change", () => {
+      defaultRate = Number(rateSel.value) || 1;
+      setPluginSetting(PID, "rate", defaultRate);
+      if (this.video) this.video.playbackRate = defaultRate;
+      this.syncStatus();
+    });
 
-  q<HTMLInputElement>(".vv-volume")!.addEventListener("input", (e) => {
-    if (!video) return;
-    video.volume = Number((e.target as HTMLInputElement).value);
-    const muteBtn = q<HTMLElement>('button[data-act="mute"]');
-    if (muteBtn) muteBtn.textContent = video.muted || video.volume === 0 ? "🔇" : "🔊";
-  });
+    this.q<HTMLInputElement>(".vv-volume")!.addEventListener("input", (e) => {
+      if (!this.video) return;
+      this.video.volume = Number((e.target as HTMLInputElement).value);
+      const muteBtn = this.q<HTMLElement>('button[data-act="mute"]');
+      if (muteBtn) muteBtn.textContent = this.video.muted || this.video.volume === 0 ? "🔇" : "🔊";
+    });
 
-  progress.addEventListener("pointerdown", () => (seeking = true));
-  progress.addEventListener("input", () => {
-    if (video && Number.isFinite(video.duration) && video.duration > 0)
-      video.currentTime = (Number(progress.value) / 1000) * video.duration;
-  });
-  progress.addEventListener("change", () => (seeking = false));
-  progress.addEventListener("pointerup", () => (seeking = false));
+    progress.addEventListener("pointerdown", () => (this.seeking = true));
+    progress.addEventListener("input", () => {
+      if (this.video && Number.isFinite(this.video.duration) && this.video.duration > 0)
+        this.video.currentTime = (Number(progress.value) / 1000) * this.video.duration;
+    });
+    progress.addEventListener("change", () => (this.seeking = false));
+    progress.addEventListener("pointerup", () => (this.seeking = false));
 
-  video.addEventListener("timeupdate", () => {
-    if (!video || !ctx) return;
-    if (!seeking && Number.isFinite(video.duration) && video.duration > 0)
-      progress.value = String(Math.round((video.currentTime / video.duration) * 1000));
-    const cur = q<HTMLElement>(".vv-cur");
-    if (cur) cur.textContent = fmtTime(video.currentTime);
-    const dur = q<HTMLElement>(".vv-dur");
-    if (dur) dur.textContent = fmtTime(video.duration);
-    syncStatus();
-  });
+    video.addEventListener("timeupdate", () => {
+      if (!this.video || !this.ctx) return;
+      if (!this.seeking && Number.isFinite(this.video.duration) && this.video.duration > 0)
+        progress.value = String(Math.round((this.video.currentTime / this.video.duration) * 1000));
+      const cur = this.q<HTMLElement>(".vv-cur");
+      if (cur) cur.textContent = fmtTime(this.video.currentTime);
+      const dur = this.q<HTMLElement>(".vv-dur");
+      if (dur) dur.textContent = fmtTime(this.video.duration);
+      this.syncStatus();
+    });
 
-  video.addEventListener("loadedmetadata", () => {
-    const p = ctx?.siblings[globalIdx] || ctx?.path;
-    if (p) streamRetried.delete(p); // 新一轮请求真拿到数据：恢复一次重试机会
-    const dur = q<HTMLElement>(".vv-dur");
-    if (dur && video) dur.textContent = fmtTime(video.duration);
-    syncStatus();
-  });
+    video.addEventListener("loadedmetadata", () => {
+      const p = this.ctx?.siblings[this.globalIdx] || this.ctx?.path;
+      if (p) this.streamRetried.delete(p); // 新一轮请求真拿到数据：恢复一次重试机会
+      const dur = this.q<HTMLElement>(".vv-dur");
+      if (dur && this.video) dur.textContent = fmtTime(this.video.duration);
+      this.syncStatus();
+    });
 
-  const syncPlayBtn = () => {
-    const btn = q<HTMLElement>('button[data-act="play"]');
-    if (btn && video) btn.textContent = video.paused ? "▶" : "⏸";
-    ctx?.setKeepAwake(!!video && !video.paused && !video.ended); // 播放中保持常亮（幂等）
-    syncStatus();
-  };
-  video.addEventListener("play", syncPlayBtn);
-  video.addEventListener("pause", syncPlayBtn);
-  video.addEventListener("ended", () => {
-    syncPlayBtn();
-    if (autoplayNext) void nav(1, true);
-  });
-  video.addEventListener("error", () => {
-    // 流式失败（如压缩 zip 条目、协议不可用、网络抖动）→ 先原样重试一次躲过瞬时抖动
-    //（SMB 断线自愈在「下一次请求」才生效）；仍失败则记忆并回退字节整读；再失败按编码不支持提示
-    const p = ctx?.siblings[globalIdx] || ctx?.path;
-    if (currentStream && video && p && !streamFailed.has(p)) {
-      if (!streamRetried.has(p)) {
-        streamRetried.add(p);
-        void loadVideo(globalIdx, !video.paused);
+    const syncPlayBtn = () => {
+      const btn = this.q<HTMLElement>('button[data-act="play"]');
+      if (btn && this.video) btn.textContent = this.video.paused ? "▶" : "⏸";
+      this.ctx?.setKeepAwake(!!this.video && !this.video.paused && !this.video.ended); // 播放中保持常亮（幂等）
+      this.syncStatus();
+    };
+    video.addEventListener("play", syncPlayBtn);
+    video.addEventListener("pause", syncPlayBtn);
+    video.addEventListener("ended", () => {
+      syncPlayBtn();
+      if (autoplayNext) void this.nav(1, true);
+    });
+    video.addEventListener("error", () => {
+      // 流式失败（如压缩 zip 条目、协议不可用、网络抖动）→ 先原样重试一次躲过瞬时抖动
+      //（SMB 断线自愈在「下一次请求」才生效）；仍失败则记忆并回退字节整读；再失败按编码不支持提示
+      const p = this.ctx?.siblings[this.globalIdx] || this.ctx?.path;
+      if (this.currentStream && this.video && p && !this.streamFailed.has(p)) {
+        if (!this.streamRetried.has(p)) {
+          this.streamRetried.add(p);
+          void this.loadVideo(this.globalIdx, !this.video.paused);
+          return;
+        }
+        this.streamFailed.add(p);
+        void this.loadVideo(this.globalIdx, !this.video.paused);
         return;
       }
-      streamFailed.add(p);
-      void loadVideo(globalIdx, !video.paused);
-      return;
-    }
-    showError("无法播放：浏览器不支持该视频编码（如部分 mkv / AVI 编码）。");
-    syncStatus();
-  });
+      this.showError("无法播放：浏览器不支持该视频编码（如部分 mkv / AVI 编码）。");
+      this.syncStatus();
+    });
 
-  window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", this.onKey);
+  }
+
+  /* ========== 实例生命周期 ========== */
+
+  open(c: PluginOpenContext): void {
+    this.ctx = c;
+    this.viewId = c.viewId;
+    this.globalIdx = Math.max(0, Math.min(c.siblingIndex, c.siblings.length - 1));
+    this.buildView();
+    c.setKeepAwake(false); // 同实例换文件重开：重置常亮持有（play 事件会重新持有）
+    void this.loadVideo(this.globalIdx, true);
+  }
+
+  deactivate(): void {
+    window.removeEventListener("keydown", this.onKey);
+    if (this.video) {
+      this.video.pause();
+      this.video.removeAttribute("src");
+      this.video.load();
+    }
+    for (const u of this.urlCache.values()) URL.revokeObjectURL(u);
+    this.urlCache.clear();
+    this.streamFailed.clear();
+    this.streamRetried.clear(); // 会话残留标记不清会导致重开文件时首次错误跳过重试直降级
+    this.currentStream = false;
+    this.video = null;
+    this.ctx = null;
+  }
+
+  /* ========== 插件固定设置菜单的视图侧同步 ========== */
+
+  /** 菜单改默认倍速后的同步（无存活实例时 menu 侧跳过，等同旧版 video 为 null 的空转） */
+  applyMenuRate(r: number): void {
+    if (this.video) this.video.playbackRate = r;
+    const sel = this.q<HTMLSelectElement>(".vv-rate");
+    if (sel) sel.value = String(r);
+    this.syncStatus();
+  }
+
+  /** 菜单切换自动连播后的状态栏同步 */
+  applyMenuSync(): void {
+    this.syncStatus();
+  }
 }
 
 /* ========== 插件固定设置菜单（外层"视频查看"由注册表包装） ========== */
@@ -368,7 +445,7 @@ function menu(): MenuItemDef[] {
       action: () => {
         autoplayNext = !autoplayNext;
         setPluginSetting(PID, "autoplayNext", autoplayNext);
-        syncStatus();
+        liveView()?.applyMenuSync();
         app.toast(autoplayNext ? "自动连播：播完接续下一个视频" : "已关闭自动连播");
       },
     },
@@ -381,10 +458,7 @@ function menu(): MenuItemDef[] {
           action: () => {
             defaultRate = r;
             setPluginSetting(PID, "rate", r);
-            if (video) video.playbackRate = r;
-            const sel = q<HTMLSelectElement>(".vv-rate");
-            if (sel) sel.value = String(r);
-            syncStatus();
+            liveView()?.applyMenuRate(r);
           },
         })),
     },
@@ -396,35 +470,11 @@ function menu(): MenuItemDef[] {
 export const videoViewerPlugin: ReadBookPlugin = {
   id: PID,
   name: "视频查看",
-  version: "1.2.0",
+  version: "1.3.0",
   description:
-    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）",
+    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）；支持多标签页多实例",
   extensions: EXTENSIONS,
-  togglePlay,
-  navFile: (delta: number) => void nav(delta),
-  isPlaying: () => !!video && !video.paused && !video.ended,
   wantsStream: true,
   menu,
-  open(c: PluginOpenContext): void {
-    ctx = c;
-    globalIdx = Math.max(0, Math.min(c.siblingIndex, c.siblings.length - 1));
-    buildView();
-    c.setKeepAwake(false); // 同插件换文件重开：旧播放已终止，重置常亮持有（新文件 play 事件会重新持有）
-    void loadVideo(globalIdx, true);
-  },
-  deactivate(): void {
-    window.removeEventListener("keydown", onKey);
-    if (video) {
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
-    }
-    for (const u of urlCache.values()) URL.revokeObjectURL(u);
-    urlCache.clear();
-    streamFailed.clear();
-    streamRetried.clear(); // 会话残留标记不清会导致重开文件时首次错误跳过重试直降级
-    currentStream = false;
-    video = null;
-    ctx = null;
-  },
+  createView: () => new VideoView(),
 };

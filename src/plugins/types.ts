@@ -20,6 +20,23 @@ export interface PluginViewStatus {
   display?: string;
 }
 
+/** 插件视图实例：多标签页下每个 tab 可持有独立实例（内置插件以类实现）。
+ *  旧单例接口的外部插件由宿主 wrapSingleton 包装，无需改动。 */
+export interface PluginViewInstance {
+  /** 打开文件：把视图渲染到 ctx.host（实例面板） */
+  open(ctx: PluginOpenContext): void | Promise<void>;
+  /** 视图销毁（tab 关闭/插件停用）：释放全部资源（Blob URL/定时器/监听器） */
+  deactivate(): void;
+  /** 仅激活 tab 的实例接收全局事件（键盘等）；后台实例挂起 */
+  setActive?(on: boolean): void;
+  /** 播放/暂停切换（可选）：宿主「滚屏/播放」公共入口调用 */
+  togglePlay?(): void;
+  /** 上一个/下一个文件（可选，delta 为 -1 或 1） */
+  navFile?(delta: number): void;
+  /** 是否播放中（可选） */
+  isPlaying?(): boolean;
+}
+
 /** 插件打开文件的上下文 */
 export interface PluginOpenContext {
   /** 完整路径（zip 内条目为「zip路径::条目名」复合路径） */
@@ -32,6 +49,10 @@ export interface PluginOpenContext {
   bytes: Uint8Array;
   /** 视图宿主：插件把 DOM 渲染进这个容器，激活期间覆盖阅读区 */
   host: HTMLElement;
+  /** 本视图实例 id（媒体坞会话 id / 常亮来源后缀，由宿主分配） */
+  viewId: string;
+  /** 关闭本视图（等同用户点关闭：tab 回退文本层） */
+  closeView(): void;
   /** 同目录/同压缩包内同类型文件（按名称排序），供上一个/下一个翻页 */
   siblings: string[];
   /** 当前文件在 siblings 中的下标 */
@@ -74,8 +95,12 @@ export interface ReadBookPlugin {
   /** 声明后宿主跳过整文件字节预读，改经 ctx.streamUrlFor 提供本地文件与 SMB 普通文件的流式 URL
    *  （2GB+ 媒体必需；本地 zip 条目为存储型时同样支持，远程 zip 复合路径与压缩条目由插件自行回退整读） */
   wantsStream?: boolean;
-  /** 打开文件：把视图渲染到 ctx.host */
-  open(ctx: PluginOpenContext): void | Promise<void>;
+  /** 视图实例工厂（可选）：实现即支持多实例（每个 tab 独立视图）。
+   *  未实现时宿主以单例方式包装（同时只有一个视图，行为同旧版） */
+  createView?(): PluginViewInstance;
+  /** 打开文件（单例接口）：把视图渲染到 ctx.host。
+   *  实现 createView 的多实例插件可省略（视图逻辑在实例的 open 中） */
+  open?(ctx: PluginOpenContext): void | Promise<void>;
   /** 视图被关闭/切走时的清理（如 revoke Blob URL） */
   deactivate?(): void;
   /** 播放/暂停切换（可选）：宿主「滚屏/播放」公共入口在插件视图激活时调用。
