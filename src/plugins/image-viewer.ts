@@ -69,7 +69,7 @@ let tapeCur = 0; // 当前图在 tape 中的下标
 
 const urlCache = new Map<string, string>();
 const dimCache = new Map<string, { w: number; h: number }>();
-const listCache = new Map<string, string[]>(); // 容器 → 图片路径列表
+const listCache = new Map<string, string[]>(); // 容器 → 图片路径列表（键含排序开关，切换后旧序缓存自然失效）
 const TAPE_GAP = 16; // 与 .imgv-strip 的 gap 保持一致（滚动补偿用）
 
 const q = <T extends Element>(sel: string): T | null =>
@@ -154,27 +154,33 @@ function containerOf(path: string): Container {
 }
 
 async function listImages(c: Container): Promise<string[]> {
-  const hit = listCache.get(c.path);
+  // 缓存键含排序开关：切换后旧序缓存自然失效
+  const key = (app.state.store.settings.naturalSort ? "N\n" : "Z\n") + c.path;
+  const hit = listCache.get(key);
   if (hit) return hit;
   let out: string[] = [];
   try {
     if (c.type === "zip") {
       const all = await api.listZip(c.path, app.state.store.settings.naturalSort);
-      out = all
-        .filter((n) => IMAGE_RE.test(n))
-        .sort((a, b) => a.localeCompare(b, "zh"))
-        .map((n) => `${c.path}::${n}`);
+      const zImgs = all.filter((n) => IMAGE_RE.test(n));
+      // 自然排序开：后端已排好，信任其顺序（与侧栏一致）；关：保留原 zh 典序重排
+      out = (app.state.store.settings.naturalSort
+        ? zImgs
+        : zImgs.sort((a, b) => a.localeCompare(b, "zh"))
+      ).map((n) => `${c.path}::${n}`);
     } else {
       const entries = await api.listDir(c.path, app.state.store.settings.naturalSort);
-      out = entries
-        .filter((e) => !e.isDir && IMAGE_RE.test(e.name))
-        .sort((a, b) => a.name.localeCompare(b.name, "zh"))
-        .map((e) => e.path);
+      const dImgs = entries.filter((e) => !e.isDir && IMAGE_RE.test(e.name));
+      // 自然排序开：后端已排好，信任其顺序（与侧栏一致）；关：保留原 zh 典序重排
+      out = (app.state.store.settings.naturalSort
+        ? dImgs
+        : dImgs.sort((a, b) => a.name.localeCompare(b.name, "zh"))
+      ).map((e) => e.path);
     }
   } catch {
     out = [];
   }
-  listCache.set(c.path, out);
+  listCache.set(key, out);
   return out;
 }
 

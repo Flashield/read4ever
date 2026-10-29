@@ -450,8 +450,13 @@ window.__TAURI_INTERNALS__ = {
         }
         return Promise.resolve(demoContent(p));
       }
-      case "open_zip_file":
-        return Promise.resolve(ZIP_ENTRIES);
+      case "open_zip_file": {
+        // 自然排序开：演示数据也按自然序返回（拷贝排序，不污染静态数组）；关：保持包内序
+        const zipEntries = Boolean(args.natural)
+          ? [...ZIP_ENTRIES].sort(naturalCompare)
+          : ZIP_ENTRIES.slice(); // 拷贝返回：防调用方就地排序污染静态数据
+        return Promise.resolve(zipEntries);
+      }
       case "read_zip_entry":
         return Promise.resolve(demoContent(`${args.path}::${args.entryName}`));
       case "save_text_file":
