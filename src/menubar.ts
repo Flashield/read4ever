@@ -37,6 +37,16 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { label: "原码显示", checked: () => app.state.displayMode === "auto", action: () => app.setDisplayMode("auto") },
     { sep: true },
     { label: "双页模式", shortcut: "Ctrl+D", checked: () => reader.isDual(), action: () => app.toggleDual() },
+    {
+      label: "文件名自然排序",
+      checked: () => app.state.store.settings.naturalSort,
+      action: () => {
+        app.state.store.settings.naturalSort = !app.state.store.settings.naturalSort;
+        app.persist();
+        void folder.refreshPanel();
+        void import("./smb").then((m) => m.refreshAll());
+      },
+    },
     { label: "全屏阅读", shortcut: "F11", checked: () => app.isFullscreen(), action: () => app.toggleFullscreen() },
     { sep: true },
     {

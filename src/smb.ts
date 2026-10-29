@@ -84,6 +84,12 @@ async function renderAll(): Promise<void> {
   await renderList();
 }
 
+/** 排序开关切换后全量刷新：列表缓存里的条目是按旧开关排好的，先清再渲染 */
+export async function refreshAll(): Promise<void> {
+  childrenCache.clear();
+  await renderAll();
+}
+
 async function renderTree(): Promise<void> {
   const box = $("smb-tree");
   const keepScroll = box.scrollTop;

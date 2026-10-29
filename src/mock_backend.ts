@@ -1,6 +1,8 @@
 /* 浏览器演示后端：无 Tauri 环境（__TAURI_INTERNALS__ 不存在）时启用，
    便于 npm run dev 直接在浏览器中预览与调试 UI。生产环境不会加载本文件。 */
 
+import { naturalCompare } from "./natural";
+
 type InvokeArgs = Record<string, unknown>;
 
 const DEMO_BOOKS: Record<string, { name: string; content: string }> = {
@@ -304,7 +306,7 @@ function mockSeqSort(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
-function mockSmbList(p: string): Record<string, unknown>[] | null {
+function mockSmbList(p: string, natural: boolean): Record<string, unknown>[] | null {
   const node = smbGet(p);
   if (!node || !node.dir) return null;
   let parent = p.replace(/\/+$/, "");
@@ -324,7 +326,11 @@ function mockSmbList(p: string): Record<string, unknown>[] | null {
       mtime: child.dir ? 0 : child.mtime,
       cached: !child.dir && smbCached.has(`${parent}/${name}`),
     }));
-  entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+  entries.sort(
+    (a, b) =>
+      Number(b.isDir) - Number(a.isDir) ||
+      (natural ? naturalCompare(a.name, b.name) : a.name.localeCompare(b.name))
+  );
   return entries;
 }
 
@@ -469,7 +475,7 @@ window.__TAURI_INTERNALS__ = {
               const child = node.children.get(n)!;
               return !child.dir && (n.split(".").pop() || "txt").toLowerCase() === ext;
             })
-            .sort(mockSeqSort);
+            .sort(Boolean(args.natural) ? naturalCompare : mockSeqSort);
           const i = names.indexOf(cur);
           if (cmd === "find_next") {
             const next = i >= 0 ? names[i + 1] : names[0];
@@ -484,7 +490,7 @@ window.__TAURI_INTERNALS__ = {
       case "smb_list_dir": {
         const p = String(args.path);
         if (p.startsWith("smb://")) {
-          const list = mockSmbList(p);
+          const list = mockSmbList(p, Boolean(args.natural));
           if (!list) return Promise.reject("无法读取远程目录: " + p);
           return Promise.resolve(list);
         }
@@ -498,7 +504,11 @@ window.__TAURI_INTERNALS__ = {
           size: child.dir ? 0 : child.content.length,
           mtime: child.dir ? 0 : child.mtime,
         }));
-        entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+        entries.sort(
+          (a, b) =>
+            Number(b.isDir) - Number(a.isDir) ||
+            (Boolean(args.natural) ? naturalCompare(a.name, b.name) : a.name.localeCompare(b.name))
+        );
         return Promise.resolve(entries);
       }
       case "trash_path": {
