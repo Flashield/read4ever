@@ -970,6 +970,7 @@ body.folder-open #reader-container {
   flex-shrink: 0;
 }
 
+.imgv-playmode,
 .imgv-interval {
   padding: 2px 4px;
   border: 1px solid var(--ui-border);
@@ -977,6 +978,13 @@ body.folder-open #reader-container {
   color: var(--ui-text);
   border-radius: 3px;
   font-size: 12px;
+}
+
+/* 播放模式对应的设置项组：仅选中该模式的一组可见（另一组加 .hidden） */
+.imgv-playset {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .imgv-speed {

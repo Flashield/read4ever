@@ -1,6 +1,7 @@
 /* 图片查看插件：查看常见图片格式（含 zip 内图片）。
    支持：缩放（滚轮以鼠标为焦点）/旋转/缩放模式下拉（适应窗口·适宽·适高·原始大小）/
-   幻灯播放/自动滚屏（向下·向右·向左，无缝拼接预加载，跨目录与跨压缩包接续）。 */
+   播放模式下拉（滚屏/幻灯，选中才显示对应设置项）：自动滚屏（向下·向右·向左，
+   无缝拼接预加载）/幻灯播放，跨目录与跨压缩包接续。 */
 import { api } from "../api";
 import * as app from "../app";
 import { showDropdown } from "../dropdown";
@@ -1000,8 +1001,11 @@ function navFile(delta: number): void {
 }
 
 function syncButtons(): void {
-  q<HTMLElement>(`button[data-act="slide"]`)?.classList.toggle("active", slideOn);
-  q<HTMLElement>(`button[data-act="autoscroll"]`)?.classList.toggle("active", scrollOn);
+  const modeSel = q<HTMLSelectElement>(".imgv-playmode");
+  if (modeSel) modeSel.value = playMode;
+  // 只显示当前选中模式对应的设置项
+  q<HTMLElement>(".imgv-set-scroll")?.classList.toggle("hidden", playMode !== "scroll");
+  q<HTMLElement>(".imgv-set-slide")?.classList.toggle("hidden", playMode !== "slide");
   const sel = q<HTMLSelectElement>(".imgv-interval");
   if (sel) sel.value = String(slideSeconds);
   const speed = q<HTMLInputElement>(".imgv-speed");
@@ -1092,22 +1096,28 @@ function buildView(host: HTMLElement): void {
         <button data-act="fitmenu" title="缩放模式">适应窗口</button>
         <button data-act="rotate" title="旋转 90°">↻</button>
         <span class="imgv-sep"></span>
-        <button data-act="slide" title="幻灯播放：按间隔自动换下一张，播完接续下一目录/压缩包">幻灯</button>
-        <select class="imgv-interval" title="幻灯间隔（秒）">
-          <option value="2">2秒</option>
-          <option value="3">3秒</option>
-          <option value="5" selected>5秒</option>
-          <option value="10">10秒</option>
-          <option value="30">30秒</option>
+        <select class="imgv-playmode" title="播放模式：选中后显示对应设置项；开始/停止用全局播放按钮（Space）">
+          <option value="scroll">滚屏</option>
+          <option value="slide">幻灯</option>
         </select>
-        <select class="imgv-dir" title="滚屏方向">
-          <option value="down">向下</option>
-          <option value="ltr">向右</option>
-          <option value="rtl">向左</option>
-        </select>
-        <input class="imgv-speed" type="number" min="20" max="2000" step="20" value="100"
-          title="滚屏速度（像素/秒，20–2000）" />
-        <button data-act="autoscroll" title="自动滚屏播放（无缝拼接可在插件菜单开启）">滚屏</button>
+        <span class="imgv-playset imgv-set-scroll">
+          <select class="imgv-dir" title="滚屏方向">
+            <option value="down">向下</option>
+            <option value="ltr">向右</option>
+            <option value="rtl">向左</option>
+          </select>
+          <input class="imgv-speed" type="number" min="20" max="2000" step="20" value="100"
+            title="滚屏速度（像素/秒，20–2000）" />
+        </span>
+        <span class="imgv-playset imgv-set-slide">
+          <select class="imgv-interval" title="幻灯间隔（秒）">
+            <option value="2">2秒</option>
+            <option value="3">3秒</option>
+            <option value="5">5秒</option>
+            <option value="10">10秒</option>
+            <option value="30">30秒</option>
+          </select>
+        </span>
         <button data-act="close" title="关闭图片，回到文本">✕</button>
       </div>
       <div class="imgv-stage">
@@ -1129,9 +1139,21 @@ function buildView(host: HTMLElement): void {
       case "zoomout": zoomAt(1 / 1.25, stageCenter().x, stageCenter().y); break;
       case "fitmenu": showFitMenu(btn); break;
       case "rotate": rotation = (rotation + 90) % 360; applyLayout(); break;
-      case "slide": setSlideshow(!slideOn); break;
-      case "autoscroll": setAutoScroll(!scrollOn); break;
       case "close": deactivateActive(); break;
+    }
+  });
+
+  host.querySelector(".imgv-playmode")?.addEventListener("change", (e) => {
+    const mode = (e.target as HTMLSelectElement).value as "scroll" | "slide";
+    if (mode === playMode) return;
+    if (slideOn || scrollOn) {
+      // 播放中切换模式：直接切到新模式继续播（set* 内部会停掉旧模式并记录 playMode）
+      if (mode === "slide") setSlideshow(true);
+      else setAutoScroll(true);
+    } else {
+      playMode = mode;
+      saveSetting("playMode", mode);
+      syncButtons();
     }
   });
 
@@ -1180,9 +1202,9 @@ function onResize(): void {
 export const imageViewerPlugin: ReadBookPlugin = {
   id: PID,
   name: "图片查看",
-  version: "1.5.0",
+  version: "1.6.0",
   description:
-    "查看常见图片格式：缩放（滚轮以鼠标为焦点）/旋转/缩放模式下拉（适应窗口·适宽·适高·原始大小），幻灯播放，自动滚屏（向下/向右/向左，无缝拼接预加载，跨目录与跨压缩包接续）",
+    "查看常见图片格式：缩放（滚轮以鼠标为焦点）/旋转/缩放模式下拉（适应窗口·适宽·适高·原始大小）；播放模式下拉（滚屏/幻灯，选中显示对应设置项）：滚屏向下/向右/向左无缝拼接预加载，幻灯按间隔自动换张，跨目录与跨压缩包接续",
   extensions: EXTENSIONS,
   togglePlay: togglePlayback,
   navFile,
