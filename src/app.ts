@@ -327,7 +327,8 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
         { sep: true },
         ...openable.map((entry) => ({
           label: entry,
-          action: () => void openPath(`${path}::${entry}`, { ...opts, tab: tabOpt }),
+          // 设计规格：容器内选择条目固定当前 tab（容器本身的打开仍走 openInNewTab 分流）
+          action: () => void openPath(`${path}::${entry}`, { ...opts, tab: "replace" }),
         })),
       ],
       rect.left + rect.width / 2 - 150,
@@ -489,7 +490,7 @@ function loadFileContent(
     at.title = state.fileName;
     at.error = false;
     at.lazy = null;
-    at.text = null; // tab 内换文件：旧文本快照作废（活跃状态由 descriptors 兜底分支接住）
+    tabs.adoptActiveText(); // 以装载后的活跃状态建文本快照（descriptors 据此描述本 tab）
   }
   tabs.renderTabBar();
   notifyContentChanged();
@@ -964,7 +965,8 @@ export function pickEncoding(): void {
 async function reopenWithEncoding(encoding?: string): Promise<void> {
   const ratio = reader.getRatio();
   if (state.isZip) {
-    await openZipEntry(state.realPath, state.zipEntry, { ratio, encoding });
+    // 复合路径走 openPath：与文本分支同款 tab 分流（销毁旧视图）+ epoch 竞态防护
+    await openPath(`${state.realPath}::${state.zipEntry}`, { ratio, encoding, tab: "replace" });
   } else {
     // tab:"replace"：同文件编码重开必须走替换语义（默认 new 会命中同文件跳转而早退）
     await openPath(state.filePath, { ratio, encoding, tab: "replace" });

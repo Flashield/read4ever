@@ -44,14 +44,8 @@ function bumpEpoch(): void {
 
 const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
-export function list(): readonly Tab[] {
-  return tabs;
-}
 export function activeTab(): Tab | null {
   return tabs.find((t) => t.id === activeId) ?? null;
-}
-export function count(): number {
-  return tabs.length;
 }
 
 /* ========== 快照与恢复 ========== */
@@ -91,6 +85,7 @@ function restoreStateFields(snap: TextSnapshot): void {
 
 /** 当前激活 tab 失活前的落账：快照 + 进度/时长写回历史（与关闭文件同语义） */
 function storeLiveInto(tab: Tab): void {
+  if (tab.lazy) return; // 惰性未装载：没有文本层可快照（state 此刻属于别的 tab）
   const prev = tab.text;
   const snap = snapshotFromState();
   tab.text = snap;
@@ -150,14 +145,20 @@ function renderTextTab(snap: TextSnapshot): void {
     app.renderContent(snap.ratio);
     (document.getElementById("reader-content") as HTMLElement).focus();
     app.updateUI();
+    // 关键词检索等的索引依赖该事件（app.notifyContentChanged 未导出，直接派发同款事件）
+    document.dispatchEvent(new CustomEvent("rb-content-changed"));
   }
 }
 
 function activate(target: Tab): void {
   reader.stopScroll();
   if (target.lazy) {
+    // 旧 tab 的视图面板先收起：否则其视图仍处激活态（registry.curActiveViewId 仍指它），
+    // 惰性装载的文本会渲染在仍然可见的旧视图之后
+    plugins.hideActiveView();
     const { path, ratio } = target.lazy;
-    target.lazy = null;
+    // lazy 标记保留到装载成功（loadFileContent 清除；失败保留可重试，
+    // 窗口期内 descriptors 走 lazy 分支描述出正确路径）
     void app.openPath(path, { ratio, quiet: true, tab: "replace" });
     return; // openPath 完成内容装载与 UI 更新
   }
@@ -376,7 +377,17 @@ export interface TabDescriptorLite {
   ratio: number;
 }
 
-/** 当前全部 tab 的持久化描述（app.persist 落盘前调用） */
+/** 激活 tab 文本装载完成（app.loadFileContent 调用）：以活跃状态建立文本快照。
+ *  此后 descriptors 对激活 tab 取 live 比例，重启即可恢复本 tab */
+export function adoptActiveText(): void {
+  const t = activeTab();
+  if (!t) return;
+  t.text = snapshotFromState();
+}
+
+/** 当前全部 tab 的持久化描述（app.persist 落盘前调用）。
+ *  三项皆空（惰性已清、内容未装、视图未绑）的激活 tab 跳过：装载完成的
+ *  loadFileContent → adoptActiveText 后再 persist 补正，避免窗口期把旧文件落成重复描述 */
 export function descriptors(): TabDescriptorLite[] {
   const out: TabDescriptorLite[] = [];
   for (const t of tabs) {
@@ -389,9 +400,6 @@ export function descriptors(): TabDescriptorLite[] {
         path: t.text.filePath,
         ratio: t.id === activeId && !plugins.isActive() ? reader.getRatio() : t.text.ratio,
       });
-    } else if (t.id === activeId && !plugins.isActive() && app.state.filePath) {
-      // 激活 tab 尚无快照（t.text 仅在失活时落）：取活跃状态兜底，否则当前正读的 tab 重启即丢
-      out.push({ path: app.state.filePath, ratio: reader.getRatio() });
     }
   }
   return out;

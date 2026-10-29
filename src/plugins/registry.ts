@@ -264,11 +264,6 @@ export function closeView(id: string): void {
   app.updateUI();
 }
 
-/** 关闭当前激活视图（Esc / 兼容旧调用方） */
-export function deactivateActive(): void {
-  if (curActiveViewId) closeView(curActiveViewId);
-}
-
 /** 换显某实例面板为可见（tab 切换/新视图打开）：旧激活面板隐藏但保活 */
 export function activateView(id: string): void {
   const v = views.get(id);
