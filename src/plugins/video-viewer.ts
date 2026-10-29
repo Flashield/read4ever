@@ -210,10 +210,6 @@ function onKey(e: KeyboardEvent): void {
   if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable))
     return;
   switch (e.key) {
-    case " ":
-      e.preventDefault();
-      togglePlay();
-      break;
     case "ArrowLeft":
       if (video) video.currentTime = Math.max(0, video.currentTime - 5);
       break;
@@ -400,10 +396,13 @@ function menu(): MenuItemDef[] {
 export const videoViewerPlugin: ReadBookPlugin = {
   id: PID,
   name: "视频查看",
-  version: "1.1.0",
+  version: "1.2.0",
   description:
     "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）",
   extensions: EXTENSIONS,
+  togglePlay,
+  navFile: (delta: number) => void nav(delta),
+  isPlaying: () => !!video && !video.paused && !video.ended,
   wantsStream: true,
   menu,
   open(c: PluginOpenContext): void {
