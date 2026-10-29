@@ -1162,6 +1162,8 @@ body.folder-open #reader-container {
   background: #141414;
 }
 
+
+
 /* 触屏/窄屏（iOS移植方案 D3）：控制条允许换行；
    音量控件仅触屏隐藏——iOS WKWebView 的音量由系统控制，页内滑杆无效 */
 @media ((hover: none) and (pointer: coarse)), (max-width: 760px) {
