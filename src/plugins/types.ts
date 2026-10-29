@@ -59,6 +59,9 @@ export interface PluginOpenContext {
    *  视图关闭时宿主自动释放插件持有的常亮，忘关不会永久常亮。
    *  同一插件连续打开下一个文件（上一/下一张）时不自动释放，由插件在 open 中自行调用 setKeepAwake(false) 重置。 */
   setKeepAwake(on: boolean): void;
+  /** 触发宿主「滚屏/播放」公共入口（等同菜单栏滚屏按钮 / Space 键）：
+   *  宿主按当前视图分发——插件视图回调本插件的 togglePlay（若实现），文本视图开关滚屏 */
+  togglePlayback(): void;
 }
 
 export interface ReadBookPlugin {
@@ -75,6 +78,15 @@ export interface ReadBookPlugin {
   open(ctx: PluginOpenContext): void | Promise<void>;
   /** 视图被关闭/切走时的清理（如 revoke Blob URL） */
   deactivate?(): void;
+  /** 播放/暂停切换（可选）：宿主「滚屏/播放」公共入口在插件视图激活时调用。
+   *  图片类：按上次选择的模式（滚屏或幻灯）开始，播放中则全部停止；
+   *  视频类：暂停/继续。未实现时宿主提示"不支持播放控制" */
+  togglePlay?(): void;
+  /** 上一个/下一个文件（可选，delta 为 -1 或 1）：宿主「上一个/下一个文件」按钮在插件视图激活时调用。
+   *  图片类为上一张/下一张（跨目录/压缩包接续），视频类为上一个/下一个视频 */
+  navFile?(delta: number): void;
+  /** 是否播放中（可选）：宿主按钮/菜单文案与工具栏按钮高亮同步用 */
+  isPlaying?(): boolean;
   /** 插件固定设置菜单项（启用时显示在菜单栏"插件"菜单中） */
   menu?(): MenuItemDef[];
 }

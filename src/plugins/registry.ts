@@ -145,6 +145,11 @@ export function activeFilePath(): string {
   return activeCtx ? activeCtx.path : "";
 }
 
+/** 当前激活插件（未激活为 null）：宿主「滚屏/播放」「上一个/下一个文件」公共入口按它分发 */
+export function activePlugin(): ReadBookPlugin | null {
+  return active;
+}
+
 function splitTarget(path: string): { zipPath: string; entry: string; base: string } {
   const m = path.match(/^(.+\.zip)::(.+)$/i);
   if (m) return { zipPath: m[1], entry: m[2], base: m[2] };
@@ -286,6 +291,7 @@ export async function openFile(path: string): Promise<void> {
         if (active !== owner) return; // 视图已切走/关闭：丢弃过期请求，防止僵尸定时器重新挂起常亮
         holdAwake(`plugin:${owner.id}`, on);
       },
+      togglePlayback: () => app.togglePlayback(),
     };
     activeCtx = ctx;
     await plugin.open(ctx);
