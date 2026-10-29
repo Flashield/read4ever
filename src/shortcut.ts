@@ -77,12 +77,12 @@ export function initShortcuts(): void {
       }
       if (key === "PageDown") {
         e.preventDefault();
-        if (!plugins.isActive()) app.gotoNextFile();
+        void app.gotoNextFile(); // 插件视图内分发为插件 navFile
         return;
       }
       if (key === "PageUp") {
         e.preventDefault();
-        if (!plugins.isActive()) app.gotoPrevFile();
+        void app.gotoPrevFile();
         return;
       }
       return;
@@ -95,8 +95,15 @@ export function initShortcuts(): void {
       return;
     }
 
-    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（Space/数字/±/P/PgUp/PgDn/Home/End/T
-    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）与 Ctrl 组合不受影响
+    // 滚屏/播放公共入口不受插件视图屏蔽：宿主按视图类型分发（文本滚屏 / 插件播放切换）
+    if (key === " ") {
+      e.preventDefault();
+      app.togglePlayback();
+      return;
+    }
+
+    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（数字/±/P/PgUp/PgDn/Home/End/T
+    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）、Space 与 Ctrl 组合不受影响
     if (plugins.isActive()) return;
 
     // 功能键
@@ -122,11 +129,6 @@ export function initShortcuts(): void {
     }
 
     // 单键
-    if (key === " ") {
-      e.preventDefault();
-      app.toggleScroll();
-      return;
-    }
     if (key >= "1" && key <= "9") {
       app.setSpeed(Number(key) * 45); // 1-9 预设档位 → 45..405 像素/秒
       app.toast(`速度: ${Number(key) * 45} 像素/秒`);

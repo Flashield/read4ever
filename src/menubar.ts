@@ -20,8 +20,8 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
         })(),
     },
     { sep: true },
-    { label: "上一个文件", shortcut: "Ctrl+PgUp", action: () => app.gotoPrevFile(), disabled: !app.state.filePath },
-    { label: "下一个文件", shortcut: "Ctrl+PgDn", action: () => app.gotoNextFile(), disabled: !app.state.filePath },
+    { label: "上一个文件", shortcut: "Ctrl+PgUp", action: () => app.gotoPrevFile(), disabled: !app.state.filePath && !registry.isActive() },
+    { label: "下一个文件", shortcut: "Ctrl+PgDn", action: () => app.gotoNextFile(), disabled: !app.state.filePath && !registry.isActive() },
     { sep: true },
     { label: "另存为…", shortcut: "Ctrl+S", action: () => app.saveAs(), disabled: !app.state.filePath },
     { label: "关闭文件", shortcut: "Ctrl+W", action: () => app.closeFile(), disabled: !app.state.filePath && !registry.isActive() },
@@ -76,7 +76,14 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     },
   ],
   read: () => [
-    { label: reader.isScrolling() ? "停止滚屏" : "开始滚屏", shortcut: "Space", action: () => app.toggleScroll(), disabled: !app.state.filePath },
+    {
+      label: registry.isActive()
+        ? app.isPlaying() ? "停止播放" : "开始播放"
+        : app.isPlaying() ? "停止滚屏" : "开始滚屏",
+      shortcut: "Space",
+      action: () => app.togglePlayback(),
+      disabled: !app.state.filePath && !registry.isActive(),
+    },
     { label: "页模式翻页", shortcut: "P", checked: () => reader.getMode() === "page", action: () => app.toggleScrollMode() },
     { sep: true },
     { label: "加速", shortcut: "+", action: () => app.adjustSpeed(1) },
@@ -137,8 +144,8 @@ function showShortcuts(): void {
       "Ctrl+O        打开文件",
       "Ctrl+Shift+O  打开文件夹（左侧栏树状浏览）",
       "Ctrl+Alt+O    浏览 SMB 远程共享（左侧栏远程标签）",
-      "Ctrl+PgUp/Dn  上一个/下一个文件（按序号）",
-      "Space         开始/停止滚屏",
+      "Ctrl+PgUp/Dn  上一个/下一个文件（图片/视频视图内为上一张/下一个）",
+      "Space         滚屏/播放（文本滚屏；图片按所选模式播放、视频暂停/继续）",
       "1-9 / + / -   滚屏速度（点工具栏速度标签可输入任意像素值）",
       "P             切换连续滚屏 / 页模式翻页",
       "PgUp / PgDn   翻上一页 / 下一页",
@@ -225,7 +232,7 @@ export function initMenubar(): void {
   );
   bind("btn-prev-file", () => app.gotoPrevFile());
   bind("btn-next-file", () => app.gotoNextFile());
-  bind("btn-scroll", () => app.toggleScroll());
+  bind("btn-scroll", () => app.togglePlayback());
   bind("btn-page-mode", () => app.toggleScrollMode());
   bind("btn-find", () => document.dispatchEvent(new CustomEvent("rb-open-find")));
   bind("btn-keyword", () => document.dispatchEvent(new CustomEvent("rb-open-panel", { detail: "keyword-panel" })));

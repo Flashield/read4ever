@@ -441,8 +441,14 @@ function loadFileContent(
   notifyContentChanged();
 }
 
-/* 按序号打开上一个/下一个文件 */
+/* 按序号打开上一个/下一个文件；插件视图激活时分发给插件的 navFile（图片/视频上一张/下一个） */
 export async function gotoNextFile(): Promise<void> {
+  const p = plugins.activePlugin();
+  if (p) {
+    if (p.navFile) p.navFile(1);
+    else toast("当前插件不支持切换文件");
+    return;
+  }
   if (!state.realPath) return;
   const n = await api.nextFile(state.realPath, state.store.settings.naturalSort);
   if (n) openPath(n);
@@ -450,9 +456,15 @@ export async function gotoNextFile(): Promise<void> {
 }
 
 export async function gotoPrevFile(): Promise<void> {
+  const p = plugins.activePlugin();
+  if (p) {
+    if (p.navFile) p.navFile(-1);
+    else toast("当前插件不支持切换文件");
+    return;
+  }
   if (!state.realPath) return;
-  const p = await api.prevFile(state.realPath, state.store.settings.naturalSort);
-  if (p) openPath(p);
+  const p2 = await api.prevFile(state.realPath, state.store.settings.naturalSort);
+  if (p2) openPath(p2);
   else toast("没有上一个文件");
 }
 
@@ -519,9 +531,26 @@ function startReadTicker(): void {
   }, 1000);
 }
 
-/* ========== 滚屏 ========== */
+/* ========== 滚屏/播放（公共入口：按视图类型分发） ========== */
 
-export function toggleScroll(): void {
+/** 当前视图是否播放中：插件视图看插件 isPlaying，文本视图看滚屏状态（按钮高亮/菜单文案用） */
+export function isPlaying(): boolean {
+  const p = plugins.activePlugin();
+  if (p) return p.isPlaying?.() ?? false;
+  return reader.isScrolling();
+}
+
+/** 滚屏/播放公共入口（菜单栏按钮 / Space / 插件经 ctx.togglePlayback 调用）：
+ *  插件视图 → 插件的 togglePlay（图片按所选滚屏/幻灯模式播放，视频暂停/继续）；
+ *  文本视图 → 连续滚屏 / 页模式自动翻页开关 */
+export function togglePlayback(): void {
+  const p = plugins.activePlugin();
+  if (p) {
+    if (p.togglePlay) p.togglePlay();
+    else toast("当前插件视图不支持播放控制");
+    updateUI();
+    return;
+  }
   if (!state.filePath) return;
   const on = reader.toggleScroll();
   if (on)
@@ -1061,7 +1090,7 @@ export function updateUI(): void {
     const b = document.getElementById(id);
     if (b) b.classList.toggle("active", active);
   };
-  setBtn("btn-scroll", reader.isScrolling());
+  setBtn("btn-scroll", isPlaying());
   setBtn("btn-page-mode", reader.getMode() === "page");
   setBtn("btn-dual-page", reader.isDual());
   setBtn("btn-fullscreen", isFullscreen());
