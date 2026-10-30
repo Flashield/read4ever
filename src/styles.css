@@ -2591,3 +2591,79 @@ body.fs-immersive.show-bottom #media-dock {
 .av-mini button:hover {
   color: var(--accent);
 }
+
+.av-listbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--panel-bg);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.av-listbar button {
+  padding: 3px 8px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-hover);
+  color: var(--ui-text);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.av-listbar button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.av-listbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.av-listsel {
+  flex: 0 1 auto;
+  min-width: 140px;
+  max-width: 45%;
+  padding: 2px 4px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.av-rename {
+  flex: 0 1 auto;
+  min-width: 140px;
+  padding: 2px 4px;
+  border: 1px solid var(--accent);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.av-del {
+  opacity: 0;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: #f66;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.av-row:hover .av-del {
+  opacity: 1;
+}
+
+.av-empty {
+  padding: 20px 12px;
+  color: #999;
+  font-size: 12px;
+}

@@ -7,12 +7,15 @@
    多实例：视图态全部迁入 AudioView 类；用户偏好与播放列表/续播位置模块级共享（同 video 的 rate 模式）。 */
 import * as app from "../app";
 import { api } from "../api";
+import { naturalCompare } from "../natural";
 import * as mediaDock from "../mediaDock";
-import { pluginSetting, setPluginSetting } from "./registry";
+import { extOf, pluginSetting, setPluginSetting } from "./registry";
+import type { FileEntry } from "../types";
 import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
 
 const PID = "audio-viewer";
 const EXTENSIONS = [".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav"];
+const AUDIO_SET = new Set(EXTENSIONS);
 
 const MIME: Record<string, string> = {
   ".mp3": "audio/mpeg",
@@ -92,6 +95,62 @@ function persistPositions(): void {
   setPluginSetting(PID, "positions", JSON.stringify(Object.fromEntries(positions)));
 }
 
+/* ========== 播放列表（模块级共享；持久化为插件设置的 JSON 字符串） ========== */
+
+interface SavedPlaylist {
+  id: string;
+  name: string;
+  items: string[]; // 完整路径：本地绝对路径 / smb:// / zip 复合路径
+}
+interface PlaylistsData {
+  lists: SavedPlaylist[];
+  lastListId?: string; // 仅记忆上次使用，不自动加载覆盖目录队列
+}
+
+function loadPlaylists(): PlaylistsData {
+  try {
+    const raw = pluginSetting<string>(PID, "playlists", "");
+    if (!raw) return { lists: [] };
+    const d = JSON.parse(raw) as PlaylistsData;
+    if (!Array.isArray(d.lists)) return { lists: [] };
+    return {
+      lists: d.lists.filter((l) => l && typeof l.id === "string" && typeof l.name === "string" && Array.isArray(l.items)),
+      lastListId: typeof d.lastListId === "string" ? d.lastListId : undefined,
+    };
+  } catch {
+    return { lists: [] };
+  }
+}
+
+let playlists: PlaylistsData = loadPlaylists();
+
+function savePlaylists(): void {
+  setPluginSetting(PID, "playlists", JSON.stringify(playlists));
+}
+
+/** 结构变更统一入口：改完即落盘 */
+function mutateLists(fn: (d: PlaylistsData) => void): void {
+  fn(playlists);
+  savePlaylists();
+}
+
+/** 目录队列下拉项的哨兵值 */
+const DIR_VAL = "::dir::";
+
+/** 递归收集目录下音频文件（自然排序由调用方统一做；读不到的子目录跳过） */
+async function collectAudio(dir: string, out: string[]): Promise<void> {
+  let entries: FileEntry[] = [];
+  try {
+    entries = await api.listDir(dir, true);
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.isDir) await collectAudio(e.path, out);
+    else if (AUDIO_SET.has(extOf(e.name))) out.push(e.path);
+  }
+}
+
 /* 模块级共享用户偏好（持久化于插件设置） */
 let loopMode = pluginSetting<LoopMode>(PID, "loopMode", "loop-list");
 let defaultRate = pluginSetting<number>(PID, "rate", 1);
@@ -108,6 +167,9 @@ class AudioView implements PluginViewInstance {
   private audio: HTMLAudioElement | null = null;
   private dirQueue: string[] = []; // 目录队列（打开文件所在目录/压缩包派生，只读）
   private queue: string[] = []; // 当前生效队列（目录队列或某播放列表的副本）
+  private queueIsDir = true; // 当前队列是否目录队列(只读,不可增删排序)
+  private listId = ""; // 当前选中的已存播放列表 id(目录队列时为 "")
+  private dragFrom = -1; // 拖拽起始行索引(-1 无拖拽)
   private currentPath = ""; // 当前（或上次）加载的曲目，独立于队列存在
   private loadedPath = ""; // audio 元素当前实际加载的媒体路径（与 currentPath 的 UI 职责区分）
   private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
@@ -369,9 +431,17 @@ class AudioView implements PluginViewInstance {
     const box = this.q<HTMLElement>(".av-list");
     if (!box) return;
     box.innerHTML = "";
+    if (this.queue.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "av-empty";
+      empty.textContent = "队列是空的：从上方选择播放列表，或用 ＋文件 / ＋文件夹 添加";
+      box.appendChild(empty);
+      return;
+    }
     this.queue.forEach((p, i) => {
       const row = document.createElement("div");
       row.className = "av-row" + (p === this.currentPath ? " cur" : "");
+      if (!this.queueIsDir) row.draggable = true;
       const idx = document.createElement("span");
       idx.className = "av-idx";
       idx.textContent = String(i + 1);
@@ -389,9 +459,235 @@ class AudioView implements PluginViewInstance {
         st.textContent = "▶";
       }
       row.append(idx, ti, st);
+      if (!this.queueIsDir) {
+        const del = document.createElement("button");
+        del.className = "av-del";
+        del.textContent = "✕";
+        del.title = "从此列表移除";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation(); // 不触发行点击播放
+          this.removeItem(i);
+        });
+        row.appendChild(del);
+        row.addEventListener("dragstart", () => (this.dragFrom = i));
+        row.addEventListener("dragover", (e) => e.preventDefault());
+        row.addEventListener("drop", (e) => {
+          e.preventDefault();
+          this.dropTo(i);
+        });
+      }
       row.addEventListener("click", () => this.playIndex(i));
       box.appendChild(row);
     });
+  }
+
+  /* ========== 播放列表 ========== */
+
+  /** 切换队列：只换列表显示与后续连播走向，不打断当前播放 */
+  private switchQueue(sel: string): void {
+    if (sel === DIR_VAL) {
+      this.queueIsDir = true;
+      this.listId = "";
+      this.queue = [...this.dirQueue];
+    } else {
+      const l = playlists.lists.find((x) => x.id === sel);
+      if (!l) return;
+      this.queueIsDir = false;
+      this.listId = sel;
+      this.queue = [...l.items];
+    }
+    this.renderListBar();
+    this.renderList();
+    this.updateLabels();
+    this.syncStatus();
+  }
+
+  private renderListBar(): void {
+    const sel = this.q<HTMLSelectElement>(".av-listsel");
+    if (!sel) return;
+    sel.innerHTML = "";
+    const optDir = document.createElement("option");
+    optDir.value = DIR_VAL;
+    optDir.textContent = `📁 目录队列（当前文件夹，${this.dirQueue.length} 首）`;
+    sel.appendChild(optDir);
+    for (const l of playlists.lists) {
+      const o = document.createElement("option");
+      o.value = l.id;
+      o.textContent = `🎵 ${l.name}（${l.items.length}）`;
+      sel.appendChild(o);
+    }
+    sel.value = this.queueIsDir ? DIR_VAL : this.listId;
+    const dirMode = this.queueIsDir;
+    for (const act of ["addf", "addd"]) {
+      const b = this.q<HTMLButtonElement>(`button[data-act="${act}"]`);
+      if (b) {
+        b.disabled = dirMode;
+        b.title = dirMode ? "先选择或新建一个播放列表" : b.dataset.tip || b.title;
+      }
+    }
+    const sq = this.q<HTMLButtonElement>('button[data-act="saveq"]');
+    if (sq) sq.disabled = !dirMode || this.dirQueue.length === 0;
+    const dl = this.q<HTMLButtonElement>('button[data-act="dellist"]');
+    if (dl) dl.disabled = dirMode;
+  }
+
+  private newList(): void {
+    const id = crypto.randomUUID();
+    let name = "";
+    mutateLists((d) => {
+      name = `播放列表 ${d.lists.length + 1}`;
+      d.lists.push({ id, name, items: [] });
+      d.lastListId = id;
+    });
+    this.switchQueue(id);
+    app.toast(`已新建「${name}」，用 ＋文件 / ＋文件夹 添加曲目`);
+  }
+
+  private deleteList(): void {
+    if (this.queueIsDir) return;
+    const l = playlists.lists.find((x) => x.id === this.listId);
+    if (!l) return;
+    mutateLists((d) => {
+      d.lists = d.lists.filter((x) => x.id !== this.listId);
+      if (d.lastListId === this.listId) d.lastListId = undefined;
+    });
+    this.switchQueue(DIR_VAL);
+    app.toast(`已删除「${l.name}」`);
+  }
+
+  /** 目录队列整体存为新播放列表——SMB/zip 路径进入播放列表的唯一通道 */
+  private saveQueueAsList(): void {
+    if (!this.queueIsDir || this.dirQueue.length === 0) return;
+    const id = crypto.randomUUID();
+    let name = "";
+    mutateLists((d) => {
+      name = `播放列表 ${d.lists.length + 1}`;
+      d.lists.push({ id, name, items: [...this.dirQueue] });
+      d.lastListId = id;
+    });
+    this.switchQueue(id);
+    app.toast(`已存为「${name}」（${this.dirQueue.length} 首）`);
+  }
+
+  private async addFiles(): Promise<void> {
+    if (this.queueIsDir) {
+      app.toast("请先选择或新建一个播放列表");
+      return;
+    }
+    let picked: string[] | null = null;
+    try {
+      picked = await api.pickAudioFiles();
+    } catch {
+      app.toast("演示环境不可用");
+      return;
+    }
+    if (!picked || picked.length === 0) return;
+    this.appendToList(picked);
+  }
+
+  private async addFolder(): Promise<void> {
+    if (this.queueIsDir) {
+      app.toast("请先选择或新建一个播放列表");
+      return;
+    }
+    let dir: string | null = null;
+    try {
+      dir = await api.pickDirectory();
+    } catch {
+      app.toast("演示环境不可用");
+      return;
+    }
+    if (!dir) return;
+    const found: string[] = [];
+    await collectAudio(dir, found);
+    this.appendToList(found);
+  }
+
+  /** 追加曲目：过滤扩展名与已存在，批内自然排序 */
+  private appendToList(paths: string[]): void {
+    const list = playlists.lists.find((x) => x.id === this.listId);
+    if (!list) return;
+    const added = paths
+      .filter((p) => AUDIO_SET.has(extOf(p)) && !list.items.includes(p))
+      .sort(naturalCompare);
+    if (added.length === 0) {
+      app.toast("没有新增曲目（格式不符或已存在）");
+      return;
+    }
+    mutateLists(() => {
+      list.items.push(...added);
+    });
+    this.queue = [...list.items];
+    this.renderList();
+    this.renderListBar();
+    app.toast(`已添加 ${added.length} 首`);
+  }
+
+  private removeItem(i: number): void {
+    if (this.queueIsDir) return;
+    const list = playlists.lists.find((x) => x.id === this.listId);
+    const p = this.queue[i];
+    if (!list || !p) return;
+    mutateLists(() => {
+      const j = list.items.indexOf(p);
+      if (j >= 0) list.items.splice(j, 1);
+    });
+    this.queue = [...list.items];
+    this.renderList();
+    this.renderListBar();
+  }
+
+  private dropTo(to: number): void {
+    const from = this.dragFrom;
+    this.dragFrom = -1;
+    if (from < 0 || from === to || this.queueIsDir) return;
+    const list = playlists.lists.find((x) => x.id === this.listId);
+    if (!list) return;
+    const moved = this.queue[from];
+    if (moved === undefined) return;
+    mutateLists(() => {
+      const mi = list.items.indexOf(moved);
+      if (mi >= 0) list.items.splice(mi, 1);
+      list.items.splice(Math.min(Math.max(to, 0), list.items.length), 0, moved);
+    });
+    this.queue = [...list.items];
+    this.renderList();
+  }
+
+  /** 双击列表下拉 → 行内重命名（已存列表激活时） */
+  private renameInline(sel: HTMLSelectElement): void {
+    if (this.queueIsDir) return;
+    const list = playlists.lists.find((x) => x.id === this.listId);
+    const parent = sel.parentElement;
+    if (!list || !parent || parent.querySelector(".av-rename")) return;
+    const input = document.createElement("input");
+    input.className = "av-rename";
+    input.value = list.name;
+    sel.classList.add("hidden");
+    parent.insertBefore(input, sel);
+    input.focus();
+    input.select();
+    let finished = false;
+    const done = (commit: boolean) => {
+      if (finished) return;
+      finished = true;
+      const name = input.value.trim();
+      input.remove();
+      sel.classList.remove("hidden");
+      if (commit && name && name !== list.name) {
+        mutateLists(() => {
+          const l = playlists.lists.find((x) => x.id === this.listId);
+          if (l) l.name = name;
+        });
+        this.renderListBar();
+        app.toast(`已重命名为「${name}」`);
+      }
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") done(true);
+      else if (e.key === "Escape") done(false);
+    });
+    input.addEventListener("blur", () => done(true));
   }
 
   /* ========== 视图构建 ========== */
@@ -416,6 +712,14 @@ class AudioView implements PluginViewInstance {
         <button data-act="loop" title="循环模式">🔁</button>
         <button data-act="close" title="关闭播放器（停止播放）">✕</button>
       </div>
+      <div class="av-listbar">
+        <select class="av-listsel" title="选择队列（切换不打断当前播放；双击已存列表可重命名）"></select>
+        <button data-act="saveq" data-tip="把当前目录队列存为播放列表" title="把当前目录队列存为播放列表">存为列表</button>
+        <button data-act="addf" data-tip="添加音频文件到当前播放列表" title="添加音频文件到当前播放列表">＋文件</button>
+        <button data-act="addd" data-tip="添加文件夹（递归收集）到当前播放列表" title="添加文件夹（递归收集）到当前播放列表">＋文件夹</button>
+        <button data-act="newlist" title="新建空播放列表">＋新建</button>
+        <button data-act="dellist" title="删除当前播放列表">删除列表</button>
+      </div>
       <div class="av-stage">
         <div class="av-list"></div>
         <div class="av-error hidden"></div>
@@ -438,6 +742,21 @@ class AudioView implements PluginViewInstance {
         case "close": this.ctx?.closeView(); break;
       }
     });
+
+    this.ctx.host.querySelector(".av-listbar")?.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("button[data-act]") as HTMLElement | null;
+      if (!btn) return;
+      switch (btn.dataset.act) {
+        case "saveq": this.saveQueueAsList(); break;
+        case "addf": void this.addFiles(); break;
+        case "addd": void this.addFolder(); break;
+        case "newlist": this.newList(); break;
+        case "dellist": this.deleteList(); break;
+      }
+    });
+    const listSel = this.q<HTMLSelectElement>(".av-listsel")!;
+    listSel.addEventListener("change", () => this.switchQueue(listSel.value));
+    listSel.addEventListener("dblclick", () => this.renameInline(listSel));
 
     const rateSel = this.q<HTMLSelectElement>(".av-rate")!;
     rateSel.value = String(defaultRate);
@@ -606,6 +925,8 @@ class AudioView implements PluginViewInstance {
     this.viewId = c.viewId;
     this.dirQueue = c.siblings.length > 0 ? [...c.siblings] : [c.path];
     this.queue = [...this.dirQueue];
+    this.queueIsDir = true;
+    this.listId = "";
     this.currentPath = this.dirQueue[Math.max(0, Math.min(c.siblingIndex, this.dirQueue.length - 1))] || c.path;
     this.buildView();
     this.buildSession();
@@ -619,6 +940,7 @@ class AudioView implements PluginViewInstance {
     });
     liveViews.add(this);
     c.setKeepAwake(false); // 同实例换文件重开：重置常亮持有（play 事件会重新持有）
+    this.renderListBar();
     this.renderList();
     void this.loadTrack(this.currentPath, true);
   }
@@ -659,7 +981,7 @@ export const audioViewerPlugin: ReadBookPlugin = {
   name: "音频播放",
   version: "1.0.0",
   description:
-    "播放常见音频格式（含 zip 内音频）：打开文件所在目录自动成队列连播、上一/下一首、倍速、音量、循环模式；切标签页与进托盘后台播放不中断（迷你条可控切曲）；2GB+ 大文件走宿主流式协议按需分块；支持多标签页多实例",
+    "播放常见音频格式（含 zip 内音频）：打开文件所在目录自动成队列连播，支持多个可保存的命名播放列表（添加文件/文件夹、拖拽排序、目录队列一键存为列表）；切标签页与进托盘后台播放不中断（迷你条可控切曲）；记住播放位置自动续播；2GB+ 大文件流式按需分块；支持多标签页多实例",
   extensions: EXTENSIONS,
   wantsStream: true,
   backgroundPlayback: true,
