@@ -95,6 +95,9 @@ export interface ReadBookPlugin {
   /** 声明后宿主跳过整文件字节预读，改经 ctx.streamUrlFor 提供本地文件与 SMB 普通文件的流式 URL
    *  （2GB+ 媒体必需；本地 zip 条目为存储型时同样支持，远程 zip 复合路径与压缩条目由插件自行回退整读） */
   wantsStream?: boolean;
+  /** 声明后本插件的视图实例豁免两处后台暂停:切标签页暂停策略(tabs.applyPlaybackPolicy)
+   *  与进托盘全停(registry.pauseAllInstances)。音频「边听边看/托盘继续听」用 */
+  backgroundPlayback?: boolean;
   /** 视图实例工厂（可选）：实现即支持多实例（每个 tab 独立视图）。
    *  未实现时宿主以单例方式包装（同时只有一个视图，行为同旧版） */
   createView?(): PluginViewInstance;

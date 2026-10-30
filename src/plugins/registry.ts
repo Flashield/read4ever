@@ -89,12 +89,18 @@ export function pluginIdOfView(id: string): string {
  *  通道与切标签页播放策略 tabs.applyPlaybackPolicy 一致，范围扩大到全部实例。 */
 export function pauseAllInstances(): void {
   for (const e of views.values()) {
+    if (e.plugin.backgroundPlayback) continue; // 后台播放豁免(音频):托盘不暂停
     try {
       if (e.inst.isPlaying?.()) e.inst.togglePlay?.();
     } catch {
       /* 忽略：单个实例异常不阻断其余 */
     }
   }
+}
+
+/** 该视图实例是否豁免后台暂停策略(tabs.applyPlaybackPolicy 切标签页时用) */
+export function viewAllowsBackground(id: string): boolean {
+  return views.get(id)?.plugin.backgroundPlayback === true;
 }
 
 export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {

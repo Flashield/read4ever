@@ -32,6 +32,26 @@ export interface Tab {
 const tabs: Tab[] = [];
 let activeId = "";
 
+/* tab 激活近序(最新的在前):音频插件「最小化到坞」找最近激活的非音频 tab 用 */
+const recentIds: string[] = [];
+function touchRecent(id: string): void {
+  const i = recentIds.indexOf(id);
+  if (i >= 0) recentIds.splice(i, 1);
+  recentIds.unshift(id);
+}
+/** 按最近激活排序的全部 tab id(新→旧) */
+export function recentTabIds(): string[] {
+  return [...recentIds];
+}
+/** tab 绑定的插件视图实例 id(无视图/未知 id 为 "") */
+export function tabViewId(id: string): string {
+  return tabs.find((t) => t.id === id)?.viewId ?? "";
+}
+/** 视图实例所属 tab id(未绑定/未知为 "") */
+export function tabIdOfView(viewId: string): string {
+  return tabs.find((t) => t.viewId === viewId)?.id ?? "";
+}
+
 /* 打开竞态防护：tab 集合/激活变化即递增，跨 await 的打开流程完成时校验，
    过期结果（内容/绑定/错误标记）一律丢弃，避免写进已失活的 tab */
 let epoch = 0;
@@ -105,6 +125,7 @@ function applyPlaybackPolicy(): void {
   if (app.state.store.settings.tabSwitchPlayback === "continue") return;
   for (const t of tabs) {
     if (t.id === activeId || !t.viewId) continue;
+    if (plugins.viewAllowsBackground(t.viewId)) continue; // 后台播放插件(音频):切标签页不打断
     const inst = plugins.instanceOf(t.viewId);
     try {
       if (inst?.isPlaying?.()) inst.togglePlay?.();
@@ -123,6 +144,7 @@ export function switchToTab(id: string): void {
   const target = tabs.find((t) => t.id === id);
   if (!target) return;
   activeId = id;
+  touchRecent(id);
   bumpEpoch();
   activate(target);
   applyPlaybackPolicy();
@@ -189,6 +211,7 @@ export function createTab(title: string): Tab | null {
   const t: Tab = { id: crypto.randomUUID(), title, text: null, viewId: "", lazy: null, error: false };
   tabs.push(t);
   activeId = t.id;
+  touchRecent(t.id);
   bumpEpoch();
   reader.stopScroll();
   plugins.hideActiveView(); // 旧 tab 的视图面板收起保活（归它自己的 tab）
@@ -203,6 +226,8 @@ export function closeTab(id: string): void {
   const tab = tabs[idx];
   if (tab.viewId) plugins.closeView(tab.viewId); // rb-view-closed → unbindView（幂等）
   tabs.splice(idx, 1);
+  const ri = recentIds.indexOf(id);
+  if (ri >= 0) recentIds.splice(ri, 1);
   if (activeId === id) {
     activeId = "";
     bumpEpoch();
