@@ -1,6 +1,6 @@
 /* 视频查看插件：播放常见视频格式（含 zip 内视频）。
    基础功能：播放/暂停、进度条跳转、时间显示、倍速、音量/静音、全屏、
-   同目录/同压缩包内上一个/下一个、自动连播。
+   同目录/同压缩包内上一个/下一个、自动连播、最小化到托盘仍播放（可选，仅托盘路径豁免暂停）。
    大文件：声明 wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 readbook-stream://
    协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（远程 zip 条目、压缩条目等）自动回退字节整读。
    移动端就绪（docs/iOS移植方案.md D3/D4）：<video playsinline>、纯点击交互、
@@ -32,6 +32,7 @@ const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 /* 固定设置（持久化于 settings.pluginSettings；模块级共享用户偏好） */
 let autoplayNext = pluginSetting<boolean>(PID, "autoplayNext", true);
 let defaultRate = pluginSetting<number>(PID, "rate", 1);
+let trayKeepPlaying = pluginSetting<boolean>(PID, "trayKeepPlaying", false); // 最小化到托盘仍播放：仅托盘路径豁免全停
 
 /** 菜单动作的视图侧落点：当前激活视图若为本插件的实例则返回之
  *  （无视图/其他插件视图激活时为 null，菜单只改设置不动视图，与旧版行为一致） */
@@ -497,6 +498,15 @@ function menu(): MenuItemDef[] {
           },
         })),
     },
+    {
+      label: "最小化托盘仍播放",
+      checked: () => trayKeepPlaying,
+      action: () => {
+        trayKeepPlaying = !trayKeepPlaying;
+        setPluginSetting(PID, "trayKeepPlaying", trayKeepPlaying);
+        app.toast(trayKeepPlaying ? "最小化到托盘时视频将继续播放" : "最小化到托盘时视频将暂停");
+      },
+    },
   ];
 }
 
@@ -505,11 +515,12 @@ function menu(): MenuItemDef[] {
 export const videoViewerPlugin: ReadBookPlugin = {
   id: PID,
   name: "视频查看",
-  version: "1.3.0",
+  version: "1.4.0",
   description:
-    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）；支持多标签页多实例",
+    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播，可选「最小化托盘仍播放」托盘后台续播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）；支持多标签页多实例",
   extensions: EXTENSIONS,
   wantsStream: true,
+  trayPlaybackExempt: () => trayKeepPlaying,
   menu,
   createView: () => new VideoView(),
 };
