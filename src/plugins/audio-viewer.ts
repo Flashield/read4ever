@@ -57,9 +57,12 @@ const LOOP_ICON: Record<LoopMode, string> = { "loop-list": "🔁", "loop-one": "
 const positions = new Map<string, number>();
 try {
   const raw = pluginSetting<string>(PID, "positions", "");
-  if (raw)
-    for (const [k, v] of Object.entries(JSON.parse(raw) as Record<string, number>))
-      if (typeof v === "number" && v > 0) positions.set(k, v);
+  if (raw) {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      for (const [k, v] of Object.entries(parsed as Record<string, number>))
+        if (typeof v === "number" && v > 0) positions.set(k, v);
+  }
 } catch {
   /* 损坏忽略：无续播 */
 }
@@ -106,6 +109,7 @@ class AudioView implements PluginViewInstance {
   private dirQueue: string[] = []; // 目录队列（打开文件所在目录/压缩包派生，只读）
   private queue: string[] = []; // 当前生效队列（目录队列或某播放列表的副本）
   private currentPath = ""; // 当前（或上次）加载的曲目，独立于队列存在
+  private loadedPath = ""; // audio 元素当前实际加载的媒体路径（与 currentPath 的 UI 职责区分）
   private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
   private failStreak = 0; // 连续解码失败计数（≥3 停止自动跳曲）
   private lastSlot = -1; // 15 秒粒度位置落盘槽位
@@ -167,6 +171,7 @@ class AudioView implements PluginViewInstance {
       if (!this.ctx || !this.audio || seq !== this.loadSeq) return; // 等待期间被关闭或已切其他曲目
       this.currentStream = !!stream;
       this.audio.src = url;
+      this.loadedPath = path; // src 提交点：自此暂停/槽位/播完落盘均归属新曲
       this.audio.playbackRate = defaultRate;
       this.audio.volume = volume;
       this.audio.loop = loopMode === "loop-one";
@@ -183,6 +188,7 @@ class AudioView implements PluginViewInstance {
           if (this.audio === a && this.currentPath === path) {
             try {
               a.currentTime = pos;
+              app.toast(`已续播 ${fmtTime(pos)}`);
             } catch {
               /* 已切走 */
             }
@@ -190,7 +196,6 @@ class AudioView implements PluginViewInstance {
         };
         if (a.readyState >= 1) seek();
         else a.addEventListener("loadedmetadata", seek, { once: true });
-        app.toast(`已续播 ${fmtTime(pos)}`);
       }
       if (autoplay) {
         try {
@@ -274,7 +279,7 @@ class AudioView implements PluginViewInstance {
 
   /** 记录当前曲目播放位置（ended 不记——播完的曲子重开从头播） */
   private saveCurrentPosition(): void {
-    const p = this.currentPath;
+    const p = this.loadedPath;
     if (!this.audio || !p || this.audio.ended || this.audio.currentTime <= 0) return;
     setPosition(p, this.audio.currentTime);
   }
@@ -464,7 +469,7 @@ class AudioView implements PluginViewInstance {
         const slot = Math.floor(a.currentTime / 15);
         if (slot !== this.lastSlot) {
           this.lastSlot = slot;
-          setPosition(this.currentPath, a.currentTime);
+          setPosition(this.loadedPath, a.currentTime);
           persistPositions();
         }
       }
@@ -499,7 +504,7 @@ class AudioView implements PluginViewInstance {
     });
     audio.addEventListener("ended", () => {
       syncPlayBtn();
-      clearPosition(this.currentPath); // 播完的曲子重开从头播
+      clearPosition(this.loadedPath); // 播完的曲子重开从头播
       void this.nav(1, true);
     });
     audio.addEventListener("error", () => {
@@ -642,6 +647,7 @@ class AudioView implements PluginViewInstance {
     this.failed.clear();
     this.currentStream = false;
     this.audio = null;
+    this.loadedPath = "";
     this.ctx = null;
   }
 }
