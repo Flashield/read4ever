@@ -61,6 +61,7 @@ export function defaultStore(): StoreData {
       openInNewTab: true,
       tabSwitchPlayback: "pause",
       tabLimit: 20,
+      allowMultipleInstances: false,
       tabs: [],
       activeTabIndex: 0,
     },

@@ -31,6 +31,7 @@ function syncFromStore(): void {
   set("set-open-in-new-tab", s.openInNewTab);
   set("set-tab-switch-continue", s.tabSwitchPlayback === "continue");
   set("set-tab-limit", s.tabLimit);
+  set("set-allow-multi-instance", s.allowMultipleInstances);
   set("set-auto-restore", s.autoRestore);
   set("set-folder-auto-open", s.folderAutoOpen);
   set("set-natural-sort", s.naturalSort);
@@ -50,6 +51,7 @@ export function initSettingsModal(): void {
   const s = () => app.state.store.settings;
   bindCheck("set-open-in-new-tab", (v) => (s().openInNewTab = v));
   bindCheck("set-tab-switch-continue", (v) => (s().tabSwitchPlayback = v ? "continue" : "pause"));
+  bindCheck("set-allow-multi-instance", (v) => (s().allowMultipleInstances = v));
   document.getElementById("set-tab-limit")?.addEventListener("change", (e) => {
     const v = Math.max(1, Math.min(50, Math.round(Number((e.target as HTMLInputElement).value)) || 20));
     s().tabLimit = v;

@@ -44,6 +44,7 @@ export interface Settings {
   openInNewTab: boolean; // 手动打开文件默认新标签页
   tabSwitchPlayback: string; // "pause" | "continue"：切换标签页时后台媒体
   tabLimit: number; // 标签页数量上限
+  allowMultipleInstances: boolean; // 允许同时运行多个程序实例（重启后生效）
   tabs: TabDescriptor[]; // 启动恢复用标签页描述（惰性重建）
   activeTabIndex: number; // 启动恢复时激活的 tab 下标
 }
