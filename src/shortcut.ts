@@ -116,8 +116,14 @@ export function initShortcuts(): void {
       return;
     }
 
-    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（数字/±/P/PgUp/PgDn/Home/End/T
-    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）、Space 与 Ctrl 组合不受影响
+    // 隐藏到托盘不受插件视图屏蔽（应用级公共操作，插件无 T 键位占用）
+    if (key === "t" || key === "T") {
+      app.hideToTray();
+      return;
+    }
+
+    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（数字/±/P/PgUp/PgDn/Home/End
+    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）、Space、T 与 Ctrl 组合不受影响
     if (plugins.isActive()) return;
 
     // 功能键
@@ -178,10 +184,6 @@ export function initShortcuts(): void {
     if (key === "End") {
       e.preventDefault();
       app.jumpToRatio(1);
-      return;
-    }
-    if (key === "t" || key === "T") {
-      app.hideToTray();
       return;
     }
   });
