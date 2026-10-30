@@ -358,6 +358,7 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
     }
     const t = tabs.createTab(viewName(path));
     if (!t) return; // 超出 tabLimit
+    t.lazy = { path, ratio: opts.ratio ?? 0 }; // 装载被切换作废时，下次激活自动重试打开（loadFileContent/bindView 成功时清除）
   } else {
     tabs.destroyActiveView(); // 同 tab 换文件：旧视图销毁（翻页/惰性恢复语义）
   }

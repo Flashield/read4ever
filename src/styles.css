@@ -2120,6 +2120,8 @@ body.fs-immersive #toolbar {
 body.fs-immersive #tab-bar {
   position: relative;
   z-index: 400;
+  margin-left: 0;
+  margin-right: 0;
   transform: translateY(calc(-100% - var(--menu-bar-h) - var(--toolbar-h)));
   transition: transform 0.18s;
 }
