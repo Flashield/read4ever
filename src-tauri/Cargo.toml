@@ -44,6 +44,8 @@ tokio = { version = "1", features = ["time"] }
 # 门控先例：iOS 方案中 tray-icon feature 与 trash crate 同样按目标门控。
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 keepawake = "0.6"
+# 默认单实例：重复启动唤起已有窗口（docs/spec/托盘暂停与单实例多开方案.md）
+tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }

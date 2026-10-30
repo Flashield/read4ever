@@ -18,7 +18,24 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let ctx = tauri::generate_context!();
+    // 默认单实例：store 设置允许多开时不注册插件（变更重启后生效；缺失/损坏一律单实例兜底）
+    let allow_multiple = store::read_allow_multiple(&ctx.config().identifier);
+    let mut builder = tauri::Builder::default();
+    // single-instance 插件要求最先注册（互斥资源在 init 时建立）；
+    // 门控先例同 keepawake/trash：插件无 iOS 后端，仅桌面三平台引入。
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        if !allow_multiple {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+                // 重复启动 → 唤起并聚焦已有窗口（含托盘隐藏态）
+                commands::show_main_from_tray(app);
+            }));
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let _ = allow_multiple;
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init());
@@ -91,6 +108,6 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .run(tauri::generate_context!())
+        .run(ctx)
         .expect("error while running tauri application");
 }
