@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use tauri::ipc::Response;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::encoding::encode_text;
 use crate::plugin_pkg;
@@ -183,6 +183,9 @@ pub fn set_window_title(app: AppHandle, title: String) {
 /// macOS 必须用应用级隐藏（NSApp.hide）：对窗口单独 orderOut 再 show 时
 /// WKWebView 可能不重绘而整窗黑屏；应用级 hide/unhide 由 AppKit 负责恢复，无此问题。
 pub fn hide_main_to_tray(app: &AppHandle) {
+    // 进入托盘前通知前端：全部标签页滚屏/播放暂停（设计 docs/spec/托盘暂停与单实例多开方案.md）。
+    // 三条进入托盘的路径（关闭按钮/菜单/快捷键）都收敛到本函数，此处是唯一收口。
+    let _ = app.emit("rb-tray-hidden", ());
     #[cfg(target_os = "macos")]
     let _ = app.hide();
     #[cfg(not(target_os = "macos"))]
