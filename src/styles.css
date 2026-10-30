@@ -2426,3 +2426,168 @@ body.fs-immersive.show-bottom #media-dock {
   background: var(--ui-hover);
   color: #fff;
 }
+/* ===== 音频插件（av-）===== */
+.av {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.av-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.av-name {
+  color: var(--ui-text);
+  font-size: 12px;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.av-page {
+  color: #999;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.av-spacer {
+  flex: 1;
+}
+
+.av-bar button {
+  padding: 4px 9px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-hover);
+  color: var(--ui-text);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.av-bar button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.av-bar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.av-bar button:disabled:hover {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+.av-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--ui-border);
+  flex-shrink: 0;
+}
+
+.av-rate {
+  padding: 2px 4px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.av-volume {
+  width: 70px;
+  accent-color: var(--accent);
+}
+
+.av-stage {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+}
+
+.av-list {
+  padding: 4px 0;
+}
+
+.av-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--ui-text);
+  font-size: 12px;
+}
+
+.av-row:hover {
+  background: var(--ui-hover);
+}
+
+.av-row.cur {
+  background: var(--ui-hover);
+  font-weight: 600;
+}
+
+.av-idx {
+  color: #999;
+  min-width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.av-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.av-state {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.av-row.bad .av-state {
+  color: #f66;
+}
+
+.av-error {
+  padding: 10px 12px;
+  color: #f66;
+  font-size: 12px;
+}
+
+.av-audio {
+  display: none;
+}
+
+.av-mini {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.av-mini button {
+  padding: 2px 5px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.av-mini button:hover {
+  color: var(--accent);
+}

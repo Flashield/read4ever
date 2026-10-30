@@ -10,7 +10,8 @@ export interface MediaSession {
   kind: "video" | "audio";
   title: string;
   element: HTMLElement; // 完整控制行 DOM（实例自建自管，dock 挂入后常驻，不随 render 摘挂）
-  /** 迷你条扩展控件（音频的 ⏮/⏭）：挂在标题与播放按钮之间；实例自建自管，可随时不传 */
+  /** 迷你条扩展控件（音频的 ⏮/⏭）：挂在标题与播放按钮之间；实例自建自管，可随时不传。
+   *  attach 前设定，attach 后不可增删更换（迷你条指纹不含它，事后更换不触发重建） */
   miniExtra?: HTMLElement;
   isPlaying(): boolean;
 }

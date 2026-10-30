@@ -1291,6 +1291,8 @@ export async function boot(): Promise<void> {
   plugins.register(imageViewerPlugin);
   const { videoViewerPlugin } = await import("./plugins/video-viewer");
   plugins.register(videoViewerPlugin);
+  const { audioViewerPlugin } = await import("./plugins/audio-viewer");
+  plugins.register(audioViewerPlugin);
   plugins.setEnabledMap(s.plugins);
   // 外部插件（.rbplugin 包）在内置插件注册完成后加载；失败只记入插件面板
   const { loadExternalPlugins, initPluginLoader } = await import("./plugins/loader");
