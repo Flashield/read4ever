@@ -142,6 +142,9 @@ pub struct Settings {
     /// 启动恢复时激活的 tab 下标
     #[serde(default)]
     pub active_tab_index: u32,
+    /// 允许同时运行多个程序实例（重启后生效；缺失/损坏按单实例兜底）
+    #[serde(default)]
+    pub allow_multiple_instances: bool,
 }
 
 fn default_true() -> bool {
@@ -181,6 +184,7 @@ impl Default for Settings {
             tab_limit: 20,
             tabs: Vec::new(),
             active_tab_index: 0,
+            allow_multiple_instances: false,
         }
     }
 }
@@ -263,9 +267,80 @@ pub fn save_store(app: &AppHandle, data: &StoreData) -> Result<(), String> {
     fs::write(&p, json).map_err(|e| e.to_string())
 }
 
+/// 无 AppHandle 时复算 app_data_dir（与 tauri 同源逻辑；单实例启动判定用）：
+/// Linux $XDG_DATA_HOME 或 ~/.local/share；macOS ~/Library/Application Support；Windows %LOCALAPPDATA%
+fn app_data_dir_no_handle(identifier: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+            })?;
+        Some(base.join(identifier))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")?;
+        Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(identifier),
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
+        Some(PathBuf::from(base).join(identifier))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = identifier;
+        None
+    }
+}
+
+/// 从 store JSON 读 allowMultipleInstances；缺失/损坏/类型不符一律 false（单实例兜底）
+fn parse_allow_multiple(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get("settings")?.get("allowMultipleInstances")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// 启动早期（尚无 AppHandle）读多开设置，决定是否注册单实例插件
+pub fn read_allow_multiple(identifier: String) -> bool {
+    app_data_dir_no_handle(&identifier)
+        .and_then(|dir| fs::read_to_string(dir.join("readbook.json")).ok())
+        .map(|json| parse_allow_multiple(&json))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// parse_allow_multiple：true / false / 字段缺失 / 坏 JSON / 类型不符 → 仅显式 true 才多开
+    #[test]
+    fn parse_allow_multiple_variants() {
+        assert!(parse_allow_multiple(r#"{"settings":{"allowMultipleInstances":true}}"#));
+        assert!(!parse_allow_multiple(r#"{"settings":{"allowMultipleInstances":false}}"#));
+        assert!(!parse_allow_multiple(r#"{"settings":{}}"#));
+        assert!(!parse_allow_multiple(r#"{}"#));
+        assert!(!parse_allow_multiple("not json"));
+        assert!(!parse_allow_multiple(r#"{"settings":{"allowMultipleInstances":"yes"}}"#));
+    }
+
+    /// 旧版 store（无该字段）解析后默认 false（单实例兜底），serde default 生效
+    #[test]
+    fn settings_without_allow_multiple_default_false() {
+        let json = format!(r#"{{ {}, "bookmarks": [], "history": [] }}"#, SETTINGS_JSON);
+        let store: StoreData = serde_json::from_str(&json).unwrap();
+        assert!(!store.settings.allow_multiple_instances);
+    }
 
     const SETTINGS_JSON: &str = r#""settings": {
         "themeName": "白纸", "customThemes": [], "fontFamily": "SimSun",
