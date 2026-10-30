@@ -2528,21 +2528,21 @@ body.fs-immersive.show-bottom #media-dock {
   gap: 8px;
   padding: 6px 12px;
   cursor: pointer;
-  color: var(--ui-text);
+  color: var(--reader-text); /* 列表区透主题背景：文字随阅读主题，悬停/弱化色用 color-mix 派生 */
   font-size: 12px;
 }
 
 .av-row:hover {
-  background: var(--ui-hover);
+  background: color-mix(in srgb, var(--reader-text) 12%, transparent);
 }
 
 .av-row.cur {
-  background: var(--ui-hover);
+  background: color-mix(in srgb, var(--reader-text) 20%, transparent);
   font-weight: 600;
 }
 
 .av-idx {
-  color: #999;
+  color: color-mix(in srgb, var(--reader-text) 65%, var(--reader-bg));
   min-width: 24px;
   text-align: right;
   flex-shrink: 0;
@@ -2664,7 +2664,7 @@ body.fs-immersive.show-bottom #media-dock {
 
 .av-empty {
   padding: 20px 12px;
-  color: #999;
+  color: color-mix(in srgb, var(--reader-text) 65%, var(--reader-bg));
   font-size: 12px;
 }
 
