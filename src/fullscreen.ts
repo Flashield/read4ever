@@ -20,7 +20,7 @@ const DROPDOWN_SEL = ".dropdown, .dropdown-sub";
 
 /* 每条边的呼出命中集合：热区 + 该边吸附的界面元素 */
 const EDGE_SELECTORS: Record<Edge, string> = {
-  top:    ".fs-hotzone-top, #menu-bar, #toolbar, .plugin-topbar",
+  top:    ".fs-hotzone-top, #menu-bar, #toolbar, #tab-bar, .plugin-topbar",
   bottom: ".fs-hotzone-bottom, #status-bar, .plugin-bottombar, #media-dock",
   left:   ".fs-hotzone-left, .side-panel.panel-left",
   right:  ".fs-hotzone-right, .side-panel:not(.panel-left)",

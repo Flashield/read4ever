@@ -85,7 +85,7 @@ function restoreStateFields(snap: TextSnapshot): void {
 
 /** 当前激活 tab 失活前的落账：快照 + 进度/时长写回历史（与关闭文件同语义） */
 function storeLiveInto(tab: Tab): void {
-  if (tab.lazy) return; // 惰性未装载：没有文本层可快照（state 此刻属于别的 tab）
+  if (tab.lazy || !tab.text) return; // 未装载（惰性/打开 pending/zip 待选/失败/纯视图）：没有文本层，state 属于别的 tab，快照进去会顶替其标题与内容
   const prev = tab.text;
   const snap = snapshotFromState();
   tab.text = snap;

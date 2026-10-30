@@ -319,7 +319,7 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
       await openPath(`${path}::${openable[0]}`, { ...opts, tab: tabOpt });
       return;
     }
-    // 多个条目：弹出选择菜单（选择后固定当前 tab 打开；决策记录：多条目选择 = 当前 tab）
+    // 多个条目：弹出选择菜单
     const rect = (document.getElementById("reader-container") as HTMLElement).getBoundingClientRect();
     showDropdown(
       [
@@ -327,8 +327,13 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
         { sep: true },
         ...openable.map((entry) => ({
           label: entry,
-          // 设计规格：容器内选择条目固定当前 tab（容器本身的打开仍走 openInNewTab 分流）
-          action: () => void openPath(`${path}::${entry}`, { ...opts, tab: "replace" }),
+          action: () =>
+            void openPath(`${path}::${entry}`, {
+              ...opts,
+              // 文本条目保持当前 tab 接续（决策记录：zip 多条目选择 = 当前 tab）；
+              // 插件条目（图片/视频）是独立媒体，按手动打开默认分流（openInNewTab → 新 tab）
+              tab: plugins.handlerForExt(plugins.extOf(entry)) ? tabOpt : "replace",
+            }),
         })),
       ],
       rect.left + rect.width / 2 - 150,

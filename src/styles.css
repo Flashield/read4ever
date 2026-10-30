@@ -443,6 +443,11 @@ body.panel-open #reader-container {
   margin-right: var(--panel-w, 300px);
 }
 
+/* 面板打开时标签页栏同步让位（否则被固定定位的侧栏遮挡） */
+body.panel-open #tab-bar {
+  margin-right: var(--panel-w, 300px);
+}
+
 /* 面板左缘拖拽手柄 */
 .panel-resize {
   position: absolute;
@@ -491,6 +496,11 @@ body.panel-open #find-bar {
 
 /* 左侧栏打开时阅读区向右让位 */
 body.folder-open #reader-container {
+  margin-left: var(--panel-w-left, 300px);
+}
+
+/* 左侧栏打开时标签页栏同步右移让位 */
+body.folder-open #tab-bar {
   margin-left: var(--panel-w-left, 300px);
 }
 
@@ -2107,8 +2117,16 @@ body.fs-immersive #toolbar {
   transform: translateY(calc(-100% - var(--menu-bar-h)));
 }
 
+body.fs-immersive #tab-bar {
+  position: relative;
+  z-index: 400;
+  transform: translateY(calc(-100% - var(--menu-bar-h) - var(--toolbar-h)));
+  transition: transform 0.18s;
+}
+
 body.fs-immersive.show-top #menu-bar,
-body.fs-immersive.show-top #toolbar {
+body.fs-immersive.show-top #toolbar,
+body.fs-immersive.show-top #tab-bar {
   transform: none;
 }
 
@@ -2317,7 +2335,7 @@ body.fs-immersive #media-dock {
   right: 0;
   bottom: var(--status-bar-h);
   z-index: 400;
-  transform: translateY(100%);
+  transform: translateY(calc(100% + var(--status-bar-h)));
   transition: transform 0.18s;
 }
 body.fs-immersive.show-bottom #media-dock {
