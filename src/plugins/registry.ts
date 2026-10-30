@@ -85,6 +85,18 @@ export function pluginIdOfView(id: string): string {
   return views.get(id)?.plugin.id ?? "";
 }
 
+/** 全部插件视图实例暂停播放（进入托盘时调用；含激活实例，恢复显示后保持暂停）。
+ *  通道与切标签页播放策略 tabs.applyPlaybackPolicy 一致，范围扩大到全部实例。 */
+export function pauseAllInstances(): void {
+  for (const e of views.values()) {
+    try {
+      if (e.inst.isPlaying?.()) e.inst.togglePlay?.();
+    } catch {
+      /* 忽略：单个实例异常不阻断其余 */
+    }
+  }
+}
+
 export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {
   if (plugins.some((x) => x.id === p.id)) return false;
   plugins.push(p);
