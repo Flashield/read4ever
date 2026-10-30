@@ -98,6 +98,9 @@ export interface ReadBookPlugin {
   /** 声明后本插件的视图实例豁免两处后台暂停:切标签页暂停策略(tabs.applyPlaybackPolicy)
    *  与进托盘全停(registry.pauseAllInstances)。音频「边听边看/托盘继续听」用 */
   backgroundPlayback?: boolean;
+  /** 动态豁免进托盘全停（registry.pauseAllInstances 每次进托盘现读）：
+   *  与静态 backgroundPlayback 叠加、不影响切标签页策略。视频「最小化托盘仍播放」设置用 */
+  trayPlaybackExempt?: () => boolean;
   /** 视图实例工厂（可选）：实现即支持多实例（每个 tab 独立视图）。
    *  未实现时宿主以单例方式包装（同时只有一个视图，行为同旧版） */
   createView?(): PluginViewInstance;

@@ -91,6 +91,7 @@ export function pauseAllInstances(): void {
   for (const e of views.values()) {
     if (e.plugin.backgroundPlayback) continue; // 后台播放豁免(音频):托盘不暂停
     try {
+      if (e.plugin.trayPlaybackExempt?.()) continue; // 动态豁免(视频「最小化托盘仍播放」):托盘不暂停
       if (e.inst.isPlaying?.()) e.inst.togglePlay?.();
     } catch {
       /* 忽略：单个实例异常不阻断其余 */
