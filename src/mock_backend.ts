@@ -430,6 +430,10 @@ window.__TAURI_INTERNALS__ = {
         document.title = String(args.title ?? "ReadBook");
         return Promise.resolve(null);
       case "hide_to_tray":
+        // 与真实后端一致：通知前端暂停全部滚屏/播放（浏览器预览无真实托盘）
+        window.dispatchEvent(new CustomEvent("rb-tray-hidden"));
+        console.log(`[mock] ${cmd}`);
+        return Promise.resolve(null);
       case "show_from_tray":
       case "exit_app":
       case "set_keep_awake":

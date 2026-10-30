@@ -1124,6 +1124,13 @@ export async function toggleFullscreen(): Promise<void> {
   if (!was) toast("全屏模式：F11/Esc 退出，鼠标碰屏幕边缘呼出各栏");
 }
 
+/** 进入托盘：全部标签页的滚屏与播放暂停（恢复显示后保持暂停，由用户手动继续）。
+ *  滚屏引擎是激活 tab 单例，stopScroll 即全覆盖（含页模式定时翻页、释放屏幕常亮）。 */
+export function pauseAllActivity(): void {
+  reader.stopScroll();
+  plugins.pauseAllInstances();
+}
+
 export function hideToTray(): void {
   saveCurrentProgress();
   api.hideToTray();
@@ -1319,6 +1326,13 @@ export async function boot(): Promise<void> {
 
   // 滚屏/播放保持屏幕常亮：初始同步用户设置（关闭时聚合器直接短路）
   setKeepAwakeEnabled(s.keepAwake);
+
+  // 进入托盘 → 全部标签页滚屏/播放暂停（Rust hide_main_to_tray emit；浏览器 mock 后端走同名 DOM 事件）
+  window.addEventListener("rb-tray-hidden", pauseAllActivity);
+  if ("__TAURI_INTERNALS__" in window) {
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen("rb-tray-hidden", pauseAllActivity);
+  }
 
   updateUI();
   startReadTicker();
