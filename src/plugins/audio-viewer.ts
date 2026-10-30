@@ -52,6 +52,43 @@ type LoopMode = "loop-list" | "loop-one" | "stop";
 const LOOP_LABEL: Record<LoopMode, string> = { "loop-list": "列表循环", "loop-one": "单曲循环", stop: "播完停止" };
 const LOOP_ICON: Record<LoopMode, string> = { "loop-list": "🔁", "loop-one": "🔂", stop: "➡" };
 
+/* ========== 续播位置（模块级共享：path → 秒；上限 300 条，Map 插入序淘汰最旧） ========== */
+
+const positions = new Map<string, number>();
+try {
+  const raw = pluginSetting<string>(PID, "positions", "");
+  if (raw)
+    for (const [k, v] of Object.entries(JSON.parse(raw) as Record<string, number>))
+      if (typeof v === "number" && v > 0) positions.set(k, v);
+} catch {
+  /* 损坏忽略：无续播 */
+}
+let positionsDirty = false;
+
+function setPosition(path: string, sec: number): void {
+  positions.delete(path); // 重插到 Map 尾部 = 最近使用
+  positions.set(path, sec);
+  while (positions.size > 300) {
+    const oldest = positions.keys().next().value;
+    if (oldest === undefined) break;
+    positions.delete(oldest);
+  }
+  positionsDirty = true;
+}
+
+function clearPosition(path: string): void {
+  if (positions.delete(path)) {
+    positionsDirty = true;
+    persistPositions();
+  }
+}
+
+function persistPositions(): void {
+  if (!positionsDirty) return;
+  positionsDirty = false;
+  setPluginSetting(PID, "positions", JSON.stringify(Object.fromEntries(positions)));
+}
+
 /* 模块级共享用户偏好（持久化于插件设置） */
 let loopMode = pluginSetting<LoopMode>(PID, "loopMode", "loop-list");
 let defaultRate = pluginSetting<number>(PID, "rate", 1);
@@ -71,6 +108,7 @@ class AudioView implements PluginViewInstance {
   private currentPath = ""; // 当前（或上次）加载的曲目，独立于队列存在
   private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
   private failStreak = 0; // 连续解码失败计数（≥3 停止自动跳曲）
+  private lastSlot = -1; // 15 秒粒度位置落盘槽位
   private failed = new Set<string>(); // 解码失败过的曲目（列表 ⚠ 标记）
   private loadSeq = 0; // 加载代号：快速连点时旧响应作废
   private activeVisible = false; // 仅激活 tab 的实例响应键盘
@@ -120,6 +158,7 @@ class AudioView implements PluginViewInstance {
   private async loadTrack(path: string, autoplay: boolean): Promise<void> {
     if (!this.ctx || !this.audio) return;
     const seq = ++this.loadSeq;
+    this.saveCurrentPosition(); // 切曲：落盘上一曲位置
     this.currentPath = path;
     try {
       // 优先流式；失败过/不可流式（压缩 zip 条目、浏览器演示）→ 字节整读
@@ -131,10 +170,28 @@ class AudioView implements PluginViewInstance {
       this.audio.playbackRate = defaultRate;
       this.audio.volume = volume;
       this.audio.loop = loopMode === "loop-one";
+      this.lastSlot = -1;
       this.hideError();
       this.updateLabels();
       this.renderList();
       mediaDock.update(this.viewId, { title: baseName(path) });
+      // 续播：位置 >3 秒才跳转并提示（跨视图/标签页共享，按 path 索引）
+      const pos = positions.get(path);
+      if (pos && pos > 3) {
+        const a = this.audio;
+        const seek = () => {
+          if (this.audio === a && this.currentPath === path) {
+            try {
+              a.currentTime = pos;
+            } catch {
+              /* 已切走 */
+            }
+          }
+        };
+        if (a.readyState >= 1) seek();
+        else a.addEventListener("loadedmetadata", seek, { once: true });
+        app.toast(`已续播 ${fmtTime(pos)}`);
+      }
       if (autoplay) {
         try {
           await this.audio.play();
@@ -213,6 +270,13 @@ class AudioView implements PluginViewInstance {
 
   pauseIfPlaying(): void {
     if (this.audio && !this.audio.paused) this.audio.pause();
+  }
+
+  /** 记录当前曲目播放位置（ended 不记——播完的曲子重开从头播） */
+  private saveCurrentPosition(): void {
+    const p = this.currentPath;
+    if (!this.audio || !p || this.audio.ended || this.audio.currentTime <= 0) return;
+    setPosition(p, this.audio.currentTime);
   }
 
   /* ========== 标签与状态上报 ========== */
@@ -396,6 +460,14 @@ class AudioView implements PluginViewInstance {
         this.mdProgress.value = String(Math.round((a.currentTime / a.duration) * 1000));
       if (this.mdCur) this.mdCur.textContent = fmtTime(a.currentTime);
       if (this.mdDur) this.mdDur.textContent = fmtTime(a.duration);
+      if (!a.paused && Number.isFinite(a.duration) && a.duration > 0) {
+        const slot = Math.floor(a.currentTime / 15);
+        if (slot !== this.lastSlot) {
+          this.lastSlot = slot;
+          setPosition(this.currentPath, a.currentTime);
+          persistPositions();
+        }
+      }
       this.syncStatus();
     });
 
@@ -420,9 +492,14 @@ class AudioView implements PluginViewInstance {
       for (const v of liveViews) if (v !== this) v.pauseIfPlaying();
       syncPlayBtn();
     });
-    audio.addEventListener("pause", syncPlayBtn);
+    audio.addEventListener("pause", () => {
+      if (this.audio && !this.audio.ended) this.saveCurrentPosition(); // ended 也发 pause：播完不记位置
+      persistPositions();
+      syncPlayBtn();
+    });
     audio.addEventListener("ended", () => {
       syncPlayBtn();
+      clearPosition(this.currentPath); // 播完的曲子重开从头播
       void this.nav(1, true);
     });
     audio.addEventListener("error", () => {
@@ -542,6 +619,8 @@ class AudioView implements PluginViewInstance {
   }
 
   deactivate(): void {
+    this.saveCurrentPosition(); // 关视图：落盘位置
+    persistPositions();
     liveViews.delete(this);
     mediaDock.detach(this.viewId); // registry closeView 亦会 detach，此处幂等兜底
     this.sessionEl = null;
