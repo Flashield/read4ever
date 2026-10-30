@@ -448,6 +448,11 @@ body.panel-open #tab-bar {
   margin-right: var(--panel-w, 300px);
 }
 
+/* 面板打开时媒体坞同步让位（与阅读区/标签页栏同规则） */
+body.panel-open #media-dock {
+  margin-right: var(--panel-w, 300px);
+}
+
 /* 面板左缘拖拽手柄 */
 .panel-resize {
   position: absolute;
@@ -501,6 +506,11 @@ body.folder-open #reader-container {
 
 /* 左侧栏打开时标签页栏同步右移让位 */
 body.folder-open #tab-bar {
+  margin-left: var(--panel-w-left, 300px);
+}
+
+/* 左侧栏打开时媒体坞同步右移让位 */
+body.folder-open #media-dock {
   margin-left: var(--panel-w-left, 300px);
 }
 
@@ -2332,6 +2342,8 @@ body.fs-immersive.panel-open #find-bar {
 }
 /* 沉浸全屏：与状态栏同一套吸附机制（Task 4 再接入 fullscreen.ts 命中集合） */
 body.fs-immersive #media-dock {
+  margin-left: 0;
+  margin-right: 0;
   position: fixed;
   left: 0;
   right: 0;
