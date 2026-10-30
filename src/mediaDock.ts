@@ -10,6 +10,8 @@ export interface MediaSession {
   kind: "video" | "audio";
   title: string;
   element: HTMLElement; // 完整控制行 DOM（实例自建自管，dock 挂入后常驻，不随 render 摘挂）
+  /** 迷你条扩展控件（音频的 ⏮/⏭）：挂在标题与播放按钮之间；实例自建自管，可随时不传 */
+  miniExtra?: HTMLElement;
   isPlaying(): boolean;
 }
 
@@ -100,7 +102,9 @@ function render(): void {
       e.stopPropagation();
       document.dispatchEvent(new CustomEvent("rb-dock-toggle", { detail: s.id }));
     });
-    mini.append(ic, ti, pb);
+    mini.append(ic, ti);
+    if (s.miniExtra) mini.append(s.miniExtra); // 音频等会话的后台切曲控件
+    mini.append(pb);
     mini.addEventListener("click", () =>
       document.dispatchEvent(new CustomEvent("rb-dock-focus", { detail: s.id }))
     );

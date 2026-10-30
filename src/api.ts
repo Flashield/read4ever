@@ -98,4 +98,11 @@ export const api = {
     });
     return typeof f === "string" ? f : null;
   },
+  pickAudioFiles: async (): Promise<string[] | null> => {
+    const f = await open({
+      multiple: true,
+      filters: [{ name: "音频文件", extensions: ["mp3", "m4a", "aac", "flac", "ogg", "opus", "wav"] }],
+    });
+    return Array.isArray(f) ? f : null;
+  },
 };
