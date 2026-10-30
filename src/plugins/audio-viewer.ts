@@ -114,7 +114,9 @@ function loadPlaylists(): PlaylistsData {
     const d = JSON.parse(raw) as PlaylistsData;
     if (!Array.isArray(d.lists)) return { lists: [] };
     return {
-      lists: d.lists.filter((l) => l && typeof l.id === "string" && typeof l.name === "string" && Array.isArray(l.items)),
+      lists: d.lists
+        .filter((l) => l && typeof l.id === "string" && typeof l.name === "string" && Array.isArray(l.items))
+        .map((l) => ({ ...l, items: l.items.filter((x): x is string => typeof x === "string") })),
       lastListId: typeof d.lastListId === "string" ? d.lastListId : undefined,
     };
   } catch {
@@ -491,7 +493,10 @@ class AudioView implements PluginViewInstance {
       this.queue = [...this.dirQueue];
     } else {
       const l = playlists.lists.find((x) => x.id === sel);
-      if (!l) return;
+      if (!l) {
+        this.renderListBar(); // 列表已被删除(如另一标签页)：下拉弹回真实队列
+        return;
+      }
       this.queueIsDir = false;
       this.listId = sel;
       this.queue = [...l.items];
@@ -606,7 +611,11 @@ class AudioView implements PluginViewInstance {
   /** 追加曲目：过滤扩展名与已存在，批内自然排序 */
   private appendToList(paths: string[]): void {
     const list = playlists.lists.find((x) => x.id === this.listId);
-    if (!list) return;
+    if (!list) {
+      app.toast("该播放列表已被删除");
+      this.renderListBar(); // 重新对齐下拉与按钮态
+      return;
+    }
     const added = paths
       .filter((p) => AUDIO_SET.has(extOf(p)) && !list.items.includes(p))
       .sort(naturalCompare);

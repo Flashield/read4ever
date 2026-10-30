@@ -2667,3 +2667,8 @@ body.fs-immersive.show-bottom #media-dock {
   color: #999;
   font-size: 12px;
 }
+
+.av-listbar button:disabled:hover {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
