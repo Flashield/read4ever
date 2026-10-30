@@ -3,6 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// store 文件名（store_path 与启动期 read_allow_multiple 必须一致）
+const STORE_FILE: &str = "readbook.json";
+
 /// 自定义配色方案
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -233,7 +236,7 @@ pub struct Bookshelf {
 fn store_path(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_data_dir().ok()?;
     fs::create_dir_all(&dir).ok()?;
-    Some(dir.join("readbook.json"))
+    Some(dir.join(STORE_FILE))
 }
 
 /// 旧版扁平收藏列表迁入默认书架（幂等：新列表非空时丢弃旧列表）
@@ -267,40 +270,11 @@ pub fn save_store(app: &AppHandle, data: &StoreData) -> Result<(), String> {
     fs::write(&p, json).map_err(|e| e.to_string())
 }
 
-/// 无 AppHandle 时复算 app_data_dir（与 tauri 同源逻辑；单实例启动判定用）：
-/// Linux $XDG_DATA_HOME 或 ~/.local/share；macOS ~/Library/Application Support；Windows %LOCALAPPDATA%
+/// 无 AppHandle 时复算 app_data_dir：直用 tauri 同源的 dirs::data_dir()（数据目录 + identifier），
+/// 必须与 store_path(app) 落到同一文件。
+/// 注意：若 tauri.conf.json 将来配置 appDirectoriesOverride，此处会失配（当前未配置）。
 fn app_data_dir_no_handle(identifier: &str) -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| PathBuf::from(h).join(".local").join("share"))
-            })?;
-        Some(base.join(identifier))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var_os("HOME")?;
-        Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(identifier),
-        )
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
-        Some(PathBuf::from(base).join(identifier))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = identifier;
-        None
-    }
+    dirs::data_dir().map(|d| d.join(identifier))
 }
 
 /// 从 store JSON 读 allowMultipleInstances；缺失/损坏/类型不符一律 false（单实例兜底）
@@ -312,9 +286,9 @@ fn parse_allow_multiple(json: &str) -> bool {
 }
 
 /// 启动早期（尚无 AppHandle）读多开设置，决定是否注册单实例插件
-pub fn read_allow_multiple(identifier: String) -> bool {
-    app_data_dir_no_handle(&identifier)
-        .and_then(|dir| fs::read_to_string(dir.join("readbook.json")).ok())
+pub fn read_allow_multiple(identifier: &str) -> bool {
+    app_data_dir_no_handle(identifier)
+        .and_then(|dir| fs::read_to_string(dir.join(STORE_FILE)).ok())
         .map(|json| parse_allow_multiple(&json))
         .unwrap_or(false)
 }
