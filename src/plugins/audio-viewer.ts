@@ -9,7 +9,8 @@ import * as app from "../app";
 import { api } from "../api";
 import { naturalCompare } from "../natural";
 import * as mediaDock from "../mediaDock";
-import { extOf, pluginSetting, setPluginSetting } from "./registry";
+import * as tabs from "../tabs";
+import { extOf, pluginIdOfView, pluginSetting, setPluginSetting } from "./registry";
 import type { FileEntry } from "../types";
 import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
 
@@ -335,10 +336,37 @@ class AudioView implements PluginViewInstance {
 
   setActive(on: boolean): void {
     this.activeVisible = on;
+    if (on) this.updateMinState();
   }
 
   pauseIfPlaying(): void {
     if (this.audio && !this.audio.paused) this.audio.pause();
+  }
+
+  /** 最小化到坞：切到最近激活的非音频标签页继续阅读；没有则提示 */
+  private minimize(): void {
+    const selfTab = tabs.tabIdOfView(this.viewId);
+    for (const id of tabs.recentTabIds()) {
+      if (id === selfTab) continue;
+      const vid = tabs.tabViewId(id);
+      if (!vid || pluginIdOfView(vid) !== PID) {
+        tabs.switchToTab(id);
+        return;
+      }
+    }
+    app.toast("没有其他可切换的标签页");
+  }
+
+  /** 最小化按钮可用态：存在非音频的其他标签页才可用 */
+  private updateMinState(): void {
+    const b = this.q<HTMLButtonElement>('button[data-act="min"]');
+    if (!b) return;
+    const selfTab = tabs.tabIdOfView(this.viewId);
+    b.disabled = !tabs.recentTabIds().some((id) => {
+      if (id === selfTab) return false;
+      const vid = tabs.tabViewId(id);
+      return !vid || pluginIdOfView(vid) !== PID;
+    });
   }
 
   /** 记录当前曲目播放位置（ended 不记——播完的曲子重开从头播） */
@@ -709,6 +737,8 @@ class AudioView implements PluginViewInstance {
         <span class="av-name"></span>
         <span class="av-page"></span>
         <span class="av-spacer"></span>
+        <button data-act="min" title="最小化到坞：切到最近的非音频标签页继续阅读">⤵</button>
+        <span class="av-sep"></span>
         <button data-act="prev" title="上一首">⏮</button>
         <button data-act="play" title="播放/暂停（Space）">▶</button>
         <button data-act="next" title="下一首">⏭</button>
@@ -748,6 +778,7 @@ class AudioView implements PluginViewInstance {
         case "play": this.togglePlay(); break;
         case "mute": this.toggleMute(btn); break;
         case "loop": this.cycleLoop(btn); break;
+        case "min": this.minimize(); break;
         case "close": this.ctx?.closeView(); break;
       }
     });
@@ -949,6 +980,7 @@ class AudioView implements PluginViewInstance {
     });
     liveViews.add(this);
     c.setKeepAwake(false); // 同实例换文件重开：重置常亮持有（play 事件会重新持有）
+    this.updateMinState();
     this.renderListBar();
     this.renderList();
     void this.loadTrack(this.currentPath, true);
