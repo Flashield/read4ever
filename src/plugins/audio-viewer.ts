@@ -72,6 +72,7 @@ class AudioView implements PluginViewInstance {
   private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
   private failStreak = 0; // 连续解码失败计数（≥3 停止自动跳曲）
   private failed = new Set<string>(); // 解码失败过的曲目（列表 ⚠ 标记）
+  private loadSeq = 0; // 加载代号：快速连点时旧响应作废
   private activeVisible = false; // 仅激活 tab 的实例响应键盘
   private currentStream = false; // 当前曲目是否走流式 URL
   private urlCache = new Map<string, string>();
@@ -97,6 +98,7 @@ class AudioView implements PluginViewInstance {
     if (hit) return hit;
     const { zipPath, entry } = splitZip(path);
     const buf = entry ? await api.readZipBytes(zipPath, entry) : await api.readFileBytes(path);
+    if (!this.ctx) throw new Error("视图已关闭"); // 等待期间被关闭：不创建 URL
     const blob = new Blob([buf], { type: extMime(path) });
     const url = URL.createObjectURL(blob);
     this.urlCache.set(path, url);
@@ -117,12 +119,13 @@ class AudioView implements PluginViewInstance {
   /** 加载曲目；autoplay=false 仅装载（自动播放被策略拒绝后用户点播放的场景） */
   private async loadTrack(path: string, autoplay: boolean): Promise<void> {
     if (!this.ctx || !this.audio) return;
+    const seq = ++this.loadSeq;
     this.currentPath = path;
     try {
       // 优先流式；失败过/不可流式（压缩 zip 条目、浏览器演示）→ 字节整读
       const stream = !this.streamFailed.has(path) ? this.ctx.streamUrlFor?.(path) ?? null : null;
       const url = stream ?? (await this.ensureBytesUrl(path));
-      if (!this.ctx || !this.audio) return; // 等待期间被关闭
+      if (!this.ctx || !this.audio || seq !== this.loadSeq) return; // 等待期间被关闭或已切其他曲目
       this.currentStream = !!stream;
       this.audio.src = url;
       this.audio.playbackRate = defaultRate;
