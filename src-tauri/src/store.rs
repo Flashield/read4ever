@@ -264,24 +264,20 @@ pub fn load_store(app: &AppHandle) -> StoreData {
             let data = fs::read_to_string(&p).unwrap_or_default();
             let mut store: StoreData = serde_json::from_str(&data).unwrap_or_default();
             migrate_legacy_bookshelf(&mut store);
-            store
+            // 读取边界：密码解密回明文（解不开的值原样保留），与 save_store 的加密边界对称
+            decrypt_store_passwords(store)
         }
         _ => StoreData::default(),
     }
 }
 
-// 以下密码加解密函数暂仅测试引用；load_store/save_store 接线（下一步任务）后移除 allow(dead_code)
-
 /// 密码落盘加密密钥根（应用内置常量）。防直接肉眼查看，不防有意逆向——
 /// 约定见 docs/spec/SMB含子目录与密码加密方案.md
-#[allow(dead_code)]
 const PW_SECRET: &[u8] = b"Read4Ever/smb-password/v1";
 /// 密文前缀：enc1: + base64(salt[16] ‖ nonce[12] ‖ AES-256-GCM 密文)
-#[allow(dead_code)]
 const PW_PREFIX: &str = "enc1:";
 
 /// 由内置常量与随机 salt 派生 AES-256 密钥
-#[allow(dead_code)]
 fn derive_key(salt: &[u8; 16]) -> Aes256Gcm {
     let mut h = sha2::Sha256::new();
     h.update(PW_SECRET);
@@ -293,7 +289,6 @@ fn derive_key(salt: &[u8; 16]) -> Aes256Gcm {
 /// 落盘前加密：非空且未带前缀的密码 → "enc1:" + base64(salt‖nonce‖密文)。
 /// 空密码原样返回；已带前缀原样返回（避免二次包裹；真实密码恰以 enc1: 开头时
 /// 解密失败也会原样保留，两端行为一致）
-#[allow(dead_code)]
 fn encrypt_password(plain: &str) -> String {
     if plain.is_empty() || plain.starts_with(PW_PREFIX) {
         return plain.to_string();
@@ -314,7 +309,6 @@ fn encrypt_password(plain: &str) -> String {
 
 /// 读取后解密：enc1: 前缀的值尝试解密，任何失败（非法 base64 / tag 不符 /
 /// 长度不足 / 非法 UTF-8）原样返回——兼容手工改坏的文件与恰以 enc1: 开头的明文
-#[allow(dead_code)]
 fn decrypt_password(val: &str) -> String {
     let Some(rest) = val.strip_prefix(PW_PREFIX) else {
         return val.to_string(); // 旧明文 / 空密码
@@ -337,7 +331,6 @@ fn decrypt_password(val: &str) -> String {
 }
 
 /// save_store 落盘边界：全部 SMB 服务器密码加密（旧明文下次保存自动升级为密文）
-#[allow(dead_code)]
 fn encrypt_store_passwords(mut data: StoreData) -> StoreData {
     for s in &mut data.smb_servers {
         s.password = encrypt_password(&s.password);
@@ -346,7 +339,6 @@ fn encrypt_store_passwords(mut data: StoreData) -> StoreData {
 }
 
 /// load_store 读取边界：全部 SMB 服务器密码解密回明文
-#[allow(dead_code)]
 fn decrypt_store_passwords(mut data: StoreData) -> StoreData {
     for s in &mut data.smb_servers {
         s.password = decrypt_password(&s.password);
@@ -356,7 +348,9 @@ fn decrypt_store_passwords(mut data: StoreData) -> StoreData {
 
 pub fn save_store(app: &AppHandle, data: &StoreData) -> Result<(), String> {
     let p = store_path(app).ok_or("无法获取数据目录")?;
-    let json = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
+    // 落盘边界：密码加密写出（内存 store 不动；旧明文读入后下次保存自动升级为密文）
+    let json = serde_json::to_string_pretty(&encrypt_store_passwords(data.clone()))
+        .map_err(|e| e.to_string())?;
     fs::write(&p, json).map_err(|e| e.to_string())
 }
 
@@ -485,6 +479,8 @@ mod tests {
         assert_eq!(encrypt_password("enc1:abc"), "enc1:abc");
         // base64 非法 → 原样保留
         assert_eq!(decrypt_password("enc1:不是base64!!"), "enc1:不是base64!!");
+        // 合法 base64 但长度不足（< salt+nonce+tag）→ 原样保留
+        assert_eq!(decrypt_password("enc1:AAAA"), "enc1:AAAA");
         // 密文被篡改（tag 校验失败）→ 原样保留
         let good = encrypt_password("abc123");
         let mut broken = good.clone();
