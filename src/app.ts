@@ -53,6 +53,8 @@ export function defaultStore(): StoreData {
       lastFolderPath: "",
       folderAutoOpen: true,
       folderListRecursive: false,
+      smbListRecursive: false,
+      smbListDepth: 0,
       naturalSort: true,
       plugins: {},
       pluginSettings: {},

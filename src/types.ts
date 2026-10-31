@@ -36,6 +36,8 @@ export interface Settings {
   lastFolderPath: string; // 上次打开的文件夹（文件夹侧栏恢复用）
   folderAutoOpen: boolean; // 启动时自动打开文件夹侧栏
   folderListRecursive: boolean; // 文件夹侧栏列表是否含子目录
+  smbListRecursive: boolean; // 远程列表是否含子目录
+  smbListDepth: number; // 远程递归下钻层数（1–5，0=不限）
   naturalSort: boolean; // 文件名自然排序（侧栏列表与上一个/下一个导航统一）
   plugins: Record<string, boolean>; // 插件启用状态（未列出的默认启用）
   pluginSettings: Record<string, Record<string, number | boolean | string>>; // 插件固定设置

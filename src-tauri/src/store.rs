@@ -118,6 +118,12 @@ pub struct Settings {
     /// 文件夹侧栏文件列表是否包含子目录
     #[serde(default)]
     pub folder_list_recursive: bool,
+    /// 远程列表是否含子目录
+    #[serde(default)]
+    pub smb_list_recursive: bool,
+    /// 远程递归下钻层数（1–5，0=不限）
+    #[serde(default)]
+    pub smb_list_depth: u32,
     /// 插件启用状态（插件 id → 是否启用；未列出的默认启用）
     #[serde(default)]
     pub plugins: std::collections::HashMap<String, bool>,
@@ -182,6 +188,8 @@ impl Default for Settings {
             last_folder_path: String::new(),
             folder_auto_open: true,
             folder_list_recursive: false,
+            smb_list_recursive: false,
+            smb_list_depth: 0,
             plugins: std::collections::HashMap::new(),
             plugin_settings: std::collections::HashMap::new(),
             folder_tab: String::new(),
