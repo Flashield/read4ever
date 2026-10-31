@@ -17,6 +17,8 @@ let renderedOnce = false;
 let cacheBusy = false; // 「缓存到本地」进行中（同一时间只允许一个）
 const childrenCache = new Map<string, SmbFileEntry[]>();
 const nodeRows = new Map<string, HTMLElement>();
+let treeSeq = 0; // 树/列表渲染重入守卫：过期请求放弃写 DOM（pickSmbDir 同款 seq 模式）
+let listSeq = 0;
 
 const servers = (): SmbServer[] => app.state.store.smbServers;
 
@@ -92,6 +94,7 @@ export async function refreshAll(): Promise<void> {
 
 async function renderTree(): Promise<void> {
   const box = $("smb-tree");
+  const my = ++treeSeq; // 重入守卫：期间有新渲染启动则放弃本次写 DOM
   const keepScroll = box.scrollTop;
   box.innerHTML = "";
   nodeRows.clear();
@@ -101,12 +104,14 @@ async function renderTree(): Promise<void> {
     return;
   }
   for (const s of list) {
-    box.appendChild(await buildServerNode(s));
+    const node = await buildServerNode(s, my);
+    if (my !== treeSeq) return; // 过期：新渲染已接管此容器
+    box.appendChild(node);
   }
   box.scrollTop = keepScroll;
 }
 
-async function buildServerNode(s: SmbServer): Promise<HTMLElement> {
+async function buildServerNode(s: SmbServer, my: number): Promise<HTMLElement> {
   const rootPath = `smb://${s.id}`;
   const node = document.createElement("div");
   node.className = "ft-node";
@@ -116,9 +121,11 @@ async function buildServerNode(s: SmbServer): Promise<HTMLElement> {
     const kids = document.createElement("div");
     kids.className = "ft-kids";
     const entries = await loadChildren(rootPath);
+    if (my !== treeSeq) return node; // 过期：整棵节点由调用方丢弃
     for (const e of entries) {
+      if (my !== treeSeq) return node; // 过期：不再递归、不再登记 nodeRows
       if (e.isDir) {
-        kids.appendChild(await buildDirNode(e.path, e.name, 1));
+        kids.appendChild(await buildDirNode(e.path, e.name, 1, my));
       } else {
         kids.appendChild(treeFileRow(e, 1));
       }
@@ -135,7 +142,7 @@ async function buildServerNode(s: SmbServer): Promise<HTMLElement> {
   return node;
 }
 
-async function buildDirNode(dirPath: string, name: string, depth: number): Promise<HTMLElement> {
+async function buildDirNode(dirPath: string, name: string, depth: number, my: number): Promise<HTMLElement> {
   const node = document.createElement("div");
   node.className = "ft-node";
   node.appendChild(dirRow(dirPath, name, depth, expanded.has(dirPath)));
@@ -144,9 +151,11 @@ async function buildDirNode(dirPath: string, name: string, depth: number): Promi
     const kids = document.createElement("div");
     kids.className = "ft-kids";
     const entries = await loadChildren(dirPath);
+    if (my !== treeSeq) return node; // 过期：整棵节点由调用方丢弃
     for (const e of entries) {
+      if (my !== treeSeq) return node; // 过期：不再递归、不再登记 nodeRows
       if (e.isDir) {
-        kids.appendChild(await buildDirNode(e.path, e.name, depth + 1));
+        kids.appendChild(await buildDirNode(e.path, e.name, depth + 1, my));
       } else {
         kids.appendChild(treeFileRow(e, depth + 1));
       }
@@ -247,6 +256,7 @@ function treeFileRow(e: SmbFileEntry, depth: number): HTMLElement {
 
 async function renderList(): Promise<void> {
   const box = $("smb-list");
+  const my = ++listSeq; // 重入守卫：期间列表已切走则丢弃本次
   const keepScroll = box.scrollTop;
   box.innerHTML = "";
   if (!selectedDir) {
@@ -255,6 +265,7 @@ async function renderList(): Promise<void> {
     return;
   }
   const entries = await loadChildren(selectedDir);
+  if (my !== listSeq) return; // 过期：新渲染已接管此容器
   const files = entries.filter((e) => !e.isDir);
   const kw = filterText.trim().toLowerCase();
   const shown = kw ? files.filter((f) => f.name.toLowerCase().includes(kw)) : files;
@@ -325,6 +336,23 @@ function dropDirCache(dir: string): void {
     for (const k of [...childrenCache.keys()]) {
       if (k.startsWith(`${dir}/`)) childrenCache.delete(k);
     }
+  }
+}
+
+/** 仅失效目录自身缓存（点击重拉用）。服务器根别名 smb://<id> 与规范共享根
+ *  smb://<id>/<share> 指向同一目录，双键一起删；深层目录只删自己的键——
+ *  不复用 dropDirCache（它对任意子目录都连带删共享根双键，点击会误伤、多打网络） */
+function dropDirCacheOnly(dir: string): void {
+  childrenCache.delete(dir);
+  const segs = dir.replace(/\/+$/, "").split("/").filter(Boolean);
+  if (segs.length < 2 || segs[0] !== "smb:") return;
+  const srv = servers().find((s) => s.id === segs[1]);
+  if (!srv) return;
+  const canon = `smb://${srv.id}/${srv.share}`;
+  const alias = `smb://${srv.id}`;
+  if (dir === canon || dir === alias) {
+    childrenCache.delete(canon);
+    childrenCache.delete(alias);
   }
 }
 
@@ -836,6 +864,7 @@ async function pushServers(list: SmbServer[]): Promise<void> {
 /* ========== 展开 / 定位 ========== */
 
 async function selectDir(path: string): Promise<void> {
+  dropDirCacheOnly(path); // 列出即重拉，与点击展开同语义
   selectedDir = path;
   await renderList();
 }
@@ -901,9 +930,14 @@ function bindRowEvents(container: HTMLElement): void {
       return;
     }
     if (row.dataset.dir === "1") {
-      // 服务器根/目录：切换展开；目录同时把下方列表切到该目录
-      if (expanded.has(path)) expanded.delete(path);
-      else expanded.add(path);
+      // 服务器根/目录：切换展开；展开即重拉该目录（失效缓存后渲染自然取最新）；
+      // 目录同时把下方列表切到该目录
+      if (expanded.has(path)) {
+        expanded.delete(path);
+      } else {
+        expanded.add(path);
+        dropDirCacheOnly(path);
+      }
       if (!row.dataset.server) selectedDir = path;
       void renderAll();
       return;
