@@ -122,6 +122,17 @@
         </div>
         <div id="smb-tree" class="folder-tree"></div>
         <div class="folder-listbar">
+          <label class="folder-recursive" title="同时列出子目录中的文件">
+            <input type="checkbox" id="smb-recursive" /> 含子目录
+          </label>
+          <select id="smb-depth" class="smb-depth" title="子目录下钻深度">
+            <option value="0">不限</option>
+            <option value="1">1 层</option>
+            <option value="2">2 层</option>
+            <option value="3">3 层</option>
+            <option value="4">4 层</option>
+            <option value="5">5 层</option>
+          </select>
           <input type="text" id="smb-filter" placeholder="过滤文件名…" />
           <button id="smb-refresh" title="刷新">🔄</button>
         </div>

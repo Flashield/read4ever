@@ -14,6 +14,8 @@ let expanded = new Set<string>(); // 已展开的 smb:// 目录（含服务器�
 let selectedDir = ""; // 文件列表当前展示的目录
 let filterText = "";
 let renderedOnce = false;
+const SMB_SCAN_CAP = 2000; // 递归扫描文件数上限（与本地侧栏一致）
+const SMB_DIR_CAP = 2000; // 递归扫描目录访问上限（防文件稀疏树/环失控）
 let cacheBusy = false; // 「缓存到本地」进行中（同一时间只允许一个）
 const childrenCache = new Map<string, SmbFileEntry[]>();
 const nodeRows = new Map<string, HTMLElement>();
@@ -51,6 +53,39 @@ async function loadChildren(dir: string): Promise<SmbFileEntry[]> {
     }
   }
   return entries;
+}
+
+/** 「含子目录」时从指定目录逐层 BFS 收集文件（深度 1–5，0=不限）。
+ *  上限：文件/目录各 2000；visited 防环与重复子树；my 为渲染序号，
+ *  扫描中途被新渲染接管即放弃（不再打网络、不回写缓存）。
+ *  途经目录都经 loadChildren 落缓存，递归条目的右键菜单/缓存标记照常工作 */
+async function collectFilesRecursive(
+  rootDir: string,
+  my: number
+): Promise<{ entries: SmbFileEntry[]; capped: boolean }> {
+  const maxDepth = Math.min(5, Math.max(0, Math.floor(app.state.store.settings.smbListDepth || 0))); // 0=不限；钳制防脏值
+  const out: SmbFileEntry[] = [];
+  const visited = new Set<string>([rootDir]); // 已入队目录：防环/重复子树
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
+  let dirCount = 0;
+  while (queue.length && out.length < SMB_SCAN_CAP && dirCount < SMB_DIR_CAP) {
+    const { dir, depth } = queue.shift()!;
+    dirCount++;
+    const entries = await loadChildren(dir);
+    if (my !== listSeq) return { entries: [], capped: false }; // 过期：放弃本次扫描
+    for (const e of entries) {
+      if (out.length >= SMB_SCAN_CAP) break;
+      if (e.isDir) {
+        if ((maxDepth === 0 || depth + 1 <= maxDepth) && !visited.has(e.path)) {
+          visited.add(e.path);
+          queue.push({ dir: e.path, depth: depth + 1 });
+        }
+      } else {
+        out.push(e);
+      }
+    }
+  }
+  return { entries: out, capped: out.length >= SMB_SCAN_CAP || dirCount >= SMB_DIR_CAP };
 }
 
 function pathToName(p: string): string {
@@ -264,33 +299,42 @@ async function renderList(): Promise<void> {
     box.innerHTML = '<div class="kw-empty">点击树中的目录，在下方列出其中的文件</div>';
     return;
   }
-  const entries = await loadChildren(selectedDir);
+  const recursive = !!app.state.store.settings.smbListRecursive;
+  if (recursive) $("smb-list-count").textContent = "扫描中…";
+  const { entries, capped } = recursive
+    ? await collectFilesRecursive(selectedDir, my)
+    : { entries: await loadChildren(selectedDir), capped: false };
   if (my !== listSeq) return; // 过期：新渲染已接管此容器
   const files = entries.filter((e) => !e.isDir);
+  // 含子目录时显示相对路径。selectedDir 可能是服务器根别名 smb://<id>，
+  // 条目路径是规范形式（含共享名段），slice 后剥掉多余前缀即可；前缀不匹配则原样显示
+  const rel = (p: string) =>
+    p.startsWith(selectedDir) ? p.slice(selectedDir.length).replace(/^\/+/, "") : p;
   const kw = filterText.trim().toLowerCase();
   const shown = kw ? files.filter((f) => f.name.toLowerCase().includes(kw)) : files;
   $("smb-list-count").textContent =
     `${shown.length.toLocaleString()} 个文件` +
-    (files.length !== shown.length ? `（共 ${files.length.toLocaleString()}）` : "");
+    (files.length !== shown.length ? `（共 ${files.length.toLocaleString()}）` : "") +
+    (recursive && capped ? "（已达上限）" : "");
   if (shown.length === 0) {
     box.innerHTML = '<div class="kw-empty">没有文件</div>';
     return;
   }
   const frag = document.createDocumentFragment();
-  for (const f of shown) frag.appendChild(listRow(f));
+  for (const f of shown) frag.appendChild(listRow(f, recursive ? rel(f.path) : undefined));
   box.appendChild(frag);
   box.scrollTop = keepScroll;
 }
 
-function listRow(f: SmbFileEntry): HTMLElement {
+function listRow(f: SmbFileEntry, display?: string): HTMLElement {
   const row = document.createElement("div");
   row.className = "fl-row";
   row.setAttribute("data-path", f.path);
   row.dataset.dir = "0";
-  row.title = f.path;
+  row.title = display ?? f.path;
   const nm = document.createElement("span");
   nm.className = "fl-name";
-  nm.textContent = f.name;
+  nm.textContent = display ?? f.name;
   const meta = document.createElement("span");
   meta.className = "fl-meta";
   meta.textContent = `${fmtSize(f.size)} · ${fmtDate(f.mtime)}`;
@@ -962,6 +1006,22 @@ export function initSmbPanel(): void {
   });
   $("smb-filter").addEventListener("input", () => {
     filterText = ($("smb-filter") as HTMLInputElement).value;
+    void renderList();
+  });
+  const recursive = $("smb-recursive") as HTMLInputElement;
+  const depth = $("smb-depth") as HTMLSelectElement;
+  recursive.checked = !!app.state.store.settings.smbListRecursive;
+  depth.value = String(app.state.store.settings.smbListDepth || 0);
+  depth.disabled = !recursive.checked;
+  recursive.addEventListener("change", () => {
+    app.state.store.settings.smbListRecursive = recursive.checked;
+    depth.disabled = !recursive.checked;
+    app.persist();
+    void renderList();
+  });
+  depth.addEventListener("change", () => {
+    app.state.store.settings.smbListDepth = Number(depth.value) || 0;
+    app.persist();
     void renderList();
   });
   bindRowEvents($("smb-tree"));

@@ -677,6 +677,19 @@ body.folder-open #media-dock {
   font-size: 12px;
 }
 
+.folder-listbar select {
+  padding: 3px 4px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.folder-listbar select:disabled {
+  opacity: 0.5;
+}
+
 .folder-listbar button {
   padding: 3px 8px;
   border: 1px solid var(--ui-border);
