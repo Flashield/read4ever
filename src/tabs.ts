@@ -353,38 +353,73 @@ function iconOf(t: Tab): string {
   return "📄";
 }
 
+function newTabEl(): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "tab";
+  const ic = document.createElement("span");
+  ic.className = "tab-icon";
+  const ti = document.createElement("span");
+  ti.className = "tab-title";
+  const x = document.createElement("button");
+  x.className = "tab-close";
+  x.textContent = "✕";
+  x.title = "关闭标签页 (Ctrl+W)";
+  el.append(ic, ti, x);
+  return el;
+}
+
+/** 按 data-tab-id 调和更新 tab 栏：复用已有元素，只改 class/标题/图标与增删。
+ *  不能 innerHTML 全量重建——重建落在某次点击的按下与抬起之间时，mousedown/mouseup
+ *  目标不一致，浏览器把 click 派发到公共祖先，鼠标关 tab 会随机丢点击（要多点几次）。 */
 export function renderTabBar(): void {
   const bar = document.getElementById("tab-bar");
   if (!bar) return;
-  bar.innerHTML = "";
   bar.classList.toggle("hidden", tabs.length === 0);
-  for (const t of tabs) {
-    const el = document.createElement("div");
-    el.className = "tab" + (t.id === activeId ? " active" : "") + (t.error ? " error" : "");
-    el.dataset.tabId = t.id;
-    const ic = document.createElement("span");
-    ic.className = "tab-icon";
-    ic.textContent = iconOf(t);
-    const ti = document.createElement("span");
-    ti.className = "tab-title";
-    ti.textContent = t.title || "未命名";
-    ti.title = t.title;
-    const x = document.createElement("button");
-    x.className = "tab-close";
-    x.textContent = "✕";
-    x.title = "关闭标签页 (Ctrl+W)";
-    el.append(ic, ti, x);
-    el.addEventListener("click", () => switchToTab(t.id));
-    el.addEventListener("auxclick", (e) => {
-      if (e.button === 1) closeTab(t.id);
-    });
-    x.addEventListener("click", (e) => {
-      e.stopPropagation();
-      closeTab(t.id);
-    });
-    bar.appendChild(el);
+  const stale = new Map<string, HTMLElement>();
+  for (const el of Array.from(bar.children) as HTMLElement[]) {
+    if (el.dataset.tabId) stale.set(el.dataset.tabId, el);
+    else el.remove();
   }
+  let prev: Element | null = null;
+  for (const t of tabs) {
+    let el = stale.get(t.id);
+    if (el) stale.delete(t.id);
+    else el = newTabEl();
+    el.dataset.tabId = t.id; // 委托点击按它找 tab；缺失会被下轮当外来元素清掉且点击失效
+    el.className = "tab" + (t.id === activeId ? " active" : "") + (t.error ? " error" : "");
+    const ic = el.children[0] as HTMLElement;
+    const icon = iconOf(t);
+    if (ic.textContent !== icon) ic.textContent = icon;
+    const ti = el.children[1] as HTMLElement;
+    const name = t.title || "未命名";
+    if (ti.textContent !== name) ti.textContent = name;
+    if (ti.title !== t.title) ti.title = t.title;
+    const ref: ChildNode | null = prev ? prev.nextSibling : bar.firstElementChild;
+    if (ref !== el) bar.insertBefore(el, ref);
+    prev = el;
+  }
+  for (const el of stale.values()) el.remove();
 }
+
+/* 交互委托在静态 #tab-bar 上：元素复用不再逐个挂监听，
+   重渲染不再销毁光标下的元素，进行中的点击不受影响 */
+const tabBar = document.getElementById("tab-bar");
+tabBar?.addEventListener("click", (e) => {
+  const target = e.target as HTMLElement;
+  const close = target.closest(".tab-close");
+  if (close) {
+    const id = close.closest<HTMLElement>(".tab")?.dataset.tabId;
+    if (id) closeTab(id);
+    return;
+  }
+  const tab = target.closest<HTMLElement>(".tab");
+  if (tab?.dataset.tabId) switchToTab(tab.dataset.tabId);
+});
+tabBar?.addEventListener("auxclick", (e) => {
+  if (e.button !== 1) return;
+  const tab = (e.target as HTMLElement).closest<HTMLElement>(".tab");
+  if (tab?.dataset.tabId) closeTab(tab.dataset.tabId);
+});
 
 /** 激活视图上报标题变化时同步 tab 标题（app.updateUI 调用） */
 export function setTitleByView(viewId: string, title: string): void {
