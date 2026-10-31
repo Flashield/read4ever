@@ -272,6 +272,10 @@ const smbFsRoot: MockFsNode = mockDir({
   "西游记选段.txt": mockFile(demoText("C:\\demo\\西游记选段.txt")),
   "传统小说.txt": mockFile(demoText("C:\\demo\\传统小说.txt")),
   "西游记合集.zip": mockFile("(演示 zip 内容)"),
+  "文集": mockDir({
+    "鲁迅杂文.txt": mockFile(demoText("C:\\demo\\鲁迅杂文.txt")),
+    "传统": mockDir({ "传统小说.txt": mockFile(demoText("C:\\demo\\传统小说.txt")) }),
+  }),
   ".DS_Store": mockFile(""), // 隐藏项：列表应跳过
 });
 
