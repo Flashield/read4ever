@@ -3,6 +3,12 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+use aes_gcm::aead::rand_core::RngCore;
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Nonce};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use sha2::Digest;
+
 /// store 文件名（store_path 与启动期 read_allow_multiple 必须一致）
 const STORE_FILE: &str = "read4ever.json";
 
@@ -264,6 +270,90 @@ pub fn load_store(app: &AppHandle) -> StoreData {
     }
 }
 
+// 以下密码加解密函数暂仅测试引用；load_store/save_store 接线（下一步任务）后移除 allow(dead_code)
+
+/// 密码落盘加密密钥根（应用内置常量）。防直接肉眼查看，不防有意逆向——
+/// 约定见 docs/spec/SMB含子目录与密码加密方案.md
+#[allow(dead_code)]
+const PW_SECRET: &[u8] = b"Read4Ever/smb-password/v1";
+/// 密文前缀：enc1: + base64(salt[16] ‖ nonce[12] ‖ AES-256-GCM 密文)
+#[allow(dead_code)]
+const PW_PREFIX: &str = "enc1:";
+
+/// 由内置常量与随机 salt 派生 AES-256 密钥
+#[allow(dead_code)]
+fn derive_key(salt: &[u8; 16]) -> Aes256Gcm {
+    let mut h = sha2::Sha256::new();
+    h.update(PW_SECRET);
+    h.update(salt);
+    let digest = h.finalize();
+    Aes256Gcm::new_from_slice(&digest).expect("SHA-256 输出必为 32 字节")
+}
+
+/// 落盘前加密：非空且未带前缀的密码 → "enc1:" + base64(salt‖nonce‖密文)。
+/// 空密码原样返回；已带前缀原样返回（避免二次包裹；真实密码恰以 enc1: 开头时
+/// 解密失败也会原样保留，两端行为一致）
+#[allow(dead_code)]
+fn encrypt_password(plain: &str) -> String {
+    if plain.is_empty() || plain.starts_with(PW_PREFIX) {
+        return plain.to_string();
+    }
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let cipher = derive_key(&salt);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ct = cipher
+        .encrypt(&nonce, plain.as_bytes())
+        .expect("AES-GCM 加密失败");
+    let mut buf = Vec::with_capacity(16 + 12 + ct.len());
+    buf.extend_from_slice(&salt);
+    buf.extend_from_slice(&nonce);
+    buf.extend_from_slice(&ct);
+    format!("{}{}", PW_PREFIX, BASE64_STANDARD.encode(buf))
+}
+
+/// 读取后解密：enc1: 前缀的值尝试解密，任何失败（非法 base64 / tag 不符 /
+/// 长度不足 / 非法 UTF-8）原样返回——兼容手工改坏的文件与恰以 enc1: 开头的明文
+#[allow(dead_code)]
+fn decrypt_password(val: &str) -> String {
+    let Some(rest) = val.strip_prefix(PW_PREFIX) else {
+        return val.to_string(); // 旧明文 / 空密码
+    };
+    let Ok(buf) = BASE64_STANDARD.decode(rest) else {
+        return val.to_string();
+    };
+    if buf.len() < 16 + 12 + 16 {
+        return val.to_string(); // salt+nonce+密文（含 tag）最短长度
+    }
+    let (salt, rest) = buf.split_at(16);
+    let (nonce, ct) = rest.split_at(12);
+    let mut salt_arr = [0u8; 16];
+    salt_arr.copy_from_slice(salt);
+    let pt = derive_key(&salt_arr).decrypt(Nonce::from_slice(nonce), ct);
+    match pt {
+        Ok(p) => String::from_utf8(p).unwrap_or_else(|_| val.to_string()),
+        Err(_) => val.to_string(),
+    }
+}
+
+/// save_store 落盘边界：全部 SMB 服务器密码加密（旧明文下次保存自动升级为密文）
+#[allow(dead_code)]
+fn encrypt_store_passwords(mut data: StoreData) -> StoreData {
+    for s in &mut data.smb_servers {
+        s.password = encrypt_password(&s.password);
+    }
+    data
+}
+
+/// load_store 读取边界：全部 SMB 服务器密码解密回明文
+#[allow(dead_code)]
+fn decrypt_store_passwords(mut data: StoreData) -> StoreData {
+    for s in &mut data.smb_servers {
+        s.password = decrypt_password(&s.password);
+    }
+    data
+}
+
 pub fn save_store(app: &AppHandle, data: &StoreData) -> Result<(), String> {
     let p = store_path(app).ok_or("无法获取数据目录")?;
     let json = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
@@ -376,5 +466,51 @@ mod tests {
         let back: StoreData = serde_json::from_str(&out).unwrap();
         assert_eq!(back.bookshelves[0].items[0].tags, vec!["科幻", "长篇"]);
         assert_eq!(back.bookshelves.len(), 2);
+    }
+
+    /// 密码落盘加密：roundtrip、随机密文、旧明文/空密码直通、坏密文原样保留
+    #[test]
+    fn password_encrypt_decrypt_variants() {
+        // roundtrip（含中文）
+        let enc = encrypt_password("s3cret密码");
+        assert!(enc.starts_with("enc1:"));
+        assert_ne!(enc, "s3cret密码");
+        assert_eq!(decrypt_password(&enc), "s3cret密码");
+        // 同一明文两次加密密文不同（随机 salt+nonce）
+        assert_ne!(enc, encrypt_password("s3cret密码"));
+        // 旧明文 / 空密码 / 已带前缀值原样直通
+        assert_eq!(decrypt_password("legacy"), "legacy");
+        assert_eq!(decrypt_password(""), "");
+        assert_eq!(encrypt_password(""), "");
+        assert_eq!(encrypt_password("enc1:abc"), "enc1:abc");
+        // base64 非法 → 原样保留
+        assert_eq!(decrypt_password("enc1:不是base64!!"), "enc1:不是base64!!");
+        // 密文被篡改（tag 校验失败）→ 原样保留
+        let good = encrypt_password("abc123");
+        let mut broken = good.clone();
+        broken.replace_range(broken.len() - 4.., "AAAA");
+        assert_ne!(broken, good);
+        assert_eq!(decrypt_password(&broken), broken);
+    }
+
+    /// save/load 边界：加密后的 JSON 不含明文，读回还原
+    #[test]
+    fn store_password_roundtrip_through_boundary() {
+        let mut data = StoreData::default();
+        data.smb_servers.push(SmbServer {
+            id: "s1".to_string(),
+            name: "测试".to_string(),
+            host: "nas.local".to_string(),
+            share: "books".to_string(),
+            workgroup: String::new(),
+            username: "user".to_string(),
+            password: "密123abc".to_string(),
+        });
+        let saved = encrypt_store_passwords(data.clone());
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(!json.contains("密123abc"), "落盘 JSON 不得含明文密码: {json}");
+        assert!(json.contains("enc1:"));
+        let loaded = decrypt_store_passwords(saved);
+        assert_eq!(loaded.smb_servers[0].password, "密123abc");
     }
 }

@@ -32,6 +32,11 @@ trash = "5"
 # SMB 远程浏览：纯 Rust 客户端（tokio 异步），无 FFI——保证 iOS/Windows 目标可编译。
 # 局限：仅 SMB2/3（不支持 SMB1）；0.x API 可能变动，升级需单独评估。
 smb2 = "0.35"
+# SMB 密码落盘加密：文件内 AES-256-GCM（内存中始终明文，仅 save/load 边界处理）。
+# 均为 RustCrypto 纯 Rust，iOS 门禁安全。方案见 docs/spec/SMB含子目录与密码加密方案.md
+aes-gcm = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
 # 流式播放协议 URL 路径的 percent 编解码（tauri 传递依赖，显式声明以直接使用）
 percent-encoding = "2"
 # 与 tauri 同源的数据目录解析（无 AppHandle 时复算 app_data_dir；tauri 依赖树已含）
