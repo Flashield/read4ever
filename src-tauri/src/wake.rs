@@ -28,8 +28,8 @@ pub fn set_keep_awake(on: bool, state: tauri::State<WakeState>) {
                 match keepawake::Builder::default()
                     .display(true) // 阻止屏保/显示休眠
                     .idle(true) // 阻止空闲待机（需求含「待机」；不拦用户主动睡眠），并使 Linux 建立 logind fd 锁
-                    .app_name("ReadBook") // logind 抑制项的应用名（systemd-inhibit --list 可见）
-                    .app_reverse_domain("io.github.readbook") // org.freedesktop.ScreenSaver 抑制在 DE 界面显示的应用名
+                    .app_name("Read4Ever") // logind 抑制项的应用名（systemd-inhibit --list 可见）
+                    .app_reverse_domain("io.github.read4ever") // org.freedesktop.ScreenSaver 抑制在 DE 界面显示的应用名
                     .reason("滚屏/播放中")
                     .create()
                 {

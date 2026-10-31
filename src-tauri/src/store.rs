@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
 /// store 文件名（store_path 与启动期 read_allow_multiple 必须一致）
-const STORE_FILE: &str = "readbook.json";
+const STORE_FILE: &str = "read4ever.json";
 
 /// 自定义配色方案
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -323,7 +323,7 @@ mod tests {
         "dualPage": false, "lastFilePath": "", "lastScroll": 0, "autoRestore": true
     }"#;
 
-    /// 旧版 readbook.json（扁平 bookshelf、条目无 tags、无 bookshelves）
+    /// 旧版 store（扁平 bookshelf、条目无 tags、无 bookshelves）
     /// → 迁入「默认书架」，tags 补空，序列化只写新字段
     #[test]
     fn legacy_flat_bookshelf_migrates_to_default_shelf() {

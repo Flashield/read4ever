@@ -1,13 +1,13 @@
 /* zipfile 宽容解析的集成测试（自 src/zipfile.rs 内联测试模块迁出）。
-   样本位于工作区根目录（readbook 的上一级），不存在时跳过。
+   样本位于工作区根目录（read4ever 的上一级），不存在时跳过。
    解析层已泛化为 RangeSource 异步原语，测试经 tokio 运行时驱动（本地 File 实现为同步 IO）。 */
-use readbook_lib::zipfile::{list_zip_files, list_zip_txt, read_zip_entry, read_zip_entry_raw};
+use read4ever_lib::zipfile::{list_zip_files, list_zip_txt, read_zip_entry, read_zip_entry_raw};
 use std::fs::File;
 use std::path::Path;
 use zip::ZipArchive;
 
 /// 已知损坏样本：Unicode Path 扩展字段 CRC 错误，zip crate 会拒绝。
-/// 样本在工作区根目录（readbook 的上一级）。
+/// 样本在工作区根目录（read4ever 的上一级）。
 const BROKEN_ZIP: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../丰子恺散文_丰子恺散文.zip"

@@ -9,7 +9,7 @@ import * as app from "../app";
 import { showDropdown } from "../dropdown";
 import { activeViewId, instanceOf, pluginSetting, setPluginSetting } from "./registry";
 import type { MenuItemDef } from "../dropdown";
-import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
+import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "./types";
 
 const PID = "image-viewer";
 const EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"];
@@ -1311,7 +1311,7 @@ function menu(): MenuItemDef[] {
 
 /* ========== 插件定义 ========== */
 
-export const imageViewerPlugin: ReadBookPlugin = {
+export const imageViewerPlugin: Read4EverPlugin = {
   id: PID,
   name: "图片查看",
   version: "1.7.0",

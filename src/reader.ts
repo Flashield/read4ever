@@ -27,7 +27,7 @@ const el = () => document.getElementById("reader-content") as HTMLElement;
 
 const WELCOME_HTML = `
 <div class="welcome-screen">
-  <h1>📖 ReadBook</h1>
+  <h1>📖 Read4Ever</h1>
   <p>文本阅读器 — 按 Ctrl+O 打开文件，或拖拽文件到窗口</p>
   <p class="welcome-tip">支持 TXT 文件和 ZIP 压缩包内的 TXT 文件</p>
 </div>`;

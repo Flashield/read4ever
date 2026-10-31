@@ -1,11 +1,11 @@
-# ReadBook iOS 版移植方案
+# Read4Ever iOS 版移植方案
 
 > 日期：2026-10-26　|　状态：已定稿，待实施
 > 决策：**续用 Tauri 2** 框架做 iOS 版（`tauri ios init` 路径），Rust 核心 100% 复用，前端复用 + 移动端适配，首版完整功能对等。
 
 ## 1. 背景与前提
 
-ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）。本方案规划 iOS 版本的技术路线与实施阶段。
+Read4Ever 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）。本方案规划 iOS 版本的技术路线与实施阶段。
 
 已确认的约束：
 
@@ -34,7 +34,7 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 | # | 决策 | 要点 |
 |---|---|---|
 | D1 | 路径间接层放 Rust 不放 TS | 新模块 `src-tauri/src/pathmap.rs`：`to_stored/to_abs`。桌面恒等映射（零迁移零回归）；iOS 存相对 `Documents/` 的路径（容器路径每次启动变化，相对路径免疫）。前端继续把路径当**不透明令牌**，`types.ts`↔`store.rs` 结构不变（AGENTS.md 同步规则不受影响） |
-| D2 | 导入即拷贝（不用 security-scoped bookmarks） | iOS 书库根 `<container>/Documents/ReadBook/`。多选文件落 `Inbox/`；保留目录结构走"文件"App 拖文件夹（`UIFileSharingEnabled` 免费获得）。`find_next/find_prev` 遍历导入副本的父目录，逻辑不变 |
+| D2 | 导入即拷贝（不用 security-scoped bookmarks） | iOS 书库根 `<container>/Documents/Read4Ever/`。多选文件落 `Inbox/`；保留目录结构走"文件"App 拖文件夹（`UIFileSharingEnabled` 免费获得）。`find_next/find_prev` 遍历导入副本的父目录，逻辑不变 |
 | D3 | 布局用 CSS 媒体查询，行为用平台助手 | `@media ((hover:none) and (pointer:coarse)), (max-width:760px)` 决定布局——手机布局可在 Linux 浏览器（`npm run dev` + 设备模拟）完整调试；JS 只门控行为 |
 | D4 | 全屏策略 | 桌面保留 `document.requestFullscreen()`；移动端 CSS 沉浸模式（`body.immersive`）（2026-10-28 起退役：桌面与触屏统一走 fullscreen.ts 公共沉浸模块 body.fs-immersive） |
 | D5 | 移除死插件 | `tauri-plugin-fs`/`tauri-plugin-opener` JS 侧从未调用，删除以减依赖面与权限面 |
@@ -68,13 +68,13 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 
 ### Phase 2 — 文件模型重构：沙盒相对路径 + 导入管线
 
-1. 新 `src-tauri/src/pathmap.rs`：`stored_from`/`abs_from`（base=None 恒等）+ `mobile_base()`（iOS/Android 取 `Documents/ReadBook`，桌面 None）+ 单测 `tests/pathmap.rs`
+1. 新 `src-tauri/src/pathmap.rs`：`stored_from`/`abs_from`（base=None 恒等）+ `mobile_base()`（iOS/Android 取 `Documents/Read4Ever`，桌面 None）+ 单测 `tests/pathmap.rs`
 2. `commands.rs` 14 个路径命令机械接线（入参 `to_abs`、出参 `to_stored`）：open/read/save/edit/find/list/trash/move/rename/make_dir；`read_zip_entry` 的 `"zip::entry"` 组合串用存储路径构建 → 历史/书签跨容器路径变化可回放
-3. 新增 `import_files(paths, dest) -> Vec<String>`：拷入 `Documents/ReadBook/<dest|Inbox>/`（沿用现有 `unique_child` 命名）；配套 `get_library_dir()`
+3. 新增 `import_files(paths, dest) -> Vec<String>`：拷入 `Documents/Read4Ever/<dest|Inbox>/`（沿用现有 `unique_child` 命名）；配套 `get_library_dir()`
 4. 前端：移动端"打开文件" = pick → `importFiles` → `openPath`；`src/folder.ts` `pickFolder()` 移动端直接 `setRoot(getLibraryDir())`（侧栏 `list_dir` 全在沙盒内，目录树照常）；`src/plugins/loader.ts` 按 spike(b) 结果先导入再装；`app.ts` 加 `visibilitychange`→持久化（iOS 不保证 beforeunload）
 5. `mock_backend.ts` 增量实现三个新命令；`AGENTS.md` 补"路径是不透明令牌、TS 不得拼路径"规则
 
-**验证**：Linux `cargo test`；桌面会话 diff——`readbook.json` 中路径与改造前逐字节同形（恒等映射实证）；模拟器导入→杀进程重装→自动恢复；"上/下一个文件"遍历导入副本；`.rbplugin` 端到端安装。
+**验证**：Linux `cargo test`；桌面会话 diff——`read4ever.json` 中路径与改造前逐字节同形（恒等映射实证）；模拟器导入→杀进程重装→自动恢复；"上/下一个文件"遍历导入副本；`.rbplugin` 端到端安装。
 
 ### Phase 3 — 移动阅读 UX 适配（大头在 CSS）
 
@@ -88,7 +88,7 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 
 ### Phase 4 — 文件 App 集成、导出、回收站
 
-1. `gen/apple/.../Info.plist`：`UIFileSharingEnabled=true`、`LSSupportsOpeningDocumentsInPlace=false`、`CFBundleDisplayName=ReadBook`、方向支持、`ITSAppUsesNonExemptEncryption=false`；（stretch）`CFBundleDocumentTypes` "用 ReadBook 打开"
+1. `gen/apple/.../Info.plist`：`UIFileSharingEnabled=true`、`LSSupportsOpeningDocumentsInPlace=false`、`CFBundleDisplayName=Read4Ever`、方向支持、`ITSAppUsesNonExemptEncryption=false`；（stretch）`CFBundleDocumentTypes` "用 Read4Ever 打开"
 2. `trash_path` 移动端正式实现 = 移入 Trash 目录；`uninstall_plugin` 移动端主路径 `fs::remove_dir_all`
 3. 移动端"另存为"按 spike(c)：优先 dialog `save()`，兜底写 `Exports/` + "可在『文件』App 查看"提示
 4. 图标：1024×1024 PNG → Mac `npm run tauri icon`；README/AGENTS.md 补移动文件模型与 Mac 工作流
@@ -120,7 +120,7 @@ ReadBook 为 Tauri 2 桌面端中文电子书阅读器（READBOOK.HLP 复刻）�
 - **S2** `save()` iOS 写回语义 → Phase 4 有兜底
 - **S3** WKWebView 内 blob-URL 动态 `import()`（.rbplugin 加载器）→ 失败则 `data:` URL 或 eval shim，改动收敛在 `src/plugins/loader.ts`
 - **S4** tray-icon/trash 是否真在 iOS 编译失败 → 无论结果，target 门控都是正确写法
-- **S5** "用 ReadBook 打开"事件能否送达 webview → stretch，不强求
+- **S5** "用 Read4Ever 打开"事件能否送达 webview → stretch，不强求
 - 软风险：小屏键盘遮挡查找栏（visualViewport 兜底）、UTType 过滤器可能不生效、老设备大文本渲染、7 天重签节奏
 - **S6 SMB 视频流式**（2026-10-27 新增，桌面端已实现）：模拟器连真实 NAS 播放/seek，验证 WKWebView 媒体元素经 WKURLSchemeHandler 发起的 Range 请求得到 206/Content-Range 正确响应（注意 AVPlayer 的探测区间与 seek 任务取消语义）；Android 侧验证 shouldInterceptRequest 是否携带 Range 头。降级预案：异常平台 streamUrlFor 返回 null 回退整读（受 1 GB 上限），大文件引导用户「缓存到本地」。桌面实现零新增依赖，本门禁命令不变
 - **S7 屏幕常亮 iOS 模块**（2026-10-27 新增，桌面端已实现，见 `docs/屏幕常亮方案.md`）：`wake.rs` 的 iOS 分支用 objc2-ui-kit 设 `UIApplication.idleTimerDisabled`（经 `run_on_main_thread`）；命令签名与前端零改动，仅需真机验证滚屏/插件播放期间不自动锁屏

@@ -1,4 +1,4 @@
-/* 大文件流式播放协议 readbook-stream://
+/* 大文件流式播放协议 read4ever-stream://
    <video> 元素按 HTTP Range 语义分块拉取（seek 只读所需区间），
    单次响应封顶 MAX_CHUNK，2GB+ 视频不再整读进内存。
    目标经 percent-encode 编码在 URL 路径里：
@@ -19,7 +19,7 @@ const MAX_CHUNK: u64 = 8 * 1024 * 1024;
 
 pub fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.register_asynchronous_uri_scheme_protocol(
-        "readbook-stream",
+        "read4ever-stream",
         |ctx, request, responder| {
             // 读盘（本地/SMB/zip）放后台线程，避免阻塞事件循环。
             // 但 respond 必须回主线程执行：WKURLSchemeTask 的 did* 调用与 WebKit 的
@@ -256,7 +256,7 @@ mod tests {
     }
 
     fn temp_file(name: &str, size: usize) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("readbook_stream_test");
+        let dir = std::env::temp_dir().join("read4ever_stream_test");
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         let mut f = File::create(&p).unwrap();
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn full_and_capped_responses() {
         let p = temp_file("a.bin", 3000);
-        let url = format!("readbook-stream://localhost/{}", enc(&p));
+        let url = format!("read4ever-stream://localhost/{}", enc(&p));
         // 无 Range：按 bytes=0- 处理，封顶 8MB（这里 3000B 全量）→ 206
         let r = serve(req(&url, None));
         assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
@@ -285,7 +285,7 @@ mod tests {
 
         // bytes=0- 封顶：构造超过 MAX_CHUNK 的文件只回 MAX_CHUNK
         let big = temp_file("big.bin", (MAX_CHUNK as usize) + 100);
-        let url = format!("readbook-stream://localhost/{}", enc(&big));
+        let url = format!("read4ever-stream://localhost/{}", enc(&big));
         let r = serve(req(&url, Some("bytes=0-")));
         assert_eq!(
             r.headers().get(header::CONTENT_RANGE).unwrap().to_str().unwrap(),
@@ -307,14 +307,14 @@ mod tests {
         assert_eq!(r.status(), StatusCode::RANGE_NOT_SATISFIABLE);
 
         // 文件不存在 → 404
-        let r = serve(req("readbook-stream://localhost/%E4%B8%8D%E5%AD%98%E5%9C%A8.bin", Some("bytes=0-")));
+        let r = serve(req("read4ever-stream://localhost/%E4%B8%8D%E5%AD%98%E5%9C%A8.bin", Some("bytes=0-")));
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn content_matches_file_bytes() {
         let p = temp_file("b.bin", 1000);
-        let url = format!("readbook-stream://localhost/{}", enc(&p));
+        let url = format!("read4ever-stream://localhost/{}", enc(&p));
         let r = serve(req(&url, Some("bytes=10-19")));
         let raw = fs::read(&p).unwrap();
         assert_eq!(&r.body()[..], &raw[10..20]);
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn zip_stored_entry_range() {
         // 用 zip crate（dev-dependency）构造存储型 zip，验证复合路径区间读取
-        let dir = std::env::temp_dir().join("readbook_stream_test");
+        let dir = std::env::temp_dir().join("read4ever_stream_test");
         fs::create_dir_all(&dir).unwrap();
         let zpath = dir.join("video.zip");
         let zf = File::create(&zpath).unwrap();
@@ -335,7 +335,7 @@ mod tests {
         w.finish().unwrap();
 
         let target = format!("{}::media/v.mp4", zpath.to_str().unwrap());
-        let url = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(&target)));
+        let url = format!("read4ever-stream://localhost/{}", enc(std::path::Path::new(&target)));
         let r = serve(req(&url, Some("bytes=100-149")));
         assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(r.headers().get(header::CONTENT_TYPE).unwrap(), "video/mp4");
@@ -354,7 +354,7 @@ mod tests {
         w2.write_all(b"compressible data data data").unwrap();
         w2.finish().unwrap();
         let target2 = format!("{}::c.bin", zpath2.to_str().unwrap());
-        let url2 = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(&target2)));
+        let url2 = format!("read4ever-stream://localhost/{}", enc(std::path::Path::new(&target2)));
         let r2 = serve(req(&url2, Some("bytes=0-1")));
         assert_eq!(r2.status(), StatusCode::NOT_FOUND);
     }
@@ -363,14 +363,14 @@ mod tests {
     fn smb_branch_wiring() {
         // 远程 zip 复合目标：显式拒绝（前端不会生成该 URL，纯防御）
         let target = "smb://sid/share/v.zip::e.mp4";
-        let url = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(target)));
+        let url = format!("read4ever-stream://localhost/{}", enc(std::path::Path::new(target)));
         let r = serve(req(&url, Some("bytes=0-1")));
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
         assert!(String::from_utf8_lossy(r.body()).contains("远程 zip"));
 
         // 无凭证配置的 smb 路径：resolve 即败 → 404 带中文说明（不触网，确定性）
         let target2 = "smb://nosuchid/share/v.mp4";
-        let url2 = format!("readbook-stream://localhost/{}", enc(std::path::Path::new(target2)));
+        let url2 = format!("read4ever-stream://localhost/{}", enc(std::path::Path::new(target2)));
         let r2 = serve(req(&url2, Some("bytes=0-1")));
         assert_eq!(r2.status(), StatusCode::NOT_FOUND);
         assert!(String::from_utf8_lossy(r2.body()).contains("SMB"));

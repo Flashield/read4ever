@@ -60,7 +60,7 @@ export interface PluginOpenContext {
   /** 读取文件字节（自动区分磁盘文件与 zip 条目）。
    *  安全边界：仅允许当前打开文件所在目录/压缩包内的路径，越界路径拒绝。 */
   loadBytes(path: string): Promise<Uint8Array>;
-  /** 本地文件、本地 zip 存储型条目与 SMB 远程普通文件的流式播放 URL（readbook-stream://，
+  /** 本地文件、本地 zip 存储型条目与 SMB 远程普通文件的流式播放 URL（read4ever-stream://，
    *  宿主按 HTTP Range 分块响应）——声明 wantsStream 的插件播放大文件用。
    *  SMB 远程 zip 复合路径与浏览器演示环境返回 null，调用方回退 loadBytes 整读。 */
   streamUrlFor?(path: string): string | null;
@@ -85,7 +85,7 @@ export interface PluginOpenContext {
   togglePlayback(): void;
 }
 
-export interface ReadBookPlugin {
+export interface Read4EverPlugin {
   id: string;
   name: string;
   version: string;

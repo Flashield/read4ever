@@ -1,7 +1,7 @@
 /* 视频查看插件：播放常见视频格式（含 zip 内视频）。
    基础功能：播放/暂停、进度条跳转、时间显示、倍速、音量/静音、全屏、
    同目录/同压缩包内上一个/下一个、自动连播、最小化到托盘仍播放（可选，仅托盘路径豁免暂停）。
-   大文件：声明 wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 readbook-stream://
+   大文件：声明 wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 read4ever-stream://
    协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（远程 zip 条目、压缩条目等）自动回退字节整读。
    移动端就绪（docs/iOS移植方案.md D3/D4）：<video playsinline>、纯点击交互、
    触屏隐藏音量控件（iOS 音量由系统控制）、
@@ -13,7 +13,7 @@ import { toggle as fsToggle } from "../fullscreen";
 import * as mediaDock from "../mediaDock";
 import { activeViewId, instanceOf, pluginSetting, setPluginSetting } from "./registry";
 import type { MenuItemDef } from "../dropdown";
-import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
+import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "./types";
 
 const PID = "video-viewer";
 const EXTENSIONS = [".mp4", ".m4v", ".webm", ".mov", ".ogv", ".mkv"];
@@ -512,7 +512,7 @@ function menu(): MenuItemDef[] {
 
 /* ========== 插件定义 ========== */
 
-export const videoViewerPlugin: ReadBookPlugin = {
+export const videoViewerPlugin: Read4EverPlugin = {
   id: PID,
   name: "视频查看",
   version: "1.4.0",

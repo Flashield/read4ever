@@ -143,7 +143,7 @@ const DEMO_PLUGIN_PKG = {
   name: "十六进制查看",
   version: "1.0.0",
   description: "演示外部插件：以十六进制 + ASCII 对照查看文件前 4KB",
-  author: "ReadBook 演示",
+  author: "Read4Ever 演示",
   api: 1,
   entry: "main.js",
   extensions: [".hex", ".bin"],
@@ -222,7 +222,7 @@ const mockFsRoot: MockFsNode = mockDir({
   "示例视频A.mp4": mockFile(DEMO_VIDEO_A),
   "示例视频B.mp4": mockFile(DEMO_VIDEO_B),
   "示例数据.hex": mockFile(
-    "ReadBook external plugin demo.\nThis plain-text file is shown by the demo\nhex-viewer plugin, loaded through the full\nexternal plugin pipeline (manifest -> main.js -> blob import).\n"
+    "Read4Ever external plugin demo.\nThis plain-text file is shown by the demo\nhex-viewer plugin, loaded through the full\nexternal plugin pipeline (manifest -> main.js -> blob import).\n"
   ),
 });
 
@@ -427,7 +427,7 @@ window.__TAURI_INTERNALS__ = {
         Object.assign(storeData, args.data);
         return Promise.resolve(null);
       case "set_window_title":
-        document.title = String(args.title ?? "ReadBook");
+        document.title = String(args.title ?? "Read4Ever");
         return Promise.resolve(null);
       case "hide_to_tray":
         // 与真实后端一致：通知前端暂停全部滚屏/播放（浏览器预览无真实托盘）

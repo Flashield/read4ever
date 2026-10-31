@@ -5,16 +5,16 @@
 import { api } from "../api";
 import * as app from "../app";
 import * as registry from "./registry";
-import type { ReadBookPlugin } from "./types";
+import type { Read4EverPlugin } from "./types";
 
 /** 已创建的 blob 模块 URL（重载时统一 revoke） */
 const moduleUrls: string[] = [];
 let loading = false;
 
-/** 入口导出形状校验：必须是 default（或 plugin）导出的 ReadBookPlugin */
-function validatePlugin(p: unknown, pkgId: string): p is ReadBookPlugin {
+/** 入口导出形状校验：必须是 default（或 plugin）导出的 Read4EverPlugin */
+function validatePlugin(p: unknown, pkgId: string): p is Read4EverPlugin {
   if (!p || typeof p !== "object") {
-    throw new Error("入口未导出插件对象（需 default 导出 ReadBookPlugin）");
+    throw new Error("入口未导出插件对象（需 default 导出 Read4EverPlugin）");
   }
   const o = p as Record<string, unknown>;
   const id = typeof o.id === "string" ? o.id : "";

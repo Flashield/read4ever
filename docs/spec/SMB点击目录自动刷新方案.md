@@ -11,7 +11,7 @@
 
 ## 2. 设计
 
-仅改 `readbook/src/smb.ts`：
+仅改 `read4ever/src/smb.ts`：
 
 1. **新增 `dropDirCacheOnly(dir)`**：只失效该目录自身的缓存键，与现有 `dropDirCache`（删除/重命名等变更场景，含子树清扫）区分。服务器根 `smb://<id>` 与规范共享根 `smb://<id>/<share>` 是同一目录的双键（见 `loadChildren` 注释），仍要一起删。不复用 `dropDirCache` 的原因：它对任意目录都会连带删共享根双键，点击深层目录会误失效共享根缓存、多打一次无谓网络请求。
 2. **树点击处理**（`bindRowEvents` 目录分支）：展开/收起逻辑不变，点击目录先 `dropDirCacheOnly(path)` 再 `renderAll()`——已展开目录子项重拉，`selectedDir` 指向的下方列表自然重拉。

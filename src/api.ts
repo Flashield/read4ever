@@ -94,7 +94,7 @@ export const api = {
   pickPluginFile: async (): Promise<string | null> => {
     const f = await open({
       multiple: false,
-      filters: [{ name: "ReadBook 插件包", extensions: ["rbplugin", "zip"] }],
+      filters: [{ name: "Read4Ever 插件包", extensions: ["rbplugin", "zip"] }],
     });
     return typeof f === "string" ? f : null;
   },

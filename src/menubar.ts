@@ -98,7 +98,7 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
   ],
   help: () => [
     { label: "快捷键列表…", shortcut: "F1", action: showShortcuts },
-    { label: "关于 ReadBook…", action: showAbout },
+    { label: "关于 Read4Ever…", action: showAbout },
   ],
 };
 
@@ -138,8 +138,8 @@ function showShortcuts(): void {
 
 function showAbout(): void {
   app.showMessage(
-    "关于 ReadBook",
-    "ReadBook - 文本阅读器\n\n" +
+    "关于 Read4Ever",
+    "Read4Ever - 文本阅读器\n\n" +
       "复刻自经典阅读软件 ReadBook 的便携功能：\n" +
       "· 打开 TXT 与 ZIP 内的 TXT，自动识别编码\n" +
       "· 十余种阅读配色方案，字体字号行距可调\n" +

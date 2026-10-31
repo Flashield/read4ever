@@ -1,6 +1,6 @@
 /* 编码检测的集成测试（自 src/encoding.rs 内联测试模块迁出）。 */
-use readbook_lib::encoding::decode_with;
-use readbook_lib::zipfile::{list_zip_txt, read_zip_entry};
+use read4ever_lib::encoding::decode_with;
+use read4ever_lib::zipfile::{list_zip_txt, read_zip_entry};
 
 /// GBK 无 BOM 的中文小说样本：chardetng 会误判为 windows-1252，
 /// 所有非 GB18030 编码都无法完整解码。

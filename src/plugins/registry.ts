@@ -1,6 +1,6 @@
 /* 插件注册表与中央打开管线：按扩展名路由到启用的插件。
    内置插件由 boot 编译期注册；外部插件（.rbplugin 包）由 loader 动态注册，
-   两者共用 ReadBookPlugin 接口，本模块不做区分。 */
+   两者共用 Read4EverPlugin 接口，本模块不做区分。 */
 import { api } from "../api";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as app from "../app";
@@ -8,12 +8,12 @@ import { holdAwake, releaseAwake } from "../keepawake";
 import * as mediaDock from "../mediaDock";
 import type { MenuItemDef } from "../dropdown";
 import type { FileEntry, PluginPkgInfo } from "../types";
-import type { PluginOpenContext, PluginViewInstance, PluginViewStatus, ReadBookPlugin } from "./types";
+import type { PluginOpenContext, PluginViewInstance, PluginViewStatus, Read4EverPlugin } from "./types";
 
 const TEXT_RE = /\.(txt|zip)$/i;
 
 /** 流式播放协议（src-tauri/src/stream.rs）：按 HTTP Range 分块响应本地文件、本地 zip 存储型条目与 SMB 远程普通文件 */
-const STREAM_SCHEME = "readbook-stream";
+const STREAM_SCHEME = "read4ever-stream";
 
 /** 真 Tauri 环境判定：mock_backend 会伪造 __TAURI_INTERNALS__（仅供 invoke），
  *  但没有真运行时注入的 convertFileSrc——以它为准 */
@@ -36,7 +36,7 @@ function streamUrlFor(path: string): string | null {
   return convertFileSrc(target, STREAM_SCHEME);
 }
 
-const plugins: ReadBookPlugin[] = [];
+const plugins: Read4EverPlugin[] = [];
 /** 外部插件 id → 包信息（内置插件不在此列） */
 const externalPkgs = new Map<string, PluginPkgInfo>();
 
@@ -55,7 +55,7 @@ let enabledMap: Record<string, boolean> = {};
 /** 插件视图实例表：多标签页下每个 tab 可持有一个视图（Task 3 接管生命周期归属） */
 export interface ViewEntry {
   id: string; // 实例 id（常亮来源 view:<id> / 媒体坞会话 id）
-  plugin: ReadBookPlugin;
+  plugin: Read4EverPlugin;
   inst: PluginViewInstance;
   pane: HTMLElement; // .plugin-view-pane，宿主于 #plugin-view-host
   status: PluginViewStatus;
@@ -104,7 +104,7 @@ export function viewAllowsBackground(id: string): boolean {
   return views.get(id)?.plugin.backgroundPlayback === true;
 }
 
-export function register(p: ReadBookPlugin, pkg?: PluginPkgInfo): boolean {
+export function register(p: Read4EverPlugin, pkg?: PluginPkgInfo): boolean {
   if (plugins.some((x) => x.id === p.id)) return false;
   plugins.push(p);
   if (pkg) externalPkgs.set(p.id, pkg);
@@ -123,7 +123,7 @@ export function unregister(id: string): boolean {
   return true;
 }
 
-export function list(): ReadBookPlugin[] {
+export function list(): Read4EverPlugin[] {
   return [...plugins];
 }
 
@@ -138,7 +138,7 @@ export function setEnabledMap(map: Record<string, boolean> | undefined): void {
   enabledMap = map ?? {};
 }
 
-export function isEnabled(p: ReadBookPlugin): boolean {
+export function isEnabled(p: Read4EverPlugin): boolean {
   return enabledMap[p.id] !== false;
 }
 
@@ -147,7 +147,7 @@ export const extOf = (name: string): string => {
   return m ? m[0] : "";
 };
 
-export function handlerForExt(ext: string): ReadBookPlugin | null {
+export function handlerForExt(ext: string): Read4EverPlugin | null {
   if (!ext) return null;
   return plugins.find((p) => isEnabled(p) && p.extensions.includes(ext)) ?? null;
 }
@@ -193,7 +193,7 @@ export function activeFilePath(): string {
 }
 
 /** 当前激活插件（未激活为 null）：宿主「滚屏/播放」「上一个/下一个文件」公共入口按它分发 */
-export function activePlugin(): ReadBookPlugin | null {
+export function activePlugin(): Read4EverPlugin | null {
   return activeEntry()?.plugin ?? null;
 }
 
@@ -315,7 +315,7 @@ export function hideActiveView(): void {
 }
 
 /** 旧单例接口插件 → 实例包装：插件对象自身持状态，包装层转发 */
-function wrapSingleton(p: ReadBookPlugin): PluginViewInstance {
+function wrapSingleton(p: Read4EverPlugin): PluginViewInstance {
   return {
     open: (ctx) => p.open?.(ctx),
     deactivate: () => p.deactivate?.(),

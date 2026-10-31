@@ -48,7 +48,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show, &quit])?;
 
             let _tray = TrayIconBuilder::with_id("main-tray")
-                .tooltip("ReadBook - 文本阅读器")
+                .tooltip("Read4Ever - 文本阅读器")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(true)

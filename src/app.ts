@@ -1172,14 +1172,14 @@ export function updateUI(): void {
   const fileInfo = document.getElementById("file-info");
   if (pst) {
     const name = pst.title ?? plugins.getActiveOpenedName();
-    api.setTitle(`ReadBook - ${name || "未打开文件"}`);
+    api.setTitle(`Read4Ever - ${name || "未打开文件"}`);
     if (fileInfo) fileInfo.textContent = name || "未打开文件";
     const vId = plugins.activeViewId();
     if (vId) tabs.setTitleByView(vId, name || "未打开文件");
   } else {
     const modifiedMark = state.modified ? " *" : "";
     const topName = state.realPath ? baseName(state.realPath) : "";
-    api.setTitle(`ReadBook - ${topName || "未打开文件"}${modifiedMark}`);
+    api.setTitle(`Read4Ever - ${topName || "未打开文件"}${modifiedMark}`);
     if (fileInfo) fileInfo.textContent = topName ? `${topName}${modifiedMark}` : "未打开文件";
   }
   const speedLabel = document.getElementById("speed-label");

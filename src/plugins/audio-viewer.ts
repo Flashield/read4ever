@@ -1,6 +1,6 @@
 /* 音频播放插件：播放常见音频格式（含 zip 内音频），打开文件所在目录/压缩包的音频自动组成目录队列。
    基础功能：播放/暂停、上一/下一首、进度跳转、倍速、音量/静音、循环模式三态（列表循环/单曲循环/播完停止）。
-   大文件：wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 readbook-stream://
+   大文件：wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 read4ever-stream://
    协议（HTTP Range 分块），失败自动回退字节整读（api 层命令，SMB/zip 复合路径后端原生分发）。
    后台播放：backgroundPlayback 声明豁免切标签页暂停策略与托盘全停；后台时媒体坞迷你条可控（含切曲）。
    单流策略：一个音频视图开播时暂停其他播放中的音频视图（与视频不互斥）。
@@ -12,7 +12,7 @@ import * as mediaDock from "../mediaDock";
 import * as tabs from "../tabs";
 import { extOf, pluginIdOfView, pluginSetting, setPluginSetting } from "./registry";
 import type { FileEntry } from "../types";
-import type { PluginOpenContext, PluginViewInstance, ReadBookPlugin } from "./types";
+import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "./types";
 
 const PID = "audio-viewer";
 const EXTENSIONS = [".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav"];
@@ -1017,7 +1017,7 @@ class AudioView implements PluginViewInstance {
 
 /* ========== 插件定义 ========== */
 
-export const audioViewerPlugin: ReadBookPlugin = {
+export const audioViewerPlugin: Read4EverPlugin = {
   id: PID,
   name: "音频播放",
   version: "1.0.0",
