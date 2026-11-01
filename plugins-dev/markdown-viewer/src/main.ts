@@ -32,7 +32,7 @@ const CSS = `
 .rbmd-body hr { border: none; border-top: 1px solid rgba(128,128,128,.4); margin: 1.4em 0; }
 .rbmd-body input[type="checkbox"] { margin-right: 4px; }
 .rbmd-src { margin: 0; padding: 20px 24px; font: 0.9em/1.7 Consolas, Menlo, monospace; white-space: pre-wrap; }
-.rbmd-bar { position: absolute; top: 8px; left: 8px; z-index: 5; display: flex; gap: 6px; }
+.rbmd-bar { position: absolute; top: 8px; left: 8px; z-index: 7; display: flex; gap: 6px; }
 .rbmd-bar button { border: 1px solid var(--ui-border, #555); background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
 .rbmd-bar button:hover { background: var(--ui-hover, #3d3d3d); }
 .rbmd-outline { position: absolute; top: 0; left: 0; bottom: 0; width: 220px; z-index: 6; overflow: auto; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border-right: 1px solid var(--ui-border, #555); padding: 8px 0; }
@@ -116,6 +116,7 @@ class MarkdownView implements PluginViewInstance {
   }
 
   private renderView(): void {
+    window.clearTimeout(this.scrollTimer); // 重渲染前清掉残留的高亮定时器
     this.revokeBlobs();
     if (this.asSource) {
       this.body.classList.add("hidden");
@@ -127,11 +128,18 @@ class MarkdownView implements PluginViewInstance {
     }
     this.srcView.classList.add("hidden");
     this.body.classList.remove("hidden");
-    this.body.innerHTML = marked.parse(this.text, { async: false, gfm: true, breaks: false }) as string;
-    sanitizeTree(this.body);
+    if (!this.text.trim()) {
+      this.body.innerHTML = "<p>（空文件）</p>";
+    } else {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = marked.parse(this.text, { async: false, gfm: true, breaks: false }) as string;
+      sanitizeTree(tpl.content); // template 内容惰性（不抓图不执行），净化后再挂载
+      this.body.replaceChildren(...tpl.content.childNodes);
+    }
     this.buildOutline();
     void this.fixImages();
     this.scroll.scrollTop = 0;
+    this.onScroll();
   }
 
   private buildOutline(): void {
@@ -158,10 +166,12 @@ class MarkdownView implements PluginViewInstance {
     for (const img of [...this.body.querySelectorAll("img[src]")]) {
       const el = img as HTMLImageElement;
       const raw = el.getAttribute("src") || "";
+      el.removeAttribute("srcset"); // DPR 变体会绕过重写的 src
       if (/^(https?:|data:|blob:)/i.test(raw)) continue; // 外链保持原样
       const target = resolveUnder(dir, raw);
       try {
         const bytes = await this.ctx.loadBytes(target);
+        if (!el.isConnected) return; // 等待期间视图已重渲染/销毁：丢弃本次结果
         // 与内置 image-viewer 同款写法：TS6 的 BlobPart 只认 ArrayBuffer 视图，需显式收窄
         const url = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mimeOf(target) }));
         this.blobUrls.push(url);
@@ -196,7 +206,7 @@ class MarkdownView implements PluginViewInstance {
     }, 150);
   }
 
-  /** 上一份/下一份：siblings 接续（跨目录/跨 zip 条目） */
+  /** 上一份/下一份：同容器 siblings 接续（宿主限定在当前目录/压缩包内） */
   async navFile(delta: number): Promise<void> {
     const ni = this.idx + delta;
     if (ni < 0 || ni >= this.siblings.length) {
@@ -272,7 +282,7 @@ const plugin: Read4EverPlugin = {
   description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板）",
   extensions: [".md", ".markdown", ".mdown"],
   // loader 形状校验强制要求 open 存在（"缺少 open(ctx) 方法"）；多实例宿主实际走
-  // createView().open(ctx)，此委托仅为满足旧单例契约，正常路径不会被调用
+  // createView().open(ctx)，此 open 仅作 loader 校验占位（宿主在 createView 存在时不会调用）
   open: (ctx) => new MarkdownView().open(ctx),
   createView: () => new MarkdownView(),
   menu: (): MenuItemDef[] => [

@@ -1,16 +1,18 @@
-/* 轻量净化：剥危险元素、事件属性与危险协议 URL（markdown 渲染结果与 epub 章节内容共用） */
+/* 轻量净化：剥危险元素（style 也剥，防跨 UI 注入）、事件属性与危险协议 URL（markdown 渲染结果与 epub 章节内容共用） */
 const STRIP_TAGS = new Set([
-  "script", "iframe", "object", "embed", "link", "meta", "base",
+  "script", "iframe", "object", "embed", "link", "meta", "base", "style",
   "form", "input", "button", "select", "textarea",
 ]);
 const URL_ATTRS = new Set(["src", "href", "xlink:href", "poster", "background"]);
 
-export function sanitizeTree(root: Element): void {
+export function sanitizeTree(root: ParentNode): void {
   const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
   const remove: Element[] = [];
   for (let n = walk.nextNode(); n; n = walk.nextNode()) {
     const el = n as Element;
-    if (STRIP_TAGS.has(el.tagName.toLowerCase())) {
+    const tag = el.tagName.toLowerCase();
+    // 白名单：GFM 任务列表的禁用复选框保留（marked 输出 <input checked disabled type="checkbox">）
+    if (STRIP_TAGS.has(tag) && !(tag === "input" && (el as HTMLInputElement).type === "checkbox" && el.hasAttribute("disabled"))) {
       remove.push(el); // 连子树一起移除，先收集后删避免遍历中断
       continue;
     }
