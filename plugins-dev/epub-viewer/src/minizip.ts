@@ -24,6 +24,7 @@ const MAX_ENTRY = 64 * 1024 * 1024; // 单条目 64MB 上限
 const u16 = (b: Uint8Array, o: number): number => b[o] | (b[o + 1] << 8);
 const u32 = (b: Uint8Array, o: number): number => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
 const u64 = (b: Uint8Array, o: number): number => u32(b, o) + u32(b, o + 4) * 0x100000000;
+const UTF8 = new TextDecoder("utf-8");
 
 export function parseZip(data: Uint8Array): MiniZip {
   // EOCD 自尾部回扫（定长 22 + 注释最长 65535）
@@ -39,7 +40,7 @@ export function parseZip(data: Uint8Array): MiniZip {
   let count = u16(data, eocd + 10);
   let cdOffset = u32(data, eocd + 16);
   // ZIP64：定位器在 EOCD 前 20 字节
-  if (cdOffset === 0xffffffff || count === 0xffff) {
+  if (cdOffset === 0xffffffff || count === 0xffff) { // 宿主还查 cd_size 哨兵；>4GB 包必然同时置 offset/count 哨兵，此处等价
     const loc = eocd - 20;
     if (loc >= 0 && u32(data, loc) === 0x07064b50) {
       const z64 = u64(data, loc + 8);
@@ -62,7 +63,7 @@ export function parseZip(data: Uint8Array): MiniZip {
     const extraLen = u16(data, p + 30);
     const commentLen = u16(data, p + 32);
     let localOffset = u32(data, p + 42);
-    const name = new TextDecoder("utf-8").decode(data.subarray(p + 46, p + 46 + nameLen));
+    const name = UTF8.decode(data.subarray(p + 46, p + 46 + nameLen));
     // ZIP64 扩展字段：仅对 0xFFFFFFFF 的字段按 size→compSize→offset 顺序补读
     if (size === 0xffffffff || compSize === 0xffffffff || localOffset === 0xffffffff) {
       let q = p + 46 + nameLen;
@@ -86,7 +87,7 @@ export function parseZip(data: Uint8Array): MiniZip {
         q += 4 + sz;
       }
     }
-    if (!name.endsWith("/")) entries.set(name, { name, method, compSize, size, localOffset });
+    if (!name.endsWith("/")) entries.set(name, { name, method, compSize, size, localOffset }); // 重名条目取最后一条（宿主取第一条；规范包无重名）
     p += 46 + nameLen + extraLen + commentLen;
   }
 
@@ -98,6 +99,7 @@ export function parseZip(data: Uint8Array): MiniZip {
     const nameLen = u16(data, e.localOffset + 26);
     const extraLen = u16(data, e.localOffset + 28);
     const start = e.localOffset + 30 + nameLen + extraLen;
+    if (start + e.compSize > data.length) throw new Error(`条目数据不完整: ${name}`);
     const raw = data.subarray(start, start + e.compSize);
     if (e.method === 0) return raw.slice(); // slice 脱离原大缓冲，避免整包长期驻留
     if (e.method === 8) return inflateSync(raw);

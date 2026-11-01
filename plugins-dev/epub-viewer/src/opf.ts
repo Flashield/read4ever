@@ -88,31 +88,35 @@ export function parseEpub(zip: MiniZip): EpubBook {
 
   // 目录：EPUB3 nav（properties 含 nav）优先，回退 EPUB2 NCX
   const toc: TocEntry[] = [];
-  const navItem = [...items.values()].find((i) => i.properties.split(/\s+/).includes("nav"));
-  if (navItem && zip.entries.has(navItem.href)) {
-    const ndoc = parseXml(zip.readText(navItem.href), "nav.xhtml");
-    const navDir = dirEntry(navItem.href);
-    const navs = [...ndoc.getElementsByTagName("nav")];
-    const tocNav =
-      navs.find(
-        (n) =>
-          n.getAttribute("epub:type") === "toc" ||
-          n.getAttributeNS("http://www.idpf.org/2007/ops", "type") === "toc"
-      ) || navs[0];
-    const walk = (ol: Element, depth: number): void => {
-      for (const li of ol.children) {
-        if (li.tagName.toLowerCase() !== "li") continue;
-        const a = li.querySelector("a[href]");
-        if (a) {
-          const { path, anchor } = resolveHref(navDir, a.getAttribute("href") || "");
-          toc.push({ label: a.textContent?.trim() || "(无标题)", href: path, anchor, depth });
+  try {
+    const navItem = [...items.values()].find((i) => i.properties.split(/\s+/).includes("nav"));
+    if (navItem && zip.entries.has(navItem.href)) {
+      const ndoc = parseXml(zip.readText(navItem.href), "nav.xhtml");
+      const navDir = dirEntry(navItem.href);
+      const navs = [...ndoc.getElementsByTagName("nav")];
+      const tocNav =
+        navs.find(
+          (n) =>
+            n.getAttribute("epub:type") === "toc" ||
+            n.getAttributeNS("http://www.idpf.org/2007/ops", "type") === "toc"
+        ) || navs[0];
+      const walk = (ol: Element, depth: number): void => {
+        for (const li of ol.children) {
+          if (li.tagName.toLowerCase() !== "li") continue;
+          const a = li.querySelector("a[href]");
+          if (a) {
+            const { path, anchor } = resolveHref(navDir, a.getAttribute("href") || "");
+            toc.push({ label: a.textContent?.trim() || "(无标题)", href: path, anchor, depth });
+          }
+          const sub = li.querySelector(":scope > ol");
+          if (sub) walk(sub as Element, depth + 1);
         }
-        const sub = li.querySelector(":scope > ol");
-        if (sub) walk(sub as Element, depth + 1);
-      }
-    };
-    const rootOl = tocNav?.querySelector("ol");
-    if (rootOl) walk(rootOl as Element, 0);
+      };
+      const rootOl = tocNav?.querySelector("ol");
+      if (rootOl) walk(rootOl as Element, 0);
+    }
+  } catch {
+    /* nav 解析失败：回退 NCX/占位目录 */
   }
   if (toc.length === 0) {
     // NCX 回退（EPUB2；EPUB3 书也可带）
@@ -122,22 +126,26 @@ export function parseEpub(zip: MiniZip): EpubBook {
       (ncxId && items.get(ncxId)?.href) ||
       [...items.values()].find((i) => i.mediaType === "application/x-dtbncx+xml")?.href;
     if (ncxHref && zip.entries.has(ncxHref)) {
-      const ndoc = parseXml(zip.readText(ncxHref), "NCX");
-      const ncxDir = dirEntry(ncxHref);
-      const walk = (parent: Element, depth: number): void => {
-        for (const np of parent.children) {
-          if (np.tagName.toLowerCase() !== "navpoint") continue;
-          const label = np.getElementsByTagName("text")[0]?.textContent?.trim() || "";
-          const src = np.getElementsByTagName("content")[0]?.getAttribute("src") || "";
-          if (src) {
-            const { path, anchor } = resolveHref(ncxDir, src);
-            toc.push({ label: label || "(无标题)", href: path, anchor, depth });
+      try {
+        const ndoc = parseXml(zip.readText(ncxHref), "NCX");
+        const ncxDir = dirEntry(ncxHref);
+        const walk = (parent: Element, depth: number): void => {
+          for (const np of parent.children) {
+            if (np.tagName.toLowerCase() !== "navpoint") continue;
+            const label = np.getElementsByTagName("text")[0]?.textContent?.trim() || "";
+            const src = np.getElementsByTagName("content")[0]?.getAttribute("src") || "";
+            if (src) {
+              const { path, anchor } = resolveHref(ncxDir, src);
+              toc.push({ label: label || "(无标题)", href: path, anchor, depth });
+            }
+            walk(np, depth + 1);
           }
-          walk(np, depth + 1);
-        }
-      };
-      const navMap = ndoc.getElementsByTagName("navMap")[0] || ndoc.documentElement;
-      walk(navMap, 0);
+        };
+        const navMap = ndoc.getElementsByTagName("navMap")[0] || ndoc.documentElement;
+        walk(navMap, 0);
+      } catch {
+        /* NCX 解析失败：回退占位目录 */
+      }
     }
   }
   if (toc.length === 0) {
@@ -146,6 +154,7 @@ export function parseEpub(zip: MiniZip): EpubBook {
   }
 
   // 样式表：全部 text/css 条目合并（shadow root 内生效，互不污染宿主）
+  // 注意：@import 与 url() 引用在 shadow root 内无基准 URL，不解析（v1 已知限制）
   let cssText = "";
   for (const it of items.values()) {
     if (it.mediaType === "text/css" && zip.entries.has(it.href)) {
