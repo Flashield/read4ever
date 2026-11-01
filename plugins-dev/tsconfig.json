@@ -12,5 +12,5 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["_shared/**/*.ts", "markdown-viewer/src/**/*.ts", "epub-viewer/src/**/*.ts"]
+  "include": ["_shared/**/*.ts", "*/src/**/*.ts"]
 }

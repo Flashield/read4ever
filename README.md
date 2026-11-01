@@ -7,7 +7,7 @@
 | 功能 | 说明 | 快捷键 |
 |------|------|--------|
 | 打开 TXT / ZIP | 编码自动识别（BOM → UTF-8 → chardetng → GB18030 回退），ZIP 内多 TXT 弹出选择 | `Ctrl+O` |
-| 打开 Markdown / EPUB | 需安装外部插件（源码与打包脚本在 `plugins-dev/`，见「插件系统」行）：`.md`/`.markdown` 走 Markdown 查看（渲染/大纲/源码切换），`.epub` 走 EPUB 查看（目录跳章/跟随主题与书籍样式双模式/进度记忆） | `Ctrl+O` |
+| 打开 Markdown / EPUB | 需安装外部插件（源码与打包脚本在 `plugins-dev/`，见「插件系统」行）：`.md`/`.markdown`/`.mdown` 走 Markdown 查看（渲染/大纲/源码切换），`.epub` 走 EPUB 查看（目录跳章/跟随主题与书籍样式双模式/进度记忆） | `Ctrl+O` |
 | 按序号翻文件 | 智能序号排序（A1→A2→…→A9→A10）；插件视图内分发为插件的上一/下一文件（上一张/下一张、上一个/下一个视频） | `Ctrl+PgUp` / `Ctrl+PgDn` |
 | 滚屏/播放 | 公共入口按视图分发：文本连续滚屏（requestAnimationFrame 平滑滚动，滚屏时隐藏鼠标，速度由速度栏控制）；图片按上次所选模式（滚屏/幻灯）开始、播放中再按全部停止；视频暂停/继续 | `Space` |
 | 滚屏速度 | 1–9 档位快捷键；具体数值（像素/秒）点工具栏速度标签弹层查看/滑选/手工输入任意值 | `1-9`、`+` / `-` |
@@ -72,7 +72,7 @@ npm run tauri build
 read4ever/
 ├── index.html               # 单页 UI（菜单栏/工具栏/标签页栏/阅读区/媒体坞/设置弹窗/面板）
 ├── docs/
-│   └── 插件开发.md          # 插件架构与开发接口文档
+│   └── spec/插件开发.md     # 插件架构与开发接口文档
 ├── plugins-dev/             # 外部插件工作区（markdown-viewer / epub-viewer 参考实现 + _shared 公共库）
 ├── src/                     # 前端（Vite + 原生 TS）
 │   ├── main.ts              # 入口（无 Tauri 环境时加载演示后端）

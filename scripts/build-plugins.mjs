@@ -13,9 +13,13 @@ const devDir = join(root, "plugins-dev");
 /* esbuild 只保留 /*!、//! 与含 @license 的注释，marked 的普通块注释文件头会被剥掉。
    产物命中库名时在头部补挂其版权横幅（版本号读自 node_modules），保证协议声明随包分发。 */
 const LIB_BANNERS = {
-  marked: () => {
-    const ver = JSON.parse(readFileSync(join(root, "node_modules", "marked", "package.json"), "utf8")).version;
-    return `/*! 内含 marked v${ver}（MIT License）© MarkedJS、Christopher Jeffrey — https://github.com/markedjs/marked */`;
+  // marker 匹配 esbuild 产物里的模块路径注释（比裸库名特异，防代码里恰好出现同名变量/注释而误挂横幅）
+  marked: {
+    marker: "node_modules/marked/",
+    banner: () => {
+      const ver = JSON.parse(readFileSync(join(root, "node_modules", "marked", "package.json"), "utf8")).version;
+      return `/*! 内含 marked v${ver}（MIT License）© MarkedJS、Christopher Jeffrey — https://github.com/markedjs/marked */`;
+    },
   },
 };
 
@@ -39,8 +43,8 @@ for (const name of readdirSync(devDir)) {
   });
   const mainJs = join(out, "main.js");
   let code = readFileSync(mainJs, "utf8");
-  for (const [lib, banner] of Object.entries(LIB_BANNERS)) {
-    if (code.includes(lib)) code = `${banner()}\n${code}`;
+  for (const { marker, banner } of Object.values(LIB_BANNERS)) {
+    if (code.includes(marker)) code = `${banner()}\n${code}`;
   }
   writeFileSync(mainJs, code);
   const pkg = zipSync(
