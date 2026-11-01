@@ -58,6 +58,7 @@ class EpubView implements PluginViewInstance {
   private lru = new Map<string, Uint8Array>();
   private unwatch: (() => void) | null = null;
   private saveTimer = 0;
+  private locateTimer = 0; // 30ms 定位定时器（导航后立即 deactivate 时一并取消，防错配落进度）
   active = true; // 公开：noUnusedLocals 拒收只写私有字段（同 image-viewer 约定）
   private chapterTitle = "";
   private shadow: ShadowRoot | null = null;
@@ -66,7 +67,7 @@ class EpubView implements PluginViewInstance {
 
   async open(ctx: PluginOpenContext): Promise<void> {
     this.ctx = ctx;
-    this.mode = ctx.getSetting<"theme" | "book">("styleMode", "theme");
+    this.mode = prefMode = ctx.getSetting<"theme" | "book">("styleMode", "theme"); // 同步模块级勾选状态
     try {
       this.zip = parseZip(ctx.bytes);
       this.book = parseEpub(this.zip);
@@ -146,7 +147,12 @@ class EpubView implements PluginViewInstance {
     const ratio = this.restoreRatio;
     this.restoreRatio = null;
 
-    const text = this.readEntryText(href);
+    let text = "";
+    try {
+      text = this.readEntryText(href);
+    } catch {
+      /* 条目缺失：走下方解析失败兜底 */
+    }
     const doc = new DOMParser().parseFromString(text, "application/xhtml+xml");
     const bodySrc = doc.querySelector("parsererror") ? null : doc.body;
     this.revokeBlobs();
@@ -177,7 +183,7 @@ class EpubView implements PluginViewInstance {
     }
 
     const anchorSel = anchor ? `#${CSS.escape(anchor)}` : "";
-    window.setTimeout(() => {
+    this.locateTimer = window.setTimeout(() => {
       if (anchorSel) {
         const el =
           (this.mount.querySelector(anchorSel) as HTMLElement | null) ||
@@ -190,6 +196,7 @@ class EpubView implements PluginViewInstance {
       } else {
         this.scroll.scrollTop = 0;
       }
+      this.syncStatus(); // 定位后才反映真实滚动比（否则恢复/锚点后显示陈旧百分比）
     }, 30);
 
     this.prevBtn.disabled = i === 0;
@@ -228,10 +235,15 @@ class EpubView implements PluginViewInstance {
     const dir = chapterHref.includes("/") ? chapterHref.slice(0, chapterHref.lastIndexOf("/")) : "";
     for (const a of [...frag.querySelectorAll<HTMLAnchorElement>("a[href]")]) {
       const raw = a.getAttribute("href") || "";
-      if (!raw || /^(https?:|data:|mailto:)/i.test(raw)) continue;
+      if (/^(https?:|data:|mailto:)/i.test(raw)) continue;
       const si = raw.indexOf("#");
       const anchor = si >= 0 ? raw.slice(si + 1) : "";
-      const pathPart = resolveZip(dir, si >= 0 ? raw.slice(0, si) : raw);
+      // si===0（纯 #锚点）与空 href 都视作本章内（resolveZip(dir,"") 会误返回 dir）；
+      // si<0 为无锚点整链，仍走 resolveZip
+      let pathPart: string;
+      if (si > 0) pathPart = resolveZip(dir, raw.slice(0, si));
+      else if (si === 0 || !raw) pathPart = chapterHref;
+      else pathPart = resolveZip(dir, raw);
       if (pathPart === chapterHref) a.dataset.rbAnchor = anchor;
       else a.dataset.rbJump = `${pathPart}#${anchor}`;
       a.setAttribute("href", "#");
@@ -299,7 +311,8 @@ class EpubView implements PluginViewInstance {
 
   private posMap(): Record<string, SavedPos> {
     try {
-      return JSON.parse(this.ctx.getSetting("positions", "{}")) as Record<string, SavedPos>;
+      const v = JSON.parse(this.ctx.getSetting("positions", "{}")) as Record<string, SavedPos>;
+      return v && typeof v === "object" ? v : {}; // "null" 等 JSON 合法但非对象的输入兜底
     } catch {
       return {};
     }
@@ -333,6 +346,7 @@ class EpubView implements PluginViewInstance {
     const map = this.posMap();
     delete map[this.ctx.path];
     this.ctx.setSetting("positions", JSON.stringify(map));
+    this.ready = false; // 抑制此后（含 deactivate）的保存，防清除被立刻写回
     this.ctx.toast("已清除本书进度");
   }
 
@@ -391,7 +405,11 @@ class EpubView implements PluginViewInstance {
 
   private readEntryText(name: string): string {
     const hit = this.lru.get(name);
-    if (hit) return decodeXml(hit);
+    if (hit) {
+      this.lru.delete(name);
+      this.lru.set(name, hit); // 刷新 LRU 新近度（与 readEntry 一致）
+      return decodeXml(hit);
+    }
     const bytes = this.zip.read(name);
     this.lru.set(name, bytes);
     if (this.lru.size > 32) this.lru.delete(this.lru.keys().next().value as string);
@@ -416,6 +434,7 @@ class EpubView implements PluginViewInstance {
     openViews.delete(this);
     this.unwatch?.();
     window.clearTimeout(this.saveTimer);
+    window.clearTimeout(this.locateTimer);
     this.revokeBlobs();
   }
 
