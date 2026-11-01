@@ -92,6 +92,28 @@ const ZIP_ENTRIES = [
   "视频/演示B.mp4",
 ];
 
+/* ========== 演示 Markdown（供 markdown-viewer 外部插件测试） ========== */
+
+const DEMO_MD_NOTE =
+  "# 读书笔记\n\n" +
+  "整理自近期阅读的摘录与随想，用于测试 Markdown 渲染。\n\n" +
+  "## 摘录\n\n> 好的阅读器应当像一张白纸，\n> 不打扰纸上的文字。\n\n" +
+  "重点段落用**加粗**标出，*斜体*用于书名，如《西游记》。\n\n" +
+  "### 对照表\n\n" +
+  "| 维度 | 纸书 | 电子书 |\n| --- | --- | --- |\n| 翻页 | 手指 | 滚屏 |\n| 批注 | 铅笔 | 关键词 |\n| 检索 | 目录 | 全文 |\n\n" +
+  "## 待办\n\n" +
+  "- [x] 通读第一章\n- [x] 摘录金句\n- [ ] 写读书报告\n\n" +
+  "## 代码片段\n\n" +
+  "```js\n// 自动滚屏\nscroll(() => speed * 45);\n```\n\n" +
+  "## 封面\n\n" +
+  "![封面](封面图片.png)\n";
+
+const DEMO_MD_TRAVEL =
+  "# 城市游记\n\n" +
+  "## 第一日\n\n旧城的巷子在雨里发亮，邮局的绿漆门半开着。\n\n" +
+  "## 第二日\n\n博物馆的钟停在三点，讲解员说它从三十年前就不走了。\n\n" +
+  "## 附录：交通\n\n- 地铁：二号线旧城站\n- 步行：出站沿河堤十五分钟\n";
+
 /* ========== 演示图片（canvas 现画现用，供图片查看插件测试） ========== */
 
 function makeDemoPngDataUrl(color: string, label: string, w = 480, h = 300): string {
@@ -130,6 +152,134 @@ const GROUP_P5 = makeDemoPngDataUrl("#2b8f6e", "竖图 P5", 200, 480);
 const GROUP_P6 = makeDemoPngDataUrl("#2b8f8f", "竖图 P6", 200, 480);
 const GROUP_P7 = makeDemoPngDataUrl("#2b6e8f", "竖图 P7", 200, 480);
 const GROUP_P8 = makeDemoPngDataUrl("#2b2b8f", "竖图 P8", 200, 480);
+
+/* ========== 演示 EPUB（stored zip 现构造，供 epub-viewer 外部插件测试） ========== */
+
+/** 构造 stored（无压缩）zip 字节：条目按给定顺序写入（epub 规范要求 mimetype 首条）。
+    CRC 填 0——仅作演示书打开，不会被安装，epub 插件自写解析不校验 CRC。 */
+function makeStoredZip(files: Array<[name: string, data: Uint8Array]>): Uint8Array {
+  const enc = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  const put = (buf: Uint8Array): void => {
+    parts.push(buf);
+    offset += buf.length;
+  };
+  const header = (nameLen: number, compSize: number, sig: number, len: number, madeBy = -1, at = 0): Uint8Array => {
+    const b = new Uint8Array(len);
+    const dv = new DataView(b.buffer);
+    const cd = len === 46; // 是否中央目录头
+    dv.setUint32(0, sig, true);
+    if (madeBy >= 0) dv.setUint16(4, madeBy, true);
+    dv.setUint16(cd ? 6 : 4, 20, true); // 需要的版本
+    dv.setUint16(cd ? 8 : 6, 0x0800, true); // UTF-8 文件名标志
+    dv.setUint16(cd ? 10 : 8, 0, true); // method 0 = stored
+    dv.setUint16(cd ? 12 : 10, 0, true); // 修改时间
+    dv.setUint16(cd ? 14 : 12, 0, true); // 修改日期
+    dv.setUint32(cd ? 16 : 14, 0, true); // CRC32（演示不校验）
+    dv.setUint32(cd ? 20 : 18, compSize, true); // 压缩后大小
+    dv.setUint32(cd ? 24 : 22, compSize, true); // 原始大小
+    dv.setUint16(cd ? 28 : 26, nameLen, true); // 文件名长
+    dv.setUint16(cd ? 30 : 28, 0, true); // 扩展字段长
+    if (cd) {
+      dv.setUint16(32, 0, true); // 注释长（仅中央目录有此字段）
+      dv.setUint16(34, 0, true); // 起始盘号
+      dv.setUint16(36, 0, true); // 内部属性
+      dv.setUint32(38, 0, true); // 外部属性
+      dv.setUint32(42, at, true); // 本地头偏移
+    }
+    return b;
+  };
+  for (const [name, data] of files) {
+    const nb = enc.encode(name);
+    const at = offset; // 本条目本地头偏移（写入本地数据前捕获）
+    put(header(nb.length, data.length, 0x04034b50, 30));
+    put(nb);
+    put(data);
+    central.push(Uint8Array.from([...header(nb.length, data.length, 0x02014b50, 46, 20, at), ...nb]));
+  }
+  const cdSize = central.reduce((s, c) => s + c.length, 0);
+  const eocd = new Uint8Array(22);
+  const dv = new DataView(eocd.buffer);
+  dv.setUint32(0, 0x06054b50, true);
+  dv.setUint16(8, files.length, true);
+  dv.setUint16(10, files.length, true);
+  dv.setUint32(12, cdSize, true);
+  dv.setUint32(16, offset, true); // 中央目录起始偏移
+  const out = new Uint8Array(offset + cdSize + 22);
+  let p = 0;
+  for (const c of [...parts, ...central, eocd]) {
+    out.set(c, p);
+    p += c.length;
+  }
+  return out;
+}
+
+const epubText = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+function makeDemoEpub(coverPng: Uint8Array): Uint8Array {
+  const ch = (title: string, body: string): string =>
+    `<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml"><head><title>${title}</title></head><body><h2>${title}</h2>${body}</body></html>`;
+  return makeStoredZip([
+    ["mimetype", epubText("application/epub+zip")],
+    [
+      "META-INF/container.xml",
+      epubText(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'
+      ),
+    ],
+    [
+      "OEBPS/content.opf",
+      epubText(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="uid">urn:uuid:demo-epub</dc:identifier><dc:title>演示之书</dc:title><dc:language>zh</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="css" href="style.css" media-type="text/css"/><item id="cover" href="cover.png" media-type="image/png"/><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/><item id="c3" href="ch3.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>'
+      ),
+    ],
+    [
+      "OEBPS/nav.xhtml",
+      epubText(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>目录</title></head><body><nav epub:type="toc"><h2>目录</h2><ol><li><a href="ch1.xhtml">第一章 雨夜的字条</a></li><li><a href="ch2.xhtml">第二章 旧城的钥匙</a></li><li><a href="ch3.xhtml">第三章 未寄出的信</a></li></ol></nav></body></html>'
+      ),
+    ],
+    [
+      "OEBPS/style.css",
+      epubText("h2 { font-family: serif; color: #8b2323; border-bottom: 2px solid #8b2323; }\np { text-indent: 2em; margin: 0 0 0.4em; line-height: 1.7; }\n"),
+    ],
+    ["OEBPS/cover.png", coverPng],
+    [
+      "OEBPS/ch1.xhtml",
+      epubText(
+        ch(
+          "第一章 雨夜的字条",
+          "<p>陈默在整理旧书时，发现夹在书页间的一张字条。</p><p>字条上只有一行钢笔字：坐标在北方，落款在雨夜。</p><p id=\"note\">他决定按图索骥。</p><p><img src=\"cover.png\" alt=\"封面\"/></p>"
+        )
+      ),
+    ],
+    [
+      "OEBPS/ch2.xhtml",
+      epubText(
+        ch(
+          "第二章 旧城的钥匙",
+          "<p>钥匙藏在邮局第三格抽屉里。</p><p>抽屉里还有一封没有寄出的信，收信人是三十年前的他自己。</p><p>详见<a href=\"ch3.xhtml\">第三章</a>，或回到<a href=\"ch1.xhtml#note\">那张字条</a>。</p>"
+        )
+      ),
+    ],
+    [
+      "OEBPS/ch3.xhtml",
+      epubText(
+        ch("第三章 未寄出的信", "<p>信的开头写着：给未来仍会路过旧城的你。</p><p>信的结尾没有署名，只有一枚干涸的火漆印。</p>")
+      ),
+    ],
+  ]);
+}
+
+function bytesToBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+const DEMO_EPUB_DATAURL = "data:application/epub+zip;base64," + bytesToBase64(makeDemoEpub(new Uint8Array(dataUrlToBuffer(ILLUSTRATION_1))));
 
 /* ========== 演示视频（ffmpeg 生成的小段 mp4，供视频查看插件测试） ========== */
 
@@ -183,6 +333,24 @@ export default {
 };
 `;
 
+/* dev 构建产物直读：vite 开发服务器按项目相对路径供应文件，
+   未构建（dist/ 不存在）则静默跳过；manifest 元信息在此同步一份（构建时注意同步 manifest.json）。 */
+const DEV_PLUGINS = [
+  { id: "markdown-viewer", name: "Markdown 查看", version: "1.0.0", description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板）", extensions: [".md", ".markdown", ".mdown"] },
+  { id: "epub-viewer", name: "EPUB 查看", version: "1.0.0", description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式", extensions: [".epub"] },
+];
+const devMainJs = new Map<string, string>();
+const devPluginsReady = (async () => {
+  for (const p of DEV_PLUGINS) {
+    try {
+      const r = await fetch(`/plugins-dev/${p.id}/dist/main.js`);
+      if (r.ok) devMainJs.set(p.id, await r.text());
+    } catch {
+      /* 未构建或非 dev 环境：跳过 */
+    }
+  }
+})();
+
 /* ========== 内存虚拟文件系统（文件夹侧栏演示） ========== */
 
 type MockFsNode = { dir: true; children: Map<string, MockFsNode> } | { dir: false; content: string; mtime: number };
@@ -218,7 +386,10 @@ const mockFsRoot: MockFsNode = mockDir({
     "竖图P7.png": mockFile(GROUP_P7),
     "竖图P8.png": mockFile(GROUP_P8),
   }),
+  "笔记.md": mockFile(DEMO_MD_NOTE),
+  "游记.md": mockFile(DEMO_MD_TRAVEL),
   "封面图片.png": mockFile(COVER_PNG),
+  "演示之书.epub": mockFile(DEMO_EPUB_DATAURL),
   "示例视频A.mp4": mockFile(DEMO_VIDEO_A),
   "示例视频B.mp4": mockFile(DEMO_VIDEO_B),
   "示例数据.hex": mockFile(
@@ -593,9 +764,23 @@ window.__TAURI_INTERNALS__ = {
         return Promise.resolve(fsJoin(String(args.parent), name));
       }
       case "list_plugins":
-        return Promise.resolve([JSON.parse(JSON.stringify(DEMO_PLUGIN_PKG))]);
+        return devPluginsReady.then(() => [
+          JSON.parse(JSON.stringify(DEMO_PLUGIN_PKG)),
+          ...DEV_PLUGINS.filter((p) => devMainJs.has(p.id)).map((p) => ({
+            ...p,
+            author: "Read4Ever",
+            api: 1,
+            entry: "main.js",
+            dir: "(plugins-dev 构建产物)",
+          })),
+        ]);
       case "read_plugin_file":
-        return Promise.resolve(new TextEncoder().encode(DEMO_PLUGIN_JS).buffer);
+        return devPluginsReady.then(
+          () =>
+            new TextEncoder().encode(
+              args.id === "hex-viewer" ? DEMO_PLUGIN_JS : (devMainJs.get(String(args.id)) ?? "")
+            ).buffer
+        );
       case "install_plugin":
         console.log("[mock] install_plugin（演示环境无插件目录）", args.zip_path);
         return Promise.resolve(JSON.parse(JSON.stringify(DEMO_PLUGIN_PKG)));
