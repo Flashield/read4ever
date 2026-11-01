@@ -1,0 +1,10 @@
+{
+  "id": "epub-viewer",
+  "name": "EPUB 查看",
+  "version": "1.0.0",
+  "description": "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式",
+  "author": "Read4Ever",
+  "api": 1,
+  "entry": "main.js",
+  "extensions": [".epub"]
+}
