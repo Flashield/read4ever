@@ -18,8 +18,10 @@ export function sanitizeTree(root: Element): void {
       const name = attr.name.toLowerCase();
       if (name.startsWith("on")) {
         el.removeAttribute(attr.name);
-      } else if (URL_ATTRS.has(name) && /^\s*(javascript:|vbscript:|data:text\/html)/i.test(attr.value)) {
-        el.removeAttribute(attr.name);
+      } else if (URL_ATTRS.has(name)) {
+        // URL 解析器会忽略串中的控制字符与空白，先剥净再判危险协议，防 "java\tscript:" 之类绕过
+        const v = attr.value.replace(/[\u0000-\u0020]+/g, "");
+        if (/^(javascript|vbscript):/i.test(v) || /^data:text\/html/i.test(v)) el.removeAttribute(attr.name);
       }
     }
   }

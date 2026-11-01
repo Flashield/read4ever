@@ -444,6 +444,12 @@ export function decodeText(bytes: Uint8Array): { text: string; label: string } {
 
 /** XML/XHTML 解码：按声明标签（前 512 字节内）取编码，未知或缺失回退 UTF-8 */
 export function decodeXml(bytes: Uint8Array): string {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe)
+    return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff)
+    return new TextDecoder("utf-16be").decode(bytes);
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    return new TextDecoder("utf-8").decode(bytes.subarray(3));
   const head = new TextDecoder("utf-8").decode(bytes.subarray(0, 512));
   const m = head.match(/encoding\s*=\s*["']([\w-]+)["']/i);
   if (m) {
@@ -480,8 +486,10 @@ export function sanitizeTree(root: Element): void {
       const name = attr.name.toLowerCase();
       if (name.startsWith("on")) {
         el.removeAttribute(attr.name);
-      } else if (URL_ATTRS.has(name) && /^\s*(javascript|vbscript|data:text\/html)/i.test(attr.value)) {
-        el.removeAttribute(attr.name);
+      } else if (URL_ATTRS.has(name)) {
+        // URL 解析器会忽略串中的控制字符与空白，先剥净再判危险协议，防 "java\tscript:" 之类绕过
+        const v = attr.value.replace(/[\u0000-\u0020]+/g, "");
+        if (/^(javascript|vbscript):/i.test(v) || /^data:text\/html/i.test(v)) el.removeAttribute(attr.name);
       }
     }
   }
@@ -492,8 +500,9 @@ export function sanitizeTree(root: Element): void {
 - [ ] **Step 4: paths.ts**
 
 ```ts
-/* 路径工具：zip 复合路径（"zip路径::条目名"）感知的目录切分与相对路径解析 */
-const ZIP_RE = /^(.+\.zip)::(.+)$/i;
+/* 路径工具：zip 复合路径（"zip路径::条目名"）感知的目录切分与相对路径解析。
+   ZIP_RE 与宿主 src/plugins/registry.ts 的 splitTarget 正则保持一致（改一处须同步另一处）。 */
+const ZIP_RE = /^(.+\.zip)::(.*)$/i;
 
 /** 目录部分（zip 复合路径保留 "zip::目录" 前缀；根目录原样返回） */
 export function dirOf(path: string): string {
@@ -533,8 +542,11 @@ function resolveSegs(dir: string, rel: string): string {
 /** 在基础目录（dirOf 的产物，可含 "zip::" 复合前缀）下解析相对路径 rel */
 export function resolveUnder(dir: string, rel: string): string {
   const m = dir.match(ZIP_RE);
-  if (!m) return resolveSegs(dir, rel);
-  return `${m[1]}::${resolveSegs(m[2], rel)}`;
+  if (m) return `${m[1]}::${resolveSegs(m[2], rel)}`;
+  const p = resolveSegs(dir, rel);
+  // 绝对路径根在段式解析中被丢弃，这里补回（盘符形式段式 join 已自带 C:/ 前缀）
+  if (/^[A-Za-z]:/.test(p)) return p;
+  return dir.startsWith("/") || dir.startsWith("\\") ? `/${p}` : p;
 }
 ```
 

@@ -1,5 +1,6 @@
-/* 路径工具：zip 复合路径（"zip路径::条目名"）感知的目录切分与相对路径解析 */
-const ZIP_RE = /^(.+\.zip)::(.+)$/i;
+/* 路径工具：zip 复合路径（"zip路径::条目名"）感知的目录切分与相对路径解析。
+   ZIP_RE 与宿主 src/plugins/registry.ts 的 splitTarget 正则保持一致（改一处须同步另一处）。 */
+const ZIP_RE = /^(.+\.zip)::(.*)$/i;
 
 /** 目录部分（zip 复合路径保留 "zip::目录" 前缀；根目录原样返回） */
 export function dirOf(path: string): string {
@@ -39,6 +40,9 @@ function resolveSegs(dir: string, rel: string): string {
 /** 在基础目录（dirOf 的产物，可含 "zip::" 复合前缀）下解析相对路径 rel */
 export function resolveUnder(dir: string, rel: string): string {
   const m = dir.match(ZIP_RE);
-  if (!m) return resolveSegs(dir, rel);
-  return `${m[1]}::${resolveSegs(m[2], rel)}`;
+  if (m) return `${m[1]}::${resolveSegs(m[2], rel)}`;
+  const p = resolveSegs(dir, rel);
+  // 绝对路径根在段式解析中被丢弃，这里补回（盘符形式段式 join 已自带 C:/ 前缀）
+  if (/^[A-Za-z]:/.test(p)) return p;
+  return dir.startsWith("/") || dir.startsWith("\\") ? `/${p}` : p;
 }

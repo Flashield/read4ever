@@ -15,6 +15,12 @@ export function decodeText(bytes: Uint8Array): { text: string; label: string } {
 
 /** XML/XHTML 解码：按声明标签（前 512 字节内）取编码，未知或缺失回退 UTF-8 */
 export function decodeXml(bytes: Uint8Array): string {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe)
+    return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff)
+    return new TextDecoder("utf-16be").decode(bytes);
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    return new TextDecoder("utf-8").decode(bytes.subarray(3));
   const head = new TextDecoder("utf-8").decode(bytes.subarray(0, 512));
   const m = head.match(/encoding\s*=\s*["']([\w-]+)["']/i);
   if (m) {
