@@ -10,6 +10,15 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const devDir = join(root, "plugins-dev");
 
+/* esbuild 只保留 /*!、//! 与含 @license 的注释，marked 的普通块注释文件头会被剥掉。
+   产物命中库名时在头部补挂其版权横幅（版本号读自 node_modules），保证协议声明随包分发。 */
+const LIB_BANNERS = {
+  marked: () => {
+    const ver = JSON.parse(readFileSync(join(root, "node_modules", "marked", "package.json"), "utf8")).version;
+    return `/*! 内含 marked v${ver}（MIT License）© MarkedJS、Christopher Jeffrey — https://github.com/markedjs/marked */`;
+  },
+};
+
 execSync("npx tsc --noEmit -p plugins-dev/tsconfig.json", { cwd: root, stdio: "inherit" });
 
 for (const name of readdirSync(devDir)) {
@@ -25,13 +34,19 @@ for (const name of readdirSync(devDir)) {
     target: "es2022",
     outfile: join(out, "main.js"),
     minify: false, // 产物保持可读，便于用户审查外部插件代码
-    legalComments: "none",
+    legalComments: "inline", // markdown-viewer 打包了 MIT 协议的 marked，版权声明保留在产物注释
     logLevel: "warning",
   });
+  const mainJs = join(out, "main.js");
+  let code = readFileSync(mainJs, "utf8");
+  for (const [lib, banner] of Object.entries(LIB_BANNERS)) {
+    if (code.includes(lib)) code = `${banner()}\n${code}`;
+  }
+  writeFileSync(mainJs, code);
   const pkg = zipSync(
     {
       "manifest.json": new Uint8Array(readFileSync(join(dir, "manifest.json"))),
-      "main.js": strToU8(readFileSync(join(out, "main.js"), "utf8")),
+      "main.js": strToU8(readFileSync(mainJs, "utf8")),
     },
     { level: 6 }
   );

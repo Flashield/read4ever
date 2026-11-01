@@ -156,7 +156,8 @@ const GROUP_P8 = makeDemoPngDataUrl("#2b2b8f", "竖图 P8", 200, 480);
 /* ========== 演示 EPUB（stored zip 现构造，供 epub-viewer 外部插件测试） ========== */
 
 /** 构造 stored（无压缩）zip 字节：条目按给定顺序写入（epub 规范要求 mimetype 首条）。
-    CRC 填 0——仅作演示书打开，不会被安装，epub 插件自写解析不校验 CRC。 */
+    仅够演示用：条目数 ≤ 65535、单条目 < 4 GiB（不写 ZIP64）；CRC 一律写 0（与部分中文打包器
+    行为一致），epub 插件自写解析不校验。 */
 function makeStoredZip(files: Array<[name: string, data: Uint8Array]>): Uint8Array {
   const enc = new TextEncoder();
   const parts: Uint8Array[] = [];
@@ -774,6 +775,7 @@ window.__TAURI_INTERNALS__ = {
             dir: "(plugins-dev 构建产物)",
           })),
         ]);
+      // name 参数暂被忽略（恒读入口 main.js），仅为与真实后端 read_plugin_file(id, name) 契约兼容
       case "read_plugin_file":
         return devPluginsReady.then(
           () =>
