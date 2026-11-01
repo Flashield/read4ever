@@ -501,7 +501,8 @@ export function sanitizeTree(root: Element): void {
 
 ```ts
 /* 路径工具：zip 复合路径（"zip路径::条目名"）感知的目录切分与相对路径解析。
-   ZIP_RE 与宿主 src/plugins/registry.ts 的 splitTarget 正则保持一致（改一处须同步另一处）。 */
+   ZIP_RE 源自宿主 src/plugins/registry.ts 的 splitTarget，但条目组放宽为 (.*)：
+   本模块还要匹配 dirOf 产生的 zip 根形式（"xx.zip::"，条目为空），宿主只拆打开路径、条目恒非空。 */
 const ZIP_RE = /^(.+\.zip)::(.*)$/i;
 
 /** 目录部分（zip 复合路径保留 "zip::目录" 前缀；根目录原样返回） */
