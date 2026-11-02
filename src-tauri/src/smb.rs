@@ -748,7 +748,14 @@ async fn ensure_handle(
     if let Some(r) = g.as_ref() {
         return Ok((r.clone(), r.size()));
     }
+    let t0 = std::time::Instant::now();
     let (reader, _) = open_smb_reader(&slot.ses, &slot.rel, &slot.path).await?;
+    eprintln!(
+        "[smb] {} 打开句柄 {} 用时{:?}",
+        crate::stream::ts(),
+        slot.path.rsplit('/').next().unwrap_or(&slot.path),
+        t0.elapsed()
+    );
     let total = reader.size();
     let r = Arc::new(reader);
     *g = Some(r.clone());
@@ -855,6 +862,18 @@ pub async fn stream_meta(path: &str) -> Result<u64, String> {
 /// → 读毕后台预取下一块。整体 60s 超时（对齐原 read_range）。
 /// offset 越界返回空数据（调用方折算 416）。
 pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, u64), String> {
+    let t0 = std::time::Instant::now();
+    let log_serve = |how: &str, off: u64, take: u64| {
+        eprintln!(
+            "[smb] {} {} {} off={} len={} 用时{:?}",
+            crate::stream::ts(),
+            path.rsplit('/').next().unwrap_or(path),
+            how,
+            off,
+            take,
+            t0.elapsed()
+        );
+    };
     let fut = async {
         let (cfg, rel) = resolve(path)?;
         if rel.is_empty() {
@@ -875,6 +894,7 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                     let buf = data[from..from + take as usize].to_vec();
                     *p = Prefetch::Empty; // 整块消费（顺序播放下 take == 块长）
                     drop(p);
+                    log_serve("预取命中", offset, take);
                     arm_prefetch(&slot, reader, total, offset + take).await;
                     return Ok((buf, total));
                 }
@@ -901,6 +921,7 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                             *p = Prefetch::Ready { start, data };
                         }
                         drop(p);
+                        log_serve("在途预取命中", offset, take);
                         arm_prefetch(&slot, reader, total, offset + take).await;
                         return Ok((buf, total));
                     }
@@ -911,6 +932,7 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
         // ② 网络并发分块读；失败淘汰句柄重开重试一次（原地复活多数断线场景）
         match read_pipelined(&reader, offset, take).await {
             Ok(buf) => {
+                log_serve("网络读", offset, take);
                 arm_prefetch(&slot, reader, total, offset + take).await;
                 Ok((buf, total))
             }
@@ -929,6 +951,7 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                 }
                 match read_pipelined(&reader2, offset, take2).await {
                     Ok(buf) => {
+                        log_serve("网络读(重试)", offset, take2);
                         arm_prefetch(&slot, reader2, total2, offset + take2).await;
                         Ok((buf, total2))
                     }

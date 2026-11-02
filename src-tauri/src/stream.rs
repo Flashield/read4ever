@@ -18,6 +18,21 @@ use crate::zipfile;
 
 const MAX_CHUNK: u64 = 8 * 1024 * 1024;
 
+/// 诊断日志时间戳（UTC 时分秒.毫秒——只为算间隔，不用于对钟）
+pub fn ts() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let s = d.as_secs() % 86400;
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        s / 3600,
+        (s / 60) % 60,
+        s % 60,
+        d.subsec_millis()
+    )
+}
+
 pub fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.register_asynchronous_uri_scheme_protocol(
         "read4ever-stream",
@@ -126,6 +141,22 @@ fn serve_zip(zip: &str, entry: &str, range: Option<&str>) -> Response<Vec<u8>> {
 /* SMB 普通文件：句柄跨请求常驻（smb 侧播放槽缓存），total 取打开时 size，
    命中零往返；数据读走 smb::stream_read（并发分块 + 块间预取，断线淘汰重开自愈） */
 fn serve_smb(path: &str, range: Option<&str>) -> Response<Vec<u8>> {
+    let t0 = std::time::Instant::now();
+    let resp = serve_smb_inner(path, range);
+    // 卡顿排查观测（dev 终端可见）：请求模式/块间间隙/预取是否命中（命中则用时≈0）
+    eprintln!(
+        "[stream] {} smb {} range={:?} 状态={} body={}B 用时{:?}",
+        ts(),
+        path.rsplit('/').next().unwrap_or(path),
+        range,
+        resp.status(),
+        resp.body().len(),
+        t0.elapsed()
+    );
+    resp
+}
+
+fn serve_smb_inner(path: &str, range: Option<&str>) -> Response<Vec<u8>> {
     let total = match tauri::async_runtime::block_on(smb::stream_meta(path)) {
         Ok(t) => t,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
