@@ -645,14 +645,18 @@ const STREAM_PARALLEL: usize = 8;
 const STREAM_PREFETCH: u64 = 8 * 1024 * 1024;
 /// 句柄缓存容量（LRU；每路视频一个槽，音视频同时播也够用）
 const STREAM_SLOTS: usize = 4;
+/// 就绪预取块环容量：视频流/音频流/顺序大块各占一块，LRU 淘汰。单块状态位下
+/// mp4 双流互相顶块——布防决策在请求开始时做、结束时执行（期间数百毫秒），
+/// 刚落盘的好块被盲目 re-arm 换掉，10M 下载全是被丢弃的预取
+const STREAM_READY_BLOCKS: usize = 3;
 /// 小于此长度的请求按元数据/扫描访问处理（WebKit 解析 mp4 moov 索引时发 4–100B
 /// 微读）：不等在途预取、不布防大块，直接网络读——否则 8 字节读要等/拉整块 8MB
 const STREAM_SMALL: u64 = 256 * 1024;
-/// 微读的小块预取量：mp4 音视频样本分属两个相距 ~1.5MB 的文件区域、各自逐样本
-/// 串行小读——块须 ≥ 2× 间隔，任一流首个 Miss 布防后才能同时盖住两流（单状态位
-/// 布防，块太小则两流乒乓互相让位、谁都得不到预取；每笔一 RTT 的直读容量
-/// ~500KB/s 恰好供不起 1080p 视频流的 ~600KB/s）。块够大后样本读全部内存命中，
-/// 取数能力与 RTT 脱钩；视频流约每 块长/600KB 秒出块一次，付一次落盘窗口
+/// 微读的小块预取量：mp4 音视频样本分属相距 ~1.5–3MB 的两个文件区域、各自逐样本
+/// 串行小读。块要够大让单流吃一阵（样本读全内存命中、取数与 RTT 脱钩——每笔
+/// 一 RTT 的直读容量 ~500KB/s 供不起 1080p 视频流的 ~600KB/s）；两流并存靠
+/// 就绪环（STREAM_READY_BLOCKS），不靠一块盖两流。视频流约每 块长/600KB 秒
+/// 出块一次，付一次落盘窗口
 const STREAM_SMALL_PF: u64 = 3 * 1024 * 1024;
 /// 预取任务自身超时：裸 read_at 在弱网下可能无限挂起，超时放弃落 Empty
 /// （挂起的 Running 会占住状态位，微读布防全被「在途不打断」拒绝——
@@ -663,9 +667,15 @@ const STREAM_RUNNING_STALE: std::time::Duration = std::time::Duration::from_secs
 
 /// 诊断：流式路径累计网络读取字节数（含预取任务；微读不应触发兆级下载）
 static NET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 诊断：预取命中次数（双流场景命中率是核心指标——单状态位会让两流互相顶块）
+static PREFETCH_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(test)]
 fn net_bytes_for_test() -> u64 {
     NET_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[cfg(test)]
+fn prefetch_hits_for_test() -> u64 {
+    PREFETCH_HITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// 把 [offset, offset+len) 按 sub 拆成子读区间（越界截断到 total；
@@ -699,23 +709,65 @@ struct StreamSlot {
     rel: String,
     path: String, // 仅错误文案
     handle: tokio::sync::Mutex<Option<Arc<smb2::client::stream::FileReader>>>,
-    prefetch: tokio::sync::Mutex<Prefetch>,
+    prefetch: tokio::sync::Mutex<PrefetchState>,
 }
 
 /// 预取块状态。Running 持后台任务句柄：请求命中在途预取时等它（不重复占线），
 /// arm 新预取时 abort 旧任务（放弃播放器已 seek 走的区域）。
-enum Prefetch {
-    Empty,
-    Running {
-        start: u64,
-        len: u64,
-        armed_at: std::time::Instant, // 超龄判定：微读布防可换下挂起的在途
-        join: tauri::async_runtime::JoinHandle<Prefetched>,
-    },
-    Ready {
-        start: u64,
-        data: Arc<Vec<u8>>,
-    },
+/// 就绪侧是多块环：mp4 音视频双流工作集相距可达数 MB，单块必然互相顶掉
+struct ReadyBlock {
+    start: u64,
+    data: Arc<Vec<u8>>,
+    last_hit: std::time::Instant, // LRU 淘汰依据
+}
+
+struct RunningPrefetch {
+    start: u64,
+    len: u64,
+    armed_at: std::time::Instant, // 超龄判定：微读布防可换下挂起的在途
+    join: tauri::async_runtime::JoinHandle<Prefetched>,
+}
+
+#[derive(Default)]
+struct PrefetchState {
+    running: Option<RunningPrefetch>,
+    ready: Vec<ReadyBlock>, // ≤ STREAM_READY_BLOCKS 块，双流各得其所
+}
+
+impl PrefetchState {
+    /// 就绪环命中：任一块完整盖住 [off, off+len) 即返回并刷新其 LRU 时间戳
+    fn hit(&mut self, off: u64, len: u64) -> Option<(u64, Arc<Vec<u8>>)> {
+        let now = std::time::Instant::now();
+        let i = self
+            .ready
+            .iter()
+            .position(|b| prefetch_hit(b.start, b.data.len() as u64, off, len))?;
+        self.ready[i].last_hit = now;
+        Some((self.ready[i].start, self.ready[i].data.clone()))
+    }
+
+    /// 落块进环：去同起点旧块，超容淘汰最久未命中
+    fn push_ready(&mut self, start: u64, data: Arc<Vec<u8>>) {
+        self.ready.retain(|b| b.start != start);
+        if self.ready.len() >= STREAM_READY_BLOCKS {
+            if let Some(i) = (0..self.ready.len()).min_by_key(|&i| self.ready[i].last_hit) {
+                self.ready.remove(i);
+            }
+        }
+        self.ready.push(ReadyBlock {
+            start,
+            data,
+            last_hit: std::time::Instant::now(),
+        });
+    }
+
+    /// [start, start+window) 是否已被任一就绪块完整盖住
+    ///（布防防抖：请求飞行期间落盘的块不该被盲目顶掉再拉一遍）
+    fn ready_covers(&self, start: u64, window: u64) -> bool {
+        self.ready
+            .iter()
+            .any(|b| prefetch_hit(b.start, b.data.len() as u64, start, window))
+    }
 }
 
 /// 预取任务产物：None = 读取失败（网络抖动等），等待方据此落到网络读
@@ -756,7 +808,7 @@ async fn stream_slot(cfg: &Arc<SmbServer>, rel: &str, path: &str) -> Result<Arc<
         rel: rel.to_string(),
         path: path.to_string(),
         handle: tokio::sync::Mutex::new(None),
-        prefetch: tokio::sync::Mutex::new(Prefetch::Empty),
+        prefetch: tokio::sync::Mutex::new(PrefetchState::default()),
     });
     store.insert(path.to_string(), (slot.clone(), std::time::Instant::now()));
     Ok(slot)
@@ -836,15 +888,16 @@ async fn read_pipelined(
 }
 
 /// 预取布防种类：大块（顺序播放推进）与小块（微读扫描的顺手预取）。
-/// 小块会换掉任何陈旧 Ready（请求已挪窝，旧块对活跃流无价值；大请求 Miss
-/// 时自会重新布防自愈），但绝不打断在途任务（等它落盘后下一笔再换）
+/// 就绪环里的旧块不主动清（LRU 自会淘汰，seek 回来还能命中）；小块绝不打断
+/// 在途任务（等它落盘进环，双流各得其所），仅超龄挂起时换下
 enum ArmKind {
     Big,
     Small,
 }
 
-/// 预取 [start, start+len)（后台执行）：已在途/已就绪同区间则跳过，
-/// 否则按 kind 决定替换策略。任务完成仅在槽内仍是自己时落盘（被替换/消费则丢弃）
+/// 预取 [start, start+len)（后台执行）：布防点已被就绪块盖住/同区间已在途
+/// 已就绪则跳过，否则按 kind 决定替换策略。任务完成仅在槽内仍是自己时落盘
+/// （被替换/消费则丢弃）
 async fn arm_prefetch(
     slot: &Arc<StreamSlot>,
     reader: Arc<smb2::client::stream::FileReader>,
@@ -860,48 +913,55 @@ async fn arm_prefetch(
         ArmKind::Small => STREAM_SMALL_PF.min(total - start),
     };
     let mut p = slot.prefetch.lock().await;
-    match &*p {
-        Prefetch::Ready { start: s, .. } | Prefetch::Running { start: s, .. } if *s == start => {
-            return; // 同区间已就绪/已在途
-        }
-        _ => {}
+    // 防抖：请求飞行期间已有块落盘盖住布防点前方窗口——不必再拉一遍
+    //（线上病灶：布防决策做在请求开始、执行在请求结束，好块落盘 1ms 后被换掉）
+    if p.ready_covers(start, STREAM_SMALL) {
+        return;
+    }
+    if p.running.as_ref().map_or(false, |r| r.start == start) {
+        return; // 同区间已在途
+    }
+    if p.ready.iter().any(|b| b.start == start) {
+        return; // 同区间已就绪（EOF 附近短块盖不满窗口时的兜底）
     }
     let name = slot.path.rsplit('/').next().unwrap_or(&slot.path).to_string();
     match kind {
         ArmKind::Big => {
-            if let Prefetch::Running { join, .. } = &mut *p {
-                join.abort(); // 播放器已 seek 走：放弃旧区域
+            if let Some(r) = p.running.take() {
+                r.join.abort(); // 播放器已 seek 走：放弃旧区域
             }
         }
         ArmKind::Small => {
-            // 在途任务不打断（等它落盘后下一笔再换），但超龄视为挂起必须换下，
+            // 在途任务不打断（等它落盘进环），但超龄视为挂起必须换下，
             // 否则一个挂死的 Running 会让微读区域永远零预取
-            let stale = matches!(&*p, Prefetch::Running { armed_at, .. } if armed_at.elapsed() > STREAM_RUNNING_STALE);
-            if !matches!(&*p, Prefetch::Empty | Prefetch::Ready { .. }) && !stale {
-                if let Prefetch::Running { start: cur, armed_at, .. } = &*p {
+            match p.running.as_ref() {
+                Some(r) if r.armed_at.elapsed() <= STREAM_RUNNING_STALE => {
                     eprintln!(
                         "[smb] {} {} 小块布防让位 @{}/{}（在途 @{} 已 {:.1}s）",
                         crate::stream::ts(),
                         name,
                         start,
                         len,
-                        cur,
-                        armed_at.elapsed().as_secs_f32()
+                        r.start,
+                        r.armed_at.elapsed().as_secs_f32()
+                    );
+                    return;
+                }
+                Some(r) => {
+                    eprintln!(
+                        "[smb] {} {} 换下超龄在途 @{}（已 {:.1}s）布防 @{}/{}",
+                        crate::stream::ts(),
+                        name,
+                        r.start,
+                        r.armed_at.elapsed().as_secs_f32(),
+                        start,
+                        len
                     );
                 }
-                return;
+                None => {}
             }
-            if let Prefetch::Running { join, start: cur, armed_at, .. } = &mut *p {
-                eprintln!(
-                    "[smb] {} {} 换下超龄在途 @{}（已 {:.1}s）布防 @{}/{}",
-                    crate::stream::ts(),
-                    name,
-                    cur,
-                    armed_at.elapsed().as_secs_f32(),
-                    start,
-                    len
-                );
-                join.abort();
+            if let Some(r) = p.running.take() {
+                r.join.abort();
             }
         }
     }
@@ -928,23 +988,21 @@ async fn arm_prefetch(
                 None
             }
         };
-        // 槽内仍是自己的 Running 才落盘（被替换/已被消费则只经返回值交给等待方）
+        // 槽内在途仍是自己才落盘（被替换/已被消费则只经返回值交给等待方）
         let mut p = slot2.prefetch.lock().await;
-        let ours = matches!(&*p, Prefetch::Running { start: s, .. } if *s == start);
+        let ours = p.running.as_ref().map_or(false, |r| r.start == start);
         if ours {
-            match &data {
-                Some(d) => {
-                    eprintln!(
-                        "[smb] {} {} 预取落盘 @{}/{} 用时{:?}",
-                        crate::stream::ts(),
-                        task_name,
-                        start,
-                        d.len(),
-                        t0.elapsed()
-                    );
-                    *p = Prefetch::Ready { start, data: d.clone() };
-                }
-                None => *p = Prefetch::Empty,
+            p.running = None;
+            if let Some(d) = &data {
+                eprintln!(
+                    "[smb] {} {} 预取落盘 @{}/{} 用时{:?}",
+                    crate::stream::ts(),
+                    task_name,
+                    start,
+                    d.len(),
+                    t0.elapsed()
+                );
+                p.push_ready(start, d.clone());
             }
         }
         Prefetched { data }
@@ -957,7 +1015,12 @@ async fn arm_prefetch(
         start,
         len
     );
-    *p = Prefetch::Running { start, len, armed_at: std::time::Instant::now(), join };
+    p.running = Some(RunningPrefetch {
+        start,
+        len,
+        armed_at: std::time::Instant::now(),
+        join,
+    });
 }
 
 /// 流式播放元信息：文件总长（复用常驻句柄，命中零往返）。目录报错为 NOT_FOUND 文案
@@ -1002,34 +1065,31 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
         // 微读（< STREAM_SMALL，如 WebKit 解析 mp4 moov 索引的 4–100B 请求）：
         // 不等在途预取、不布防大块——8 字节等/拉一整块 8MB 是数量级的反向优化
         let small = take < STREAM_SMALL;
-        // ① 预取命中：Ready 直接切（块常驻复用，直到被新布防替换/槽淘汰）
+        // ① 预取命中：就绪环任一块盖住即切（块常驻复用，LRU 淘汰）
         {
             let mut p = slot.prefetch.lock().await;
-            if let Prefetch::Ready { start, data } = &*p {
-                if prefetch_hit(*start, data.len() as u64, offset, take) {
-                    let from = (offset - *start) as usize;
-                    let buf = data[from..from + take as usize].to_vec();
-                    let past_end = offset + take >= *start + data.len() as u64;
-                    drop(p);
-                    log_serve("预取命中", offset, take);
-                    // 大请求顺序推进越过块尾才布防下一大块（微读不布防）
-                    if !small && past_end {
-                        arm_prefetch(&slot, reader, total, offset + take, ArmKind::Big).await;
-                    }
-                    return Ok((buf, total));
+            if let Some((start, data)) = p.hit(offset, take) {
+                let block_end = start + data.len() as u64;
+                let past_end = offset + take >= block_end;
+                drop(p);
+                PREFETCH_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                log_serve("预取命中", offset, take);
+                // 大请求顺序推进越过块尾才布防下一大块（微读不布防）
+                if !small && past_end {
+                    arm_prefetch(&slot, reader, total, offset + take, ArmKind::Big).await;
                 }
+                let from = (offset - start) as usize;
+                return Ok((data[from..from + take as usize].to_vec(), total));
             }
             // 大请求取出命中的在途预取句柄（非命中原样放回）；锁外等待。
             // 微读不等：预取正占用线路，直接并发读自己那几个字节更快
             let running = if small {
                 None
             } else {
-                match std::mem::replace(&mut *p, Prefetch::Empty) {
-                    Prefetch::Running { start, len, join, .. } if prefetch_hit(start, len, offset, take) => {
-                        Some((start, join))
-                    }
+                match p.running.take() {
+                    Some(r) if prefetch_hit(r.start, r.len, offset, take) => Some((r.start, r.join)),
                     other => {
-                        *p = other;
+                        p.running = other;
                         None
                     }
                 }
@@ -1043,9 +1103,9 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                         let block_end = start + data.len() as u64;
                         let past_end = offset + take >= block_end;
                         let mut p = slot.prefetch.lock().await;
-                        if !past_end && matches!(&*p, Prefetch::Empty) {
-                            // 请求只吃掉中段：剩余部分放回供后续命中
-                            *p = Prefetch::Ready { start, data };
+                        if !past_end {
+                            // 请求只吃掉中段：整块放回环里供后续命中
+                            p.push_ready(start, data);
                         }
                         drop(p);
                         log_serve("在途预取命中", offset, take);
@@ -1638,6 +1698,36 @@ mod stream_tests {
         assert!(!prefetch_hit(0, 100, 200, 10)); // 完全不相干
     }
 
+    /* ---------- 就绪环：LRU 淘汰 / 同起点去重 / 命中刷新 / 前方覆盖 ---------- */
+
+    #[test]
+    fn ready_ring_lru_dedup_and_hit() {
+        let mut p = PrefetchState::default();
+        let blk = |v: u8| Arc::new(vec![v; 4096]);
+        p.push_ready(0, blk(1));
+        std::thread::sleep(Duration::from_millis(5));
+        p.push_ready(1 << 20, blk(2)); // 将成为最久未命中
+        std::thread::sleep(Duration::from_millis(5));
+        // 命中块 0 刷新 LRU 时间戳；部分重叠（跨块尾）不命中
+        let (s, d) = p.hit(100, 50).expect("块 0 应命中");
+        assert_eq!((s, d[0]), (0, 1));
+        assert!(p.hit(4000, 100).is_none());
+        p.push_ready(2 << 20, blk(3));
+        p.push_ready(3 << 20, blk(4)); // 环满：淘汰最久未命中的块 1（@1MB）
+        assert_eq!(p.ready.len(), STREAM_READY_BLOCKS);
+        assert!(p.ready.iter().all(|b| b.start != (1 << 20)), "应淘汰最久未命中块");
+        assert!(p.ready.iter().any(|b| b.start == 0), "刚命中的块应保留");
+        // 同起点去重并覆盖旧数据
+        p.push_ready(0, blk(9));
+        assert_eq!(p.ready.len(), STREAM_READY_BLOCKS);
+        assert_eq!(p.ready.iter().filter(|b| b.start == 0).count(), 1);
+        assert_eq!(p.hit(0, 16).unwrap().1[0], 9);
+        // 前方窗口覆盖查询（布防防抖用）
+        assert!(p.ready_covers(0, 16));
+        assert!(p.ready_covers(3 << 20, 16));
+        assert!(!p.ready_covers((3 << 20) + 4096, 16)); // 块尾之外
+    }
+
     /* ---------- 端到端（需真实 SMB 服务器，默认忽略） ----------
        R4E_SMB_HOST（可带 :端口） / R4E_SMB_SHARE / R4E_SMB_USER / R4E_SMB_PASS
        / R4E_SMB_FILE（share 内相对路径，建议 16–64MB 的文件）
@@ -1805,6 +1895,56 @@ mod stream_tests {
             spent <= 2 * STREAM_SMALL_PF + 64 * 1024,
             "微读布防过多（{} 字节）——应一次盖住步进窗口",
             spent
+        );
+    }
+
+    /* ---------- 双流保持命中（需真实服务器，默认忽略） ----------
+       复现 2026-11-03 终版日志：mp4 音视频样本分属相距 2.8MB 的两个区域、各自
+       逐样本读；单就绪块必然互相顶掉（布防决策在请求开始时做、结束时执行，
+       期间落盘的好块被盲目 re-arm 换掉）——10M 下载全是被丢弃的预取。
+       视频流 25KB 连读 + 音频流 1.4KB 连读、落后 4MB（> 单块长度，逼迫多块并存）。
+       cargo test --lib smb::stream_tests::dual_stream_stays_covered -- --ignored --nocapture */
+    #[tokio::test]
+    #[ignore = "需要真实 SMB 服务器（设置 R4E_SMB_HOST/SHARE/USER/PASS/FILE）"]
+    async fn dual_stream_stays_covered() {
+        let host = std::env::var("R4E_SMB_HOST").expect("缺少 R4E_SMB_HOST");
+        let share = std::env::var("R4E_SMB_SHARE").expect("缺少 R4E_SMB_SHARE");
+        let file = std::env::var("R4E_SMB_FILE").expect("缺少 R4E_SMB_FILE");
+        let cfg = crate::store::SmbServer {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            host,
+            share: share.clone(),
+            workgroup: String::new(),
+            username: std::env::var("R4E_SMB_USER").unwrap_or_default(),
+            password: std::env::var("R4E_SMB_PASS").unwrap_or_default(),
+        };
+        put_servers(vec![cfg]);
+        let path = format!("smb://e2e/{}/{}", share, file);
+        let total = stream_meta(&path).await.unwrap();
+        assert!(total > 16 * 1024 * 1024, "需大于 16MB 的文件");
+        let full = read_all(&path).await.unwrap();
+
+        let v_base = 2 * 1024 * 1024; // 视频“流”样本区
+        let a_base = v_base + 4 * 1024 * 1024; // 音频“流”落后 4MB（> 单块长度）
+        let hits0 = prefetch_hits_for_test();
+        let mut v_off = v_base;
+        let mut a_off = a_base;
+        for _ in 0..40 {
+            let (vb, _) = stream_read(&path, v_off, 25 * 1024).await.unwrap();
+            assert_eq!(&vb[..], &full[v_off as usize..][..25 * 1024], "视频流数据不符 @{}", v_off);
+            v_off += 25 * 1024 + 683; // 样本间夹一个音频包
+            let (ab, _) = stream_read(&path, a_off, 1400).await.unwrap();
+            assert_eq!(&ab[..], &full[a_off as usize..][..1400], "音频流数据不符 @{}", a_off);
+            a_off += 1400 + 683;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let hits = prefetch_hits_for_test() - hits0;
+        eprintln!("双流 80 笔读命中 {} 次", hits);
+        assert!(
+            hits >= 40,
+            "双流命中率过低（{}/80）——就绪块没能并存，两流在互相顶块",
+            hits
         );
     }
 
