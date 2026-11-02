@@ -1573,5 +1573,83 @@ mod stream_tests {
         // 目录应报错而非打开
         assert!(stream_meta(&path.rsplit_once('/').unwrap().0).await.is_err());
     }
+
+    /* ---------- 并发压力（需真实服务器，默认忽略）：模拟 WebKit 混合请求 ----------
+       三路并发打同一文件：A 顺序 8MB 大块（重组必须逐字节正确）、B 随机 seek、
+       C 小读+重复读。验证播放槽/预取/句柄在并发下无死锁无串数据。
+       cargo test --lib smb::stream_tests::stress_real_server -- --ignored --nocapture */
+    #[tokio::test]
+    #[ignore = "需要真实 SMB 服务器（设置 R4E_SMB_HOST/SHARE/USER/PASS/FILE）"]
+    async fn stress_real_server() {
+        let host = std::env::var("R4E_SMB_HOST").expect("缺少 R4E_SMB_HOST");
+        let share = std::env::var("R4E_SMB_SHARE").expect("缺少 R4E_SMB_SHARE");
+        let file = std::env::var("R4E_SMB_FILE").expect("缺少 R4E_SMB_FILE");
+        let cfg = crate::store::SmbServer {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            host,
+            share: share.clone(),
+            workgroup: String::new(),
+            username: std::env::var("R4E_SMB_USER").unwrap_or_default(),
+            password: std::env::var("R4E_SMB_PASS").unwrap_or_default(),
+        };
+        put_servers(vec![cfg]);
+        let path = format!("smb://e2e/{}/{}", share, file);
+        let total = stream_meta(&path).await.unwrap();
+        let full = Arc::new(read_all(&path).await.unwrap());
+        assert_eq!(full.len() as u64, total);
+        assert!(total > 5 * 1024 * 1024, "压力测试需大于 5MB 的文件");
+
+        // A：顺序大块（每块之间短暂停顿，播放节奏）
+        let pa = path.clone();
+        let fa = full.clone();
+        let task_a = tokio::spawn(async move {
+            let mut off = 0u64;
+            let mut assembled: Vec<u8> = Vec::with_capacity(fa.len());
+            while off < total {
+                let len = STREAM_PREFETCH.min(total - off);
+                let (b, t) = stream_read(&pa, off, len).await.expect("A 顺序读失败");
+                assert_eq!(t, total);
+                assert_eq!(b.len() as u64, len, "A 块长不符 @{}", off);
+                assembled.extend_from_slice(&b);
+                off += len;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            assert_eq!(assembled, *fa, "A 重组数据不一致");
+        });
+
+        // B：随机 seek（每次读 64–512KB，预取应被反复打断替换）
+        let pb = path.clone();
+        let fb = full.clone();
+        let task_b = tokio::spawn(async move {
+            let mut seed = 0x2545F4914F6CDD1Du64;
+            for _ in 0..24 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let span = total.saturating_sub(1024 * 1024).max(1);
+                let off = (seed >> 16) % span;
+                let len = 64 * 1024 + (seed % 7) * 64 * 1024;
+                let (b, _) = stream_read(&pb, off, len.min(total - off)).await.expect("B 随机读失败");
+                assert_eq!(&b[..], &fb[off as usize..][..b.len()], "B 数据不一致 @{}", off);
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+        });
+
+        // C：小读 + 重复读同区间（触发 Ready 余量复用）
+        let pc = path;
+        let fc = full;
+        let task_c = tokio::spawn(async move {
+            for i in 0..16 {
+                let off = (i % 4) * 1024 * 1024 + 12345;
+                let (b, _) = stream_read(&pc, off, 6789).await.expect("C 小读失败");
+                assert_eq!(&b[..], &fc[off as usize..][..6789], "C 数据不一致 @{}", off);
+            }
+        });
+
+        let (ra, rb, rc) = tokio::join!(task_a, task_b, task_c);
+        ra.unwrap();
+        rb.unwrap();
+        rc.unwrap();
+        eprintln!("stress: 三路并发（顺序+随机 seek+小读）全部通过");
+    }
 }
 
