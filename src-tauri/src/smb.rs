@@ -499,9 +499,9 @@ pub fn clear_cache(cache_dir: &Path) -> Result<u64, String> {
 
 /* ========== 远程文件打开 ========== */
 
-/// 整文件网络读取（文本打开、插件原始字节用；大文件较慢，超时放宽到 60s）。
-/// 读循环在会话锁外进行（FileReader 是 'static 的）；断线时句柄随会话失效，
-/// 经 open_smb_reader 的 healing stat 重连后重开句柄整读重试一次。
+/// 整文件网络读取（文本打开、插件原始字节用；512KB×8 路并发分块，弱网吞吐
+/// 与流式播放同量级，超时 60s）。断线时句柄随会话失效，经 open_smb_reader
+/// 的 healing stat 重连后重开句柄整读重试一次。
 pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
     let (cfg, rel) = resolve(path)?;
     if rel.is_empty() {
@@ -516,15 +516,22 @@ pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
     if size > READ_ALL_MAX {
         return Err("远程文件过大（上限 1 GB），不支持整读——请用流式播放或先缓存到本地".into());
     }
-    let first = tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size)).await;
+    let first = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_pipelined(&Arc::new(reader), 0, size),
+    )
+    .await;
     let data = match first {
         Ok(Ok(data)) => data,
         Ok(Err(_)) | Err(_) => {
             let (reader, _) = open_smb_reader(&ses, &rel, path).await?;
-            tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size))
-                .await
-                .map_err(|_| "下载数据超时（60 秒）".to_string())?
-                .map_err(|e| format!("读取 {} 失败: {}", path, e))?
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                read_pipelined(&Arc::new(reader), 0, size),
+            )
+            .await
+            .map_err(|_| "下载数据超时（60 秒）".to_string())?
+            .map_err(|e| format!("读取 {} 失败: {}", path, e))?
         }
     };
     Ok(data)
@@ -1895,6 +1902,44 @@ mod stream_tests {
             spent <= 2 * STREAM_SMALL_PF + 64 * 1024,
             "微读布防过多（{} 字节）——应一次盖住步进窗口",
             spent
+        );
+    }
+
+    /* ---------- read_all 走并发分块（需真实服务器，默认忽略） ----------
+       图片/文本的整读原先单次串行 read_at，高延迟链路下吞吐被 RTT 掐死
+       （第一轮分析：8 路在途比串行快 6.5 倍）。断言整读流量经 read_pipelined
+       （NET_BYTES 只在流水线里计数，数值恰等于文件大小）。
+       cargo test --lib smb::stream_tests::read_all_pipelines -- --ignored --nocapture */
+    #[tokio::test]
+    #[ignore = "需要真实 SMB 服务器（设置 R4E_SMB_HOST/SHARE/USER/PASS/FILE）"]
+    async fn read_all_pipelines() {
+        let host = std::env::var("R4E_SMB_HOST").expect("缺少 R4E_SMB_HOST");
+        let share = std::env::var("R4E_SMB_SHARE").expect("缺少 R4E_SMB_SHARE");
+        let file = std::env::var("R4E_SMB_FILE").expect("缺少 R4E_SMB_FILE");
+        let cfg = crate::store::SmbServer {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            host,
+            share: share.clone(),
+            workgroup: String::new(),
+            username: std::env::var("R4E_SMB_USER").unwrap_or_default(),
+            password: std::env::var("R4E_SMB_PASS").unwrap_or_default(),
+        };
+        put_servers(vec![cfg]);
+        let path = format!("smb://e2e/{}/{}", share, file);
+        let total = stream_meta(&path).await.unwrap();
+
+        let before = net_bytes_for_test();
+        let full = read_all(&path).await.unwrap();
+        let spent = net_bytes_for_test() - before;
+        assert_eq!(full.len() as u64, total, "整读长度应与 stream_meta 一致");
+        eprintln!("read_all {} 字节，其中经并发分块 {}", full.len(), spent);
+        assert_eq!(
+            spent,
+            full.len() as u64,
+            "read_all 未走并发分块（NET_BYTES 计 {} / {} 字节）——图片/文本整读仍是串行",
+            spent,
+            full.len()
         );
     }
 
