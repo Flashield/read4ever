@@ -629,7 +629,12 @@ pub async fn open_text(
       读取失败即淘汰重开重试一次（对齐 SmbReader 的自愈语义）；
    3. 播放器收完一块才请求下一块，块间线路空闲——每块读毕即后台预取下一
       STREAM_PREFETCH 字节，下一请求直接命中内存（Web 套层 MAX_CHUNK 与本值
-      对齐，顺序播放时预取块边界与请求边界天然重合；seek 到别处则整块作废）。 */
+      对齐，顺序播放时预取块边界与请求边界天然重合；seek 到别处则整块作废）；
+   4. WebKit 解析 mp4 索引（moov 常在文件尾）时发 4–100B 微读，且与顺序播放流
+      交错——微读若等在途预取/触发布防大块，8 字节读要付一整块 8MB（线上日志
+      实测平均每微读 5MB，播放一帧一帧爬）。对策：小于 STREAM_SMALL 的请求
+      直接网络读 + 只布防小块；Ready 块常驻复用（不再整块丢弃），大请求仅在
+      顺序推进越过块尾时布防下一大块。 */
 
 /// 单个子读的目标大小（对齐 crate DOWNLOAD_CHUNK_SIZE：512KB×8 路已拿下
 /// 快链路 90-100% 收益，再大只会让慢链路上的其他请求排队更久）
@@ -640,6 +645,18 @@ const STREAM_PARALLEL: usize = 8;
 const STREAM_PREFETCH: u64 = 8 * 1024 * 1024;
 /// 句柄缓存容量（LRU；每路视频一个槽，音视频同时播也够用）
 const STREAM_SLOTS: usize = 4;
+/// 小于此长度的请求按元数据/扫描访问处理（WebKit 解析 mp4 moov 索引时发 4–100B
+/// 微读）：不等在途预取、不布防大块，直接网络读——否则 8 字节读要等/拉整块 8MB
+const STREAM_SMALL: u64 = 256 * 1024;
+/// 微读的小块预取量（吸收索引表的连续小步进；只在空位/换小块时布防）
+const STREAM_SMALL_PF: u64 = 256 * 1024;
+
+/// 诊断：流式路径累计网络读取字节数（含预取任务；微读不应触发兆级下载）
+static NET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+fn net_bytes_for_test() -> u64 {
+    NET_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// 把 [offset, offset+len) 按 sub 拆成子读区间（越界截断到 total；
 /// offset 越界或 len 为 0 返回空）
@@ -778,6 +795,7 @@ async fn read_pipelined(
     if subs.is_empty() {
         return Ok(Vec::new());
     }
+    NET_BYTES.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
     let mut out = vec![0u8; len as usize];
     let mut js = tokio::task::JoinSet::new();
     let mut queue: std::collections::VecDeque<(u64, u64)> = subs.into();
@@ -806,27 +824,51 @@ async fn read_pipelined(
     Ok(out)
 }
 
-/// 预取 [start, start+STREAM_PREFETCH)（后台执行）：已在途/已就绪同区间则跳过，
-/// 否则 abort 旧预取换新。任务完成仅在槽内仍是自己时落盘（被替换/消费则丢弃）
+/// 预取布防种类：大块（顺序播放推进）与小块（微读扫描的顺手预取）。
+/// 小块只在空位或换掉别的小块时布防——绝不打断在途任务、不丢大块 Ready
+/// （播放流与索引区微读会交错，两种工作集互不踩踏）
+enum ArmKind {
+    Big,
+    Small,
+}
+
+/// 预取 [start, start+len)（后台执行）：已在途/已就绪同区间则跳过，
+/// 否则按 kind 决定替换策略。任务完成仅在槽内仍是自己时落盘（被替换/消费则丢弃）
 async fn arm_prefetch(
     slot: &Arc<StreamSlot>,
     reader: Arc<smb2::client::stream::FileReader>,
     total: u64,
     start: u64,
+    kind: ArmKind,
 ) {
     if start >= total {
         return;
     }
-    let len = STREAM_PREFETCH.min(total - start);
+    let len = match kind {
+        ArmKind::Big => STREAM_PREFETCH.min(total - start),
+        ArmKind::Small => STREAM_SMALL_PF.min(total - start),
+    };
     let mut p = slot.prefetch.lock().await;
-    match &*p {
-        Prefetch::Ready { start: s, .. } | Prefetch::Running { start: s, .. } if *s == start => {
-            return; // 同区间已就绪/已在途
+    match kind {
+        ArmKind::Big => {
+            match &*p {
+                Prefetch::Ready { start: s, .. } | Prefetch::Running { start: s, .. }
+                    if *s == start =>
+                {
+                    return; // 同区间已就绪/已在途
+                }
+                _ => {}
+            }
+            if let Prefetch::Running { join, .. } = &mut *p {
+                join.abort(); // 播放器已 seek 走：放弃旧区域
+            }
         }
-        _ => {}
-    }
-    if let Prefetch::Running { join, .. } = &mut *p {
-        join.abort(); // 播放器已 seek 走：放弃旧区域
+        ArmKind::Small => match &*p {
+            Prefetch::Empty => {}
+            // 别处的微读小块：扫描点挪了，换过去
+            Prefetch::Ready { data, .. } if (data.len() as u64) <= STREAM_SMALL_PF => {}
+            _ => return, // 大块 Ready 或在途任务：不碰（微读走直接网络读即可）
+        },
     }
     let slot2 = slot.clone();
     let r2 = reader.clone();
@@ -885,28 +927,39 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
             return Ok((Vec::new(), total));
         }
         let take = len.min(total - offset);
-        // ① 预取命中：Ready 直接切；Running 等在途任务完成（不重复占线）
+        // 微读（< STREAM_SMALL，如 WebKit 解析 mp4 moov 索引的 4–100B 请求）：
+        // 不等在途预取、不布防大块——8 字节等/拉一整块 8MB 是数量级的反向优化
+        let small = take < STREAM_SMALL;
+        // ① 预取命中：Ready 直接切（块常驻复用，直到被新布防替换/槽淘汰）
         {
             let mut p = slot.prefetch.lock().await;
             if let Prefetch::Ready { start, data } = &*p {
                 if prefetch_hit(*start, data.len() as u64, offset, take) {
                     let from = (offset - *start) as usize;
                     let buf = data[from..from + take as usize].to_vec();
-                    *p = Prefetch::Empty; // 整块消费（顺序播放下 take == 块长）
+                    let past_end = offset + take >= *start + data.len() as u64;
                     drop(p);
                     log_serve("预取命中", offset, take);
-                    arm_prefetch(&slot, reader, total, offset + take).await;
+                    // 大请求顺序推进越过块尾才布防下一大块（微读不布防）
+                    if !small && past_end {
+                        arm_prefetch(&slot, reader, total, offset + take, ArmKind::Big).await;
+                    }
                     return Ok((buf, total));
                 }
             }
-            // 取出命中的在途预取句柄（非命中原样放回）；锁外等待
-            let running = match std::mem::replace(&mut *p, Prefetch::Empty) {
-                Prefetch::Running { start, len, join } if prefetch_hit(start, len, offset, take) => {
-                    Some((start, join))
-                }
-                other => {
-                    *p = other;
-                    None
+            // 大请求取出命中的在途预取句柄（非命中原样放回）；锁外等待。
+            // 微读不等：预取正占用线路，直接并发读自己那几个字节更快
+            let running = if small {
+                None
+            } else {
+                match std::mem::replace(&mut *p, Prefetch::Empty) {
+                    Prefetch::Running { start, len, join } if prefetch_hit(start, len, offset, take) => {
+                        Some((start, join))
+                    }
+                    other => {
+                        *p = other;
+                        None
+                    }
                 }
             };
             drop(p);
@@ -915,14 +968,18 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                     if prefetch_hit(start, data.len() as u64, offset, take) {
                         let from = (offset - start) as usize;
                         let buf = data[from..from + take as usize].to_vec();
-                        // 剩余部分放回（请求只吃掉中段时后续仍可命中）
+                        let block_end = start + data.len() as u64;
+                        let past_end = offset + take >= block_end;
                         let mut p = slot.prefetch.lock().await;
-                        if matches!(&*p, Prefetch::Empty) {
+                        if !past_end && matches!(&*p, Prefetch::Empty) {
+                            // 请求只吃掉中段：剩余部分放回供后续命中
                             *p = Prefetch::Ready { start, data };
                         }
                         drop(p);
                         log_serve("在途预取命中", offset, take);
-                        arm_prefetch(&slot, reader, total, offset + take).await;
+                        if past_end {
+                            arm_prefetch(&slot, reader, total, offset + take, ArmKind::Big).await;
+                        }
                         return Ok((buf, total));
                     }
                 }
@@ -933,7 +990,8 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
         match read_pipelined(&reader, offset, take).await {
             Ok(buf) => {
                 log_serve("网络读", offset, take);
-                arm_prefetch(&slot, reader, total, offset + take).await;
+                let kind = if small { ArmKind::Small } else { ArmKind::Big };
+                arm_prefetch(&slot, reader, total, offset + take, kind).await;
                 Ok((buf, total))
             }
             Err(first) => {
@@ -952,7 +1010,8 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                 match read_pipelined(&reader2, offset, take2).await {
                     Ok(buf) => {
                         log_serve("网络读(重试)", offset, take2);
-                        arm_prefetch(&slot, reader2, total2, offset + take2).await;
+                        let kind = if small { ArmKind::Small } else { ArmKind::Big };
+                        arm_prefetch(&slot, reader2, total2, offset + take2, kind).await;
                         Ok((buf, total2))
                     }
                     Err(e) => {
@@ -1572,6 +1631,56 @@ mod stream_tests {
 
         // 目录应报错而非打开
         assert!(stream_meta(&path.rsplit_once('/').unwrap().0).await.is_err());
+    }
+
+    /* ---------- 微读不触发兆级下载（需真实服务器，默认忽略） ----------
+       复现 2026-11-03 线上日志病灶：WebKit 解析 mp4 索引（moov 常在文件尾）时发
+       4–100B 微读，曾因「微读等/拉整块 8MB 预取 + Ready 整块丢弃 + 微读也 arm
+       大块」反向优化成一帧一帧爬。成对偏移（A 然后 A+8）保证第二读落进刚布防的
+       预取区间——旧代码每对都等满 8MB。断言微读序列的网络字节数保持在小量级。
+       cargo test --lib smb::stream_tests::tiny_reads_dont_megaload -- --ignored --nocapture */
+    #[tokio::test]
+    #[ignore = "需要真实 SMB 服务器（设置 R4E_SMB_HOST/SHARE/USER/PASS/FILE）"]
+    async fn tiny_reads_dont_megaload() {
+        let host = std::env::var("R4E_SMB_HOST").expect("缺少 R4E_SMB_HOST");
+        let share = std::env::var("R4E_SMB_SHARE").expect("缺少 R4E_SMB_SHARE");
+        let file = std::env::var("R4E_SMB_FILE").expect("缺少 R4E_SMB_FILE");
+        let cfg = crate::store::SmbServer {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            host,
+            share: share.clone(),
+            workgroup: String::new(),
+            username: std::env::var("R4E_SMB_USER").unwrap_or_default(),
+            password: std::env::var("R4E_SMB_PASS").unwrap_or_default(),
+        };
+        put_servers(vec![cfg]);
+        let path = format!("smb://e2e/{}/{}", share, file);
+        let total = stream_meta(&path).await.unwrap();
+        assert!(total > 1024 * 1024, "需大于 1MB 的文件");
+        let full = read_all(&path).await.unwrap();
+
+        // 清场大读选在文件尾：读毕 offset+take == total，不会布防任何预取，
+        // 快照之后不再有大块后台下载混入统计
+        let _ = stream_read(&path, total - 8192, 8192).await.unwrap();
+
+        let tail = total - 4096;
+        let offs: Vec<u64> = vec![
+            0, 8, 100, 108, 4096, 4104, tail, tail + 8, tail + 200, tail + 208,
+        ];
+        let before = net_bytes_for_test();
+        for &o in &offs {
+            let (b, t) = stream_read(&path, o, 8).await.unwrap();
+            assert_eq!(t, total);
+            assert_eq!(&b[..], &full[o as usize..][..8], "微读数据不符 @{}", o);
+        }
+        let spent = net_bytes_for_test() - before;
+        eprintln!("微读 {} 次共网络读 {} 字节", offs.len(), spent);
+        assert!(
+            spent < 4 * 1024 * 1024,
+            "微读触发了兆级下载（{} 字节）——预取策略被微读打穿",
+            spent
+        );
     }
 
     /* ---------- 并发压力（需真实服务器，默认忽略）：模拟 WebKit 混合请求 ----------
