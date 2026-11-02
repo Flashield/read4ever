@@ -37,10 +37,6 @@ export async function switchSideTab(tab: "local" | "smb"): Promise<void> {
 
 /* ========== 打开 / 关闭 ========== */
 
-export function isFolderPanelOpen(): boolean {
-  return open;
-}
-
 export async function openFolderPanel(): Promise<void> {
   if (open) {
     await renderAll();
@@ -62,7 +58,7 @@ export async function openFolderPanel(): Promise<void> {
   }
 }
 
-export function closeFolderPanel(): void {
+function closeFolderPanel(): void {
   if (!open) return;
   open = false;
   panelEl().classList.add("hidden");

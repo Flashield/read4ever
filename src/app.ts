@@ -30,7 +30,7 @@ export const state = {
   readSeconds: 0,
 };
 
-export function defaultStore(): StoreData {
+function defaultStore(): StoreData {
   return {
     settings: {
       themeName: "白纸",
@@ -129,7 +129,7 @@ export function persist(): void {
   }, 400);
 }
 
-export function persistNow(): void {
+function persistNow(): void {
   window.clearTimeout(persistTimer);
   api.saveStore(state.store).catch(() => {});
 }
@@ -210,7 +210,7 @@ const HTML_ENTITIES: Record<string, string> = {
 const ENTITY_RE = /&(?:#x([0-9a-fA-F]+)|#([0-9]+)|([a-zA-Z][a-zA-Z0-9]*));/g;
 
 /** 单遍解码：&amp; 与其他实体同轮替换，不会二次解码（&amp;quot; 还原为字面 &quot;） */
-export function decodeHtmlEntities(text: string): string {
+function decodeHtmlEntities(text: string): string {
   if (!text.includes("&")) return text;
   return text.replace(ENTITY_RE, (whole, hex, dec, name) => {
     if (hex || dec) {
@@ -258,7 +258,7 @@ export function cycleDisplayMode(): void {
   toast(`显示: ${displayModeLabel()}`);
 }
 
-export function displayModeLabel(): string {
+function displayModeLabel(): string {
   return state.displayMode === "auto" ? "原码" : state.displayMode === "simplified" ? "简体" : "繁体";
 }
 
@@ -408,7 +408,7 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
   }
 }
 
-export async function openZipEntry(
+async function openZipEntry(
   zipPath: string,
   entry: string,
   opts: OpenOpts = {}
@@ -644,7 +644,7 @@ export function togglePlayback(): void {
   updateUI();
 }
 
-export function setScrollMode(m: reader.ScrollMode): void {
+function setScrollMode(m: reader.ScrollMode): void {
   reader.setMode(m);
   state.store.settings.scrollMode = m;
   persist();
@@ -1013,11 +1013,11 @@ export function openEditor(): void {
   ta.focus();
 }
 
-export function closeEditor(): void {
+function closeEditor(): void {
   document.getElementById("edit-modal")?.classList.add("hidden");
 }
 
-export async function saveEditor(): Promise<void> {
+async function saveEditor(): Promise<void> {
   const ta = document.getElementById("edit-textarea") as HTMLTextAreaElement;
   const newText = ta.value;
   if (!editOriginal) {
@@ -1129,7 +1129,7 @@ export async function toggleFullscreen(): Promise<void> {
 
 /** 进入托盘：全部标签页的滚屏与播放暂停（恢复显示后保持暂停，由用户手动继续）。
  *  滚屏引擎是激活 tab 单例，stopScroll 即全覆盖（含页模式定时翻页、释放屏幕常亮）。 */
-export function pauseAllActivity(): void {
+function pauseAllActivity(): void {
   reader.stopScroll();
   plugins.pauseAllInstances();
 }

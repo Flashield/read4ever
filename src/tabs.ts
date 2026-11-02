@@ -291,7 +291,7 @@ export function bindView(viewId: string): void {
 
 /** 视图关闭（✕/停用插件/单例被接管）：解除绑定，激活 tab 完整回退文本层
  *  （DOM 此前显示的可能是别的 tab 的文本，必须重渲染，否则状态栏与内容错位） */
-export function unbindView(viewId: string): void {
+function unbindView(viewId: string): void {
   const t = tabs.find((x) => x.viewId === viewId);
   if (!t) return;
   t.viewId = "";

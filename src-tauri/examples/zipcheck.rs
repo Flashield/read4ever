@@ -12,7 +12,7 @@ fn main() {
     // 1) File + ZipArchive::new
     match std::fs::File::open(&path) {
         Ok(f) => match zip::ZipArchive::new(f) {
-            Ok(mut a) => println!("[File+ZipArchive] OK, {} 个条目", a.len()),
+            Ok(a) => println!("[File+ZipArchive] OK, {} 个条目", a.len()),
             Err(e) => println!("[File+ZipArchive] 失败: {e}"),
         },
         Err(e) => println!("打开失败: {e}"),
@@ -21,7 +21,7 @@ fn main() {
     // 2) Cursor(全量内存) + ZipArchive::new
     let data = std::fs::read(&path).expect("读文件失败");
     match zip::ZipArchive::new(std::io::Cursor::new(&data[..])) {
-        Ok(mut a) => println!("[Cursor+ZipArchive] OK, {} 个条目", a.len()),
+        Ok(a) => println!("[Cursor+ZipArchive] OK, {} 个条目", a.len()),
         Err(e) => println!("[Cursor+ZipArchive] 失败: {e}"),
     }
 

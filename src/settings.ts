@@ -5,7 +5,7 @@ import * as app from "./app";
 import * as reader from "./reader";
 import { setKeepAwakeEnabled } from "./keepawake";
 
-export function isSettingsOpen(): boolean {
+function isSettingsOpen(): boolean {
   const m = document.getElementById("settings-modal");
   return !!m && !m.classList.contains("hidden");
 }

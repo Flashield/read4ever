@@ -69,7 +69,7 @@ export interface ViewEntry {
 const views = new Map<string, ViewEntry>();
 let curActiveViewId = "";
 
-export function activeEntry(): ViewEntry | null {
+function activeEntry(): ViewEntry | null {
   return views.get(curActiveViewId) ?? null;
 }
 export function activeViewId(): string {
@@ -128,7 +128,6 @@ export function list(): Read4EverPlugin[] {
 }
 
 export const isExternal = (id: string): boolean => externalPkgs.has(id);
-export const externalPkg = (id: string): PluginPkgInfo | undefined => externalPkgs.get(id);
 
 export function setLoadErrors(errs: PluginLoadError[]): void {
   loadErrors = errs;
@@ -138,7 +137,7 @@ export function setEnabledMap(map: Record<string, boolean> | undefined): void {
   enabledMap = map ?? {};
 }
 
-export function isEnabled(p: Read4EverPlugin): boolean {
+function isEnabled(p: Read4EverPlugin): boolean {
   return enabledMap[p.id] !== false;
 }
 
@@ -190,11 +189,6 @@ export function getActiveOpenedName(): string {
 /** 插件视图当前查看的文件路径（跨容器推进后随之变化；未激活为 ""）。收藏书架等以它为准 */
 export function activeFilePath(): string {
   return activeEntry()?.ctxPath ?? "";
-}
-
-/** 当前激活插件（未激活为 null）：宿主「滚屏/播放」「上一个/下一个文件」公共入口按它分发 */
-export function activePlugin(): Read4EverPlugin | null {
-  return activeEntry()?.plugin ?? null;
 }
 
 /** 激活视图实例：宿主「滚屏/播放」「上一个/下一个」公共入口按它分发 */

@@ -70,7 +70,7 @@ export function hideDropdown(): void {
 }
 
 /** 在指定层级展开菜单项（level 0 = 顶部菜单，>0 = 子菜单） */
-export function showDropdownAt(depth: number, items: MenuItemDef[], x: number, y: number): void {
+function showDropdownAt(depth: number, items: MenuItemDef[], x: number, y: number): void {
   truncateTo(depth + 1);
   const lv = levelAt(depth);
   lv.content.innerHTML = "";

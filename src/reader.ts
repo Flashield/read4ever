@@ -85,7 +85,7 @@ export function setRatio(r: number): void {
   else e.scrollTop = r * (e.scrollHeight - e.clientHeight);
 }
 
-export function isAtEnd(): boolean {
+function isAtEnd(): boolean {
   return getRatio() >= 0.999;
 }
 
@@ -124,7 +124,7 @@ function loop(ts: number): void {
   rafId = requestAnimationFrame(loop);
 }
 
-export function startScroll(): void {
+function startScroll(): void {
   if (scrolling) return;
   scrolling = true;
   holdAwake("reading", true); // 滚屏/页模式定时翻页期间保持屏幕常亮
@@ -190,10 +190,6 @@ export function setSpeed(px: number): void {
 /** 加减速步进（±20 像素/秒，沿用原 0.5 档 ≈ 22.5px 的手感） */
 export function adjustSpeed(d: number): void {
   setSpeed(speed + d * 20);
-}
-
-export function getPageInterval(): number {
-  return pageInterval;
 }
 
 export function setPageInterval(sec: number): void {

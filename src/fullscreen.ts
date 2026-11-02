@@ -93,7 +93,7 @@ export async function enter(): Promise<void> {
 }
 
 /** 退出沉浸：摘类与 show-* + 退出全屏（与 enter 对应的原生/网页路径） */
-export async function exitFullscreen(): Promise<void> {
+async function exitFullscreen(): Promise<void> {
   document.body.classList.remove(IMMERSIVE_CLS);
   EDGES.forEach(clearEdge);
   if (isBrowserDemo()) {

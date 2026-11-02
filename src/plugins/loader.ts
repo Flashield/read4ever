@@ -65,7 +65,7 @@ export async function loadExternalPlugins(): Promise<void> {
 }
 
 /** 重新扫描外部插件（安装/卸载后调用）：移除旧注册与模块 URL 后全量重载 */
-export async function reloadExternalPlugins(): Promise<void> {
+async function reloadExternalPlugins(): Promise<void> {
   for (const u of moduleUrls) URL.revokeObjectURL(u);
   moduleUrls.length = 0;
   for (const p of registry.list()) {
@@ -77,7 +77,7 @@ export async function reloadExternalPlugins(): Promise<void> {
 }
 
 /** 安装向导：选择 .rbplugin → 后端解包 → 重载 */
-export async function installPluginDialog(): Promise<void> {
+async function installPluginDialog(): Promise<void> {
   const p = await api.pickPluginFile();
   if (!p) return;
   try {

@@ -18,7 +18,7 @@ const T2S = pairsToMap(T2S_PAIRS);
 
 export type DisplayMode = "auto" | "simplified" | "traditional";
 
-export function toTraditional(text: string): string {
+function toTraditional(text: string): string {
   let result = "";
   for (const ch of text) {
     result += S2T[ch] || ch;
@@ -26,7 +26,7 @@ export function toTraditional(text: string): string {
   return result;
 }
 
-export function toSimplified(text: string): string {
+function toSimplified(text: string): string {
   let result = "";
   for (const ch of text) {
     result += T2S[ch] || ch;

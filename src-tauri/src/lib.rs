@@ -35,10 +35,7 @@ pub fn run() {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let _ = allow_multiple;
-    let builder = builder
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+    let builder = builder.plugin(tauri_plugin_dialog::init());
     let builder = stream::register(builder).manage(wake::WakeState::default());
     builder
         .setup(|app| {

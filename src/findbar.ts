@@ -45,7 +45,7 @@ export function isFindOpen(): boolean {
   return open;
 }
 
-export function openFind(): void {
+function openFind(): void {
   if (!state.filePath) return;
   open = true;
   $("find-bar").classList.remove("hidden");

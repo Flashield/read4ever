@@ -11,10 +11,10 @@ export interface Theme {
 
 /* 跨平台中文字体栈：Windows 字体名在前，macOS 对应字体兜底 */
 export const FONT_SONG = `"SimSun","Songti SC",serif`;
-export const FONT_YAHEI = `"Microsoft YaHei","PingFang SC",sans-serif`;
-export const FONT_KAI = `"KaiTi","Kaiti SC","STKaiti",serif`;
-export const FONT_FANGSONG = `"FangSong","STFangsong",serif`;
-export const FONT_HEI = `"SimHei","Heiti SC",sans-serif`;
+const FONT_YAHEI = `"Microsoft YaHei","PingFang SC",sans-serif`;
+const FONT_KAI = `"KaiTi","Kaiti SC","STKaiti",serif`;
+const FONT_FANGSONG = `"FangSong","STFangsong",serif`;
+const FONT_HEI = `"SimHei","Heiti SC",sans-serif`;
 
 /* 外观面板字体下拉选项（跨平台） */
 export const FONT_OPTIONS: { label: string; value: string }[] = [
@@ -58,17 +58,6 @@ export const BUILT_IN_THEMES: Theme[] = [
   { name: "淡粉", bg: "#fce4ec", text: "#4a4a4a", fontFamily: FONT_SONG, fontSize: 18, lineSpacing: 1.8 },
   { name: "深灰", bg: "#2b2b2b", text: "#b0b0b0", fontFamily: FONT_YAHEI, fontSize: 18, lineSpacing: 1.8 },
 ];
-
-let currentTheme: Theme = { ...BUILT_IN_THEMES[2] };
-
-export function getCurrentTheme(): Theme {
-  return currentTheme;
-}
-
-export function setTheme(theme: Theme): void {
-  currentTheme = { ...theme };
-  applyTheme(currentTheme);
-}
 
 export function applyTheme(theme: Theme): void {
   const content = document.getElementById("reader-content");

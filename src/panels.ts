@@ -10,8 +10,8 @@ function $(id: string): HTMLElement {
 
 const PANELS = ["bookmark-panel", "bookshelf-panel", "history-panel", "theme-panel", "keyword-panel", "plugin-panel"];
 
-export const PANEL_MIN_W = 240;
-export const PANEL_MAX_W = 720;
+const PANEL_MIN_W = 240;
+const PANEL_MAX_W = 720;
 
 function widthVar(side: "left" | "right"): string {
   return side === "left" ? "--panel-w-left" : "--panel-w";
@@ -70,7 +70,7 @@ export function initPanelResize(panel: HTMLElement, side: "left" | "right" = "ri
   });
 }
 
-export function openPanel(id: string): void {
+function openPanel(id: string): void {
   PANELS.forEach((p) => $(p).classList.add("hidden"));
   applyPanelWidth(id, panelWidth(id));
   $(id).classList.remove("hidden");
@@ -81,13 +81,9 @@ export function openPanel(id: string): void {
   if (id === "theme-panel") syncThemeControls();
 }
 
-export function closeAllPanels(): void {
+function closeAllPanels(): void {
   PANELS.forEach((p) => $(p).classList.add("hidden"));
   document.body.classList.remove("panel-open");
-}
-
-export function isAnyPanelOpen(): boolean {
-  return PANELS.some((p) => !$(p).classList.contains("hidden"));
 }
 
 /* ========== 列表渲染 ========== */
