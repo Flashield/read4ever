@@ -825,8 +825,8 @@ async fn read_pipelined(
 }
 
 /// 预取布防种类：大块（顺序播放推进）与小块（微读扫描的顺手预取）。
-/// 小块只在空位或换掉别的小块时布防——绝不打断在途任务、不丢大块 Ready
-/// （播放流与索引区微读会交错，两种工作集互不踩踏）
+/// 小块会换掉任何陈旧 Ready（请求已挪窝，旧块对活跃流无价值；大请求 Miss
+/// 时自会重新布防自愈），但绝不打断在途任务（等它落盘后下一笔再换）
 enum ArmKind {
     Big,
     Small,
@@ -849,25 +849,23 @@ async fn arm_prefetch(
         ArmKind::Small => STREAM_SMALL_PF.min(total - start),
     };
     let mut p = slot.prefetch.lock().await;
+    match &*p {
+        Prefetch::Ready { start: s, .. } | Prefetch::Running { start: s, .. } if *s == start => {
+            return; // 同区间已就绪/已在途
+        }
+        _ => {}
+    }
     match kind {
         ArmKind::Big => {
-            match &*p {
-                Prefetch::Ready { start: s, .. } | Prefetch::Running { start: s, .. }
-                    if *s == start =>
-                {
-                    return; // 同区间已就绪/已在途
-                }
-                _ => {}
-            }
             if let Prefetch::Running { join, .. } = &mut *p {
                 join.abort(); // 播放器已 seek 走：放弃旧区域
             }
         }
         ArmKind::Small => match &*p {
-            Prefetch::Empty => {}
-            // 别处的微读小块：扫描点挪了，换过去
-            Prefetch::Ready { data, .. } if (data.len() as u64) <= STREAM_SMALL_PF => {}
-            _ => return, // 大块 Ready 或在途任务：不碰（微读走直接网络读即可）
+            // 陈旧 Ready（含大块）：换掉——不换的话微读区域永远零预取，
+            // 每笔都付整往返，串行请求下有效吞吐被掐死
+            Prefetch::Empty | Prefetch::Ready { .. } => {}
+            _ => return, // 在途任务（大块/小块）不打断：落盘后下一笔微读再换
         },
     }
     let slot2 = slot.clone();
@@ -1681,6 +1679,55 @@ mod stream_tests {
             "微读触发了兆级下载（{} 字节）——预取策略被微读打穿",
             spent
         );
+    }
+
+    /* ---------- 微读应布防小块预取（需真实服务器，默认忽略） ----------
+       复现 2026-11-03 第二版日志：槽内留着远处大块 Ready 时，微读的小块布防被
+       「不丢大块 Ready」策略全部拒绝——整个窗口零预取命中，每笔微读都付整往返
+       （播放器请求串行，有效下行被掐到 ~20KB/s）。修后：微读 Miss 应换掉
+       远处陈旧 Ready、布防小块（在途任务仍不打断）。
+       cargo test --lib smb::stream_tests::tiny_reads_arm_small_prefetch -- --ignored --nocapture */
+    #[tokio::test]
+    #[ignore = "需要真实 SMB 服务器（设置 R4E_SMB_HOST/SHARE/USER/PASS/FILE）"]
+    async fn tiny_reads_arm_small_prefetch() {
+        let host = std::env::var("R4E_SMB_HOST").expect("缺少 R4E_SMB_HOST");
+        let share = std::env::var("R4E_SMB_SHARE").expect("缺少 R4E_SMB_SHARE");
+        let file = std::env::var("R4E_SMB_FILE").expect("缺少 R4E_SMB_FILE");
+        let cfg = crate::store::SmbServer {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            host,
+            share: share.clone(),
+            workgroup: String::new(),
+            username: std::env::var("R4E_SMB_USER").unwrap_or_default(),
+            password: std::env::var("R4E_SMB_PASS").unwrap_or_default(),
+        };
+        put_servers(vec![cfg]);
+        let path = format!("smb://e2e/{}/{}", share, file);
+        let total = stream_meta(&path).await.unwrap();
+        assert!(total > 1024 * 1024, "需大于 1MB 的文件");
+        let full = read_all(&path).await.unwrap();
+
+        // 制造远处的大块 Ready：读 [0, 8MB) 布防 [8MB,16MB)，等它落盘
+        let _ = stream_read(&path, 0, STREAM_PREFETCH).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // 远离大块区域的连续微读（步进 1KB）
+        let base = total / 2;
+        let before = net_bytes_for_test();
+        for i in 0..10u64 {
+            let o = base + i * 1000;
+            let (b, _) = stream_read(&path, o, 700).await.unwrap();
+            assert_eq!(&b[..], &full[o as usize..][..700], "微读数据不符 @{}", o);
+        }
+        let spent = net_bytes_for_test() - before;
+        eprintln!("远处大块在场时微读 10 次网络读 {} 字节", spent);
+        assert!(
+            spent >= 200 * 1024,
+            "微读未布防小块预取（仅 {} 字节）——远处大块 Ready 把小块布防饿死了",
+            spent
+        );
+        assert!(spent <= 2 * 1024 * 1024, "微读又触发兆级下载（{} 字节）", spent);
     }
 
     /* ---------- 并发压力（需真实服务器，默认忽略）：模拟 WebKit 混合请求 ----------
