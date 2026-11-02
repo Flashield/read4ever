@@ -41,8 +41,8 @@ base64 = "0.22"
 percent-encoding = "2"
 # 与 tauri 同源的数据目录解析（无 AppHandle 时复算 app_data_dir；tauri 依赖树已含）
 dirs = "7"
-# 直用其 time（超时包装）；tokio 已随 tauri 在依赖树中，仅显式声明
-tokio = { version = "1", features = ["time"] }
+# 直用其 time（超时包装）与 rt（JoinSet 并发分块读）；tokio 已随 tauri 在依赖树中，仅显式声明
+tokio = { version = "1", features = ["time", "rt"] }
 
 # 屏幕常亮（docs/屏幕常亮方案.md）：keepawake 仅桌面三平台引入。
 # iOS 不支持（落地时在 wake.rs 用 objc2-ui-kit 设 idleTimerDisabled 自实现）；

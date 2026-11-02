@@ -405,7 +405,7 @@ pub async fn cache_file(path: &str, cache_dir: &Path) -> Result<PathBuf, String>
     if bin.exists() && fresh_meta(cache_dir, path, size, mtime) {
         return Ok(bin); // 已新鲜，免下载
     }
-    let mut reader = open_smb_reader(&ses, &rel, path).await?;
+    let (mut reader, _) = open_smb_reader(&ses, &rel, path).await?;
     std::fs::create_dir_all(cache_dir).map_err(|e| format!("创建缓存目录失败: {}", e))?;
     let part = cache_dir.join(format!("{}.part", key));
     let mut out = std::fs::File::create(&part).map_err(|e| format!("写缓存失败: {}", e))?;
@@ -418,7 +418,7 @@ pub async fn cache_file(path: &str, cache_dir: &Path) -> Result<PathBuf, String>
                 // 大文件下载中途断线：句柄已随会话失效。经 open_smb_reader 的
                 // healing stat 重连后重开句柄，从当前偏移续传（每块至多重试一次）
                 reader = match open_smb_reader(&ses, &rel, path).await {
-                    Ok(r) => r,
+                    Ok((r, _)) => r,
                     Err(reopen_err) => {
                         let _ = std::fs::remove_file(&part);
                         return Err(format!(
@@ -508,7 +508,7 @@ pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
         return Err("共享根不是文件".into());
     }
     let ses = session_for(&cfg.id).await?;
-    let reader = open_smb_reader(&ses, &rel, path).await?;
+    let (reader, _) = open_smb_reader(&ses, &rel, path).await?;
     let size = reader.size();
     if size == 0 {
         return Ok(Vec::new());
@@ -520,7 +520,7 @@ pub async fn read_all(path: &str) -> Result<Vec<u8>, String> {
     let data = match first {
         Ok(Ok(data)) => data,
         Ok(Err(_)) | Err(_) => {
-            let reader = open_smb_reader(&ses, &rel, path).await?;
+            let (reader, _) = open_smb_reader(&ses, &rel, path).await?;
             tokio::time::timeout(Duration::from_secs(60), reader.read_at(0, size))
                 .await
                 .map_err(|_| "下载数据超时（60 秒）".to_string())?
@@ -618,27 +618,327 @@ pub async fn open_text(
     }
 }
 
-/// 远程文件区间读（流式播放协议用）：返回 (数据, 文件总长)。
-/// total 以本次打开句柄为准；offset 越界返回空数据。
-/// 整体 60s 超时（对齐 read_all，覆盖连接+打开+读取，慢网络下 8MB 不误杀）。
-/// len 由调用方封顶（如 stream 层 MAX_CHUNK）。
-pub async fn read_range(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, u64), String> {
+/* ========== 流式播放（句柄常驻 + 并发分块读 + 块间预取） ==========
+   弱网（高 RTT）下逐块慢的三个根因与对策：
+   1. FileReader::read_at 内部是串行循环（一次一个在途 SMB READ）——本层把
+      大区间拆成 512KB 子读、STREAM_PARALLEL 路并发在途（FileReader 文档保证
+      read_at 可并发调用），把 RTT 藏进流水线（crate 自测 +60ms RTT 下
+      8 路在途比串行快 6.5 倍）；
+   2. 每个播放块请求都 stat+stat+CREATE 三个往返——句柄跨请求常驻
+      （STREAM_SLOTS 个 LRU 槽），命中后零往返；会话重连后句柄失效，
+      读取失败即淘汰重开重试一次（对齐 SmbReader 的自愈语义）；
+   3. 播放器收完一块才请求下一块，块间线路空闲——每块读毕即后台预取下一
+      STREAM_PREFETCH 字节，下一请求直接命中内存（Web 套层 MAX_CHUNK 与本值
+      对齐，顺序播放时预取块边界与请求边界天然重合；seek 到别处则整块作废）。 */
+
+/// 单个子读的目标大小（对齐 crate DOWNLOAD_CHUNK_SIZE：512KB×8 路已拿下
+/// 快链路 90-100% 收益，再大只会让慢链路上的其他请求排队更久）
+const STREAM_SUB: u64 = 512 * 1024;
+/// 最大并发在途子读数（对齐 crate ADAPTIVE_MAX_IN_FLIGHT 的 4MiB 在途量）
+const STREAM_PARALLEL: usize = 8;
+/// 预取块大小（与 stream 层 MAX_CHUNK 对齐：8MB）
+const STREAM_PREFETCH: u64 = 8 * 1024 * 1024;
+/// 句柄缓存容量（LRU；每路视频一个槽，音视频同时播也够用）
+const STREAM_SLOTS: usize = 4;
+
+/// 把 [offset, offset+len) 按 sub 拆成子读区间（越界截断到 total；
+/// offset 越界或 len 为 0 返回空）
+fn plan_sub_reads(offset: u64, len: u64, total: u64, sub: u64) -> Vec<(u64, u64)> {
+    if len == 0 || offset >= total {
+        return Vec::new();
+    }
+    let take = len.min(total - offset);
+    let end = offset + take;
+    let mut subs = Vec::with_capacity((take.div_ceil(sub)) as usize);
+    let mut pos = offset;
+    while pos < end {
+        let l = (end - pos).min(sub);
+        subs.push((pos, l));
+        pos += l;
+    }
+    subs
+}
+
+/// 预取块 [start, start+p_len) 是否完整覆盖请求 [off, off+len)。
+/// 只认全盖：部分重叠宁可重读（至多浪费一块，避免边界拼接的复杂度）
+fn prefetch_hit(start: u64, p_len: u64, off: u64, len: u64) -> bool {
+    off >= start && off + len <= start + p_len
+}
+
+/// 单个远程文件播放槽：句柄 + 预取块。会话死后句柄原地重开复活。
+struct StreamSlot {
+    ses: Arc<SmbSession>,
+    cfg: Arc<SmbServer>, // 建槽时配置快照：put_servers 后比对，变了即作废重建
+    rel: String,
+    path: String, // 仅错误文案
+    handle: tokio::sync::Mutex<Option<Arc<smb2::client::stream::FileReader>>>,
+    prefetch: tokio::sync::Mutex<Prefetch>,
+}
+
+/// 预取块状态。Running 持后台任务句柄：请求命中在途预取时等它（不重复占线），
+/// arm 新预取时 abort 旧任务（放弃播放器已 seek 走的区域）。
+enum Prefetch {
+    Empty,
+    Running {
+        start: u64,
+        len: u64,
+        join: tauri::async_runtime::JoinHandle<Prefetched>,
+    },
+    Ready {
+        start: u64,
+        data: Arc<Vec<u8>>,
+    },
+}
+
+/// 预取任务产物：None = 读取失败（网络抖动等），等待方据此落到网络读
+struct Prefetched {
+    data: Option<Arc<Vec<u8>>>,
+}
+
+fn slot_store(
+) -> &'static std::sync::Mutex<HashMap<String, (Arc<StreamSlot>, std::time::Instant)>> {
+    static S: OnceLock<std::sync::Mutex<HashMap<String, (Arc<StreamSlot>, std::time::Instant)>>> =
+        OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// 取（或建）播放槽：配置变化（put_servers 后 cfg 不同）作废重建，容量满淘汰最久未用
+async fn stream_slot(cfg: &Arc<SmbServer>, rel: &str, path: &str) -> Result<Arc<StreamSlot>, String> {
+    let ses = session_for(&cfg.id).await?;
+    let mut store = slot_store().lock().unwrap();
+    if let Some((slot, last)) = store.get_mut(path) {
+        if slot.cfg == *cfg {
+            *last = std::time::Instant::now();
+            return Ok(slot.clone());
+        }
+        store.remove(path); // 配置已改：旧句柄随旧会话作废
+    }
+    if store.len() >= STREAM_SLOTS {
+        if let Some(oldest) = store
+            .iter()
+            .min_by_key(|(_, (_, t))| *t)
+            .map(|(k, _)| k.clone())
+        {
+            store.remove(&oldest);
+        }
+    }
+    let slot = Arc::new(StreamSlot {
+        ses,
+        cfg: cfg.clone(),
+        rel: rel.to_string(),
+        path: path.to_string(),
+        handle: tokio::sync::Mutex::new(None),
+        prefetch: tokio::sync::Mutex::new(Prefetch::Empty),
+    });
+    store.insert(path.to_string(), (slot.clone(), std::time::Instant::now()));
+    Ok(slot)
+}
+
+/// 摘除播放槽（重开仍失败时）：槽持有旧会话 Arc，不摘会绕开 evict_session
+/// 「重建连接绕开 smb2 复活冷却期」的机制，下次访问一直撞死会话
+fn drop_slot(path: &str) {
+    slot_store().lock().unwrap().remove(path);
+}
+
+/// 确保槽内句柄打开：命中即零网络往返；未命中 stat+CREATE 一次（含目录拦截）
+async fn ensure_handle(
+    slot: &Arc<StreamSlot>,
+) -> Result<(Arc<smb2::client::stream::FileReader>, u64), String> {
+    let mut g = slot.handle.lock().await;
+    if let Some(r) = g.as_ref() {
+        return Ok((r.clone(), r.size()));
+    }
+    let (reader, _) = open_smb_reader(&slot.ses, &slot.rel, &slot.path).await?;
+    let total = reader.size();
+    let r = Arc::new(reader);
+    *g = Some(r.clone());
+    Ok((r, total))
+}
+
+/// 淘汰槽内句柄（读取失败后强制重开用；在途请求手里的旧 Arc 自行失效）
+async fn invalidate_handle(slot: &Arc<StreamSlot>) {
+    *slot.handle.lock().await = None;
+}
+
+/// 并发分块读 [offset, offset+len)：512KB 子读、STREAM_PARALLEL 路在途，
+/// 按偏移重组。len 需已按 total 截断（调用方负责）
+async fn read_pipelined(
+    reader: &Arc<smb2::client::stream::FileReader>,
+    offset: u64,
+    len: u64,
+) -> Result<Vec<u8>, String> {
+    let subs = plan_sub_reads(offset, len, reader.size(), STREAM_SUB);
+    if subs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = vec![0u8; len as usize];
+    let mut js = tokio::task::JoinSet::new();
+    let mut queue: std::collections::VecDeque<(u64, u64)> = subs.into();
+    // 填满窗口后每完成一个补一个：线路始终保持满在途
+    while js.len() < STREAM_PARALLEL {
+        if let Some((o, l)) = queue.pop_front() {
+            let r = reader.clone();
+            js.spawn(async move { (o, l, r.read_at(o, l).await) });
+        } else {
+            break;
+        }
+    }
+    while let Some(joined) = js.join_next().await {
+        let (o, l, res) = joined.map_err(|e| format!("并发子读失败: {}", e))?;
+        let data = res.map_err(|e| e.to_string())?;
+        if data.len() as u64 != l {
+            return Err(format!("远程读取不足: 请求 {} 字节，得到 {}", l, data.len()));
+        }
+        let at = (o - offset) as usize;
+        out[at..at + data.len()].copy_from_slice(&data);
+        if let Some((o, l)) = queue.pop_front() {
+            let r = reader.clone();
+            js.spawn(async move { (o, l, r.read_at(o, l).await) });
+        }
+    }
+    Ok(out)
+}
+
+/// 预取 [start, start+STREAM_PREFETCH)（后台执行）：已在途/已就绪同区间则跳过，
+/// 否则 abort 旧预取换新。任务完成仅在槽内仍是自己时落盘（被替换/消费则丢弃）
+async fn arm_prefetch(
+    slot: &Arc<StreamSlot>,
+    reader: Arc<smb2::client::stream::FileReader>,
+    total: u64,
+    start: u64,
+) {
+    if start >= total {
+        return;
+    }
+    let len = STREAM_PREFETCH.min(total - start);
+    let mut p = slot.prefetch.lock().await;
+    match &*p {
+        Prefetch::Ready { start: s, .. } | Prefetch::Running { start: s, .. } if *s == start => {
+            return; // 同区间已就绪/已在途
+        }
+        _ => {}
+    }
+    if let Prefetch::Running { join, .. } = &mut *p {
+        join.abort(); // 播放器已 seek 走：放弃旧区域
+    }
+    let slot2 = slot.clone();
+    let r2 = reader.clone();
+    let join = tauri::async_runtime::spawn(async move {
+        let data = read_pipelined(&r2, start, len).await.ok().map(Arc::new);
+        // 槽内仍是自己的 Running 才落盘（被替换/已被消费则只经返回值交给等待方）
+        let mut p = slot2.prefetch.lock().await;
+        let ours = matches!(&*p, Prefetch::Running { start: s, .. } if *s == start);
+        if ours {
+            *p = match &data {
+                Some(d) => Prefetch::Ready { start, data: d.clone() },
+                None => Prefetch::Empty,
+            };
+        }
+        Prefetched { data }
+    });
+    *p = Prefetch::Running { start, len, join };
+}
+
+/// 流式播放元信息：文件总长（复用常驻句柄，命中零往返）。目录报错为 NOT_FOUND 文案
+pub async fn stream_meta(path: &str) -> Result<u64, String> {
+    let (cfg, rel) = resolve(path)?;
+    if rel.is_empty() {
+        return Err("共享根不是文件".into());
+    }
+    let slot = stream_slot(&cfg, &rel, path).await?;
+    let (_, total) = ensure_handle(&slot).await?;
+    Ok(total)
+}
+
+/// 流式播放读（stream 层 serve_smb 用）：返回 (数据, 文件总长)。
+/// 顺序：预取命中直接切 → 未命中并发分块读（失败淘汰句柄重开整块重试一次）
+/// → 读毕后台预取下一块。整体 60s 超时（对齐原 read_range）。
+/// offset 越界返回空数据（调用方折算 416）。
+pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, u64), String> {
     let fut = async {
         let (cfg, rel) = resolve(path)?;
         if rel.is_empty() {
             return Err("共享根不是文件".into());
         }
-        let ses = session_for(&cfg.id).await?;
-        let mut r = smb_reader_for(&ses, &rel, path).await?;
-        let total = r.reader.size();
+        let slot = stream_slot(&cfg, &rel, path).await?;
+        let (reader, total) = ensure_handle(&slot).await?;
         if len == 0 || offset >= total {
             return Ok((Vec::new(), total));
         }
-        let mut buf = vec![0u8; len.min(total - offset) as usize];
-        crate::zipfile::RangeSource::read_exact_at(&mut r, offset, &mut buf)
-            .await
-            .map_err(|e| format!("读取 {} 失败: {}", path, e))?;
-        Ok((buf, total))
+        let take = len.min(total - offset);
+        // ① 预取命中：Ready 直接切；Running 等在途任务完成（不重复占线）
+        {
+            let mut p = slot.prefetch.lock().await;
+            if let Prefetch::Ready { start, data } = &*p {
+                if prefetch_hit(*start, data.len() as u64, offset, take) {
+                    let from = (offset - *start) as usize;
+                    let buf = data[from..from + take as usize].to_vec();
+                    *p = Prefetch::Empty; // 整块消费（顺序播放下 take == 块长）
+                    drop(p);
+                    arm_prefetch(&slot, reader, total, offset + take).await;
+                    return Ok((buf, total));
+                }
+            }
+            // 取出命中的在途预取句柄（非命中原样放回）；锁外等待
+            let running = match std::mem::replace(&mut *p, Prefetch::Empty) {
+                Prefetch::Running { start, len, join } if prefetch_hit(start, len, offset, take) => {
+                    Some((start, join))
+                }
+                other => {
+                    *p = other;
+                    None
+                }
+            };
+            drop(p);
+            if let Some((start, join)) = running {
+                if let Ok(Prefetched { data: Some(data) }) = join.await {
+                    if prefetch_hit(start, data.len() as u64, offset, take) {
+                        let from = (offset - start) as usize;
+                        let buf = data[from..from + take as usize].to_vec();
+                        // 剩余部分放回（请求只吃掉中段时后续仍可命中）
+                        let mut p = slot.prefetch.lock().await;
+                        if matches!(&*p, Prefetch::Empty) {
+                            *p = Prefetch::Ready { start, data };
+                        }
+                        drop(p);
+                        arm_prefetch(&slot, reader, total, offset + take).await;
+                        return Ok((buf, total));
+                    }
+                }
+                // 在途预取失败或长度不符：落到网络读
+            }
+        }
+        // ② 网络并发分块读；失败淘汰句柄重开重试一次（原地复活多数断线场景）
+        match read_pipelined(&reader, offset, take).await {
+            Ok(buf) => {
+                arm_prefetch(&slot, reader, total, offset + take).await;
+                Ok((buf, total))
+            }
+            Err(first) => {
+                invalidate_handle(&slot).await;
+                let (reader2, total2) = match ensure_handle(&slot).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        drop_slot(&slot.path); // 摘槽：下次访问走全新会话（绕开复活冷却期）
+                        return Err(format!("读取 {} 失败: {}（重开远程文件失败: {}）", path, first, e));
+                    }
+                };
+                let take2 = take.min(total2.saturating_sub(offset));
+                if take2 == 0 {
+                    return Ok((Vec::new(), total2));
+                }
+                match read_pipelined(&reader2, offset, take2).await {
+                    Ok(buf) => {
+                        arm_prefetch(&slot, reader2, total2, offset + take2).await;
+                        Ok((buf, total2))
+                    }
+                    Err(e) => {
+                        drop_slot(&slot.path);
+                        Err(format!("读取 {} 失败: {}（重试仍失败: {}）", path, first, e))
+                    }
+                }
+            }
+        }
     };
     match tokio::time::timeout(Duration::from_secs(60), fut).await {
         Ok(inner) => inner,
@@ -663,11 +963,12 @@ async fn smb_reader_for(
     rel: &str,
     path: &str,
 ) -> Result<SmbReader, String> {
+    let (reader, _) = open_smb_reader(ses, rel, path).await?;
     Ok(SmbReader {
         ses: ses.clone(),
         rel: rel.to_string(),
         path: path.to_string(),
-        reader: open_smb_reader(ses, rel, path).await?,
+        reader,
     })
 }
 
@@ -685,6 +986,7 @@ impl crate::zipfile::RangeSource for SmbReader {
                         // 断线：重连（open_smb_reader 内 stat 触发重连重放）+ 重开句柄，再试一次
                         self.reader = open_smb_reader(&self.ses, &self.rel, &self.path)
                             .await
+                            .map(|(r, _)| r)
                             .map_err(std::io::Error::other)?;
                         match self.reader.read_at(off, buf.len() as u64).await {
                             Ok(data) => break data,
@@ -769,24 +1071,32 @@ async fn zip_index(path: &str) -> Result<Arc<crate::zipfile::RawZipIndex>, Strin
 /// 打开远程文件的区间读句柄。
 /// 先 stat 一次再 open：stat 走 client 便捷方法（断线自动重连重放），
 /// 把会话救活后 open_file_reader（内部不重试）才不会撞在死连接上。
-/// 返回的 FileReader 是 'static，读取在会话锁外并行；一旦会话重连，
-/// 旧句柄全部失效（HandleInvalidated），调用方需重开。
+/// 返回 (FileReader, stat 信息)：句柄是 'static 的，读取在会话锁外并行；
+/// 一旦会话重连，旧句柄全部失效（HandleInvalidated），调用方需重开。
+/// 目录在此拦下（统一报「远程目录」文案，不依赖服务器侧报错格式）。
 async fn open_smb_reader(
     ses: &SmbSession,
     rel: &str,
     path: &str,
-) -> Result<smb2::client::stream::FileReader, String> {
-    let reader = {
+) -> Result<(smb2::client::stream::FileReader, smb2::FileInfo), String> {
+    let info = {
         let mut core = ses.core.lock().await;
         let SmbCore { client, tree } = &mut *core;
         match with_timeout("访问远程文件", client.stat(tree, rel)).await {
-            Ok(Ok(_)) => {}
+            Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 evict_session(&ses.cfg.id, &e);
                 return Err(format!("无法访问 {}: {}", path, e));
             }
             Err(msg) => return Err(msg),
         }
+    };
+    if info.is_directory {
+        return Err(format!("{} 是远程目录", path));
+    }
+    let reader = {
+        let mut core = ses.core.lock().await;
+        let SmbCore { client, tree } = &mut *core;
         match with_timeout("打开远程文件", client.open_file_reader(tree, rel)).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
@@ -796,7 +1106,7 @@ async fn open_smb_reader(
             Err(msg) => return Err(msg),
         }
     };
-    Ok(reader)
+    Ok((reader, info))
 }
 
 /// 列出远程 zip 条目（natural=true 自然排序，false 保持包内原始顺序）
@@ -1122,3 +1432,123 @@ pub async fn make_dir(parent: &str, name: &str) -> Result<(), String> {
         Err(msg) => Err(msg),
     }
 }
+
+/* ========== 流式播放（句柄常驻 + 并发分块读 + 块间预取） ========== */
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    /* ---------- plan_sub_reads：把 [offset, offset+len) 拆成 wire READ 子区间 ---------- */
+
+    #[test]
+    fn sub_reads_split_exact_multiple() {
+        // 1024 字节按 512 拆：两段整块
+        assert_eq!(plan_sub_reads(0, 1024, 4096, 512), vec![(0, 512), (512, 512)]);
+    }
+
+    #[test]
+    fn sub_reads_split_with_remainder() {
+        assert_eq!(
+            plan_sub_reads(0, 1025, 4096, 512),
+            vec![(0, 512), (512, 512), (1024, 1)]
+        );
+    }
+
+    #[test]
+    fn sub_reads_clamped_to_eof() {
+        // 请求超出文件尾：末段截到 total
+        assert_eq!(plan_sub_reads(4000, 8 * 1024 * 1024, 4096, 512), vec![(4000, 96)]);
+    }
+
+    #[test]
+    fn sub_reads_empty_past_eof_or_zero_len() {
+        assert!(plan_sub_reads(4096, 100, 4096, 512).is_empty()); // offset==total
+        assert!(plan_sub_reads(5000, 100, 4096, 512).is_empty()); // offset>total
+        assert!(plan_sub_reads(0, 0, 4096, 512).is_empty()); // 零长度
+    }
+
+    #[test]
+    fn sub_reads_single_when_sub_exceeds_len() {
+        assert_eq!(plan_sub_reads(100, 10, 4096, 512), vec![(100, 10)]);
+    }
+
+    /* ---------- prefetch_hit：预取块必须完整覆盖请求区间才算命中 ---------- */
+
+    #[test]
+    fn prefetch_hit_requires_full_cover() {
+        assert!(prefetch_hit(0, 100, 0, 100)); // 完全一致
+        assert!(prefetch_hit(0, 100, 10, 10)); // 请求是预取块的子区间
+        assert!(!prefetch_hit(0, 100, 0, 101)); // 尾部超出预取块
+        assert!(!prefetch_hit(50, 100, 40, 20)); // 头部在预取块之前
+        assert!(!prefetch_hit(0, 100, 200, 10)); // 完全不相干
+    }
+
+    /* ---------- 端到端（需真实 SMB 服务器，默认忽略） ----------
+       R4E_SMB_HOST（可带 :端口） / R4E_SMB_SHARE / R4E_SMB_USER / R4E_SMB_PASS
+       / R4E_SMB_FILE（share 内相对路径，建议 16–64MB 的文件）
+       cargo test --lib smb::stream_tests::e2e_real_server -- --ignored --nocapture */
+    #[tokio::test]
+    #[ignore = "需要真实 SMB 服务器（设置 R4E_SMB_HOST/SHARE/USER/PASS/FILE）"]
+    async fn e2e_real_server() {
+        let host = std::env::var("R4E_SMB_HOST").expect("缺少 R4E_SMB_HOST");
+        let share = std::env::var("R4E_SMB_SHARE").expect("缺少 R4E_SMB_SHARE");
+        let file = std::env::var("R4E_SMB_FILE").expect("缺少 R4E_SMB_FILE");
+        let cfg = crate::store::SmbServer {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            host,
+            share: share.clone(),
+            workgroup: String::new(),
+            username: std::env::var("R4E_SMB_USER").unwrap_or_default(),
+            password: std::env::var("R4E_SMB_PASS").unwrap_or_default(),
+        };
+        put_servers(vec![cfg]);
+        let path = format!("smb://e2e/{}/{}", share, file);
+
+        // 总长与整读基准一致
+        let total = stream_meta(&path).await.unwrap();
+        let full = read_all(&path).await.unwrap();
+        assert_eq!(full.len() as u64, total, "stream_meta 总长应与整读一致");
+
+        // 8MB 顺序分块重组一致；块间留 600ms 模拟播放消耗——预取任务在间隙完成，
+        // 后续块稳定走 Ready 命中路径（不间歇则随机走 Running 等待路径，两者皆正确）
+        let t0 = std::time::Instant::now();
+        let mut off = 0u64;
+        let mut assembled: Vec<u8> = Vec::with_capacity(total as usize);
+        while off < total {
+            let len = STREAM_PREFETCH.min(total - off);
+            let (b, t) = stream_read(&path, off, len).await.unwrap();
+            assert_eq!(t, total);
+            assert_eq!(b.len() as u64, len);
+            assembled.extend_from_slice(&b);
+            off += len;
+            if off < total {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+            }
+        }
+        assert_eq!(assembled, full, "分块重组应与整读逐字节一致");
+        eprintln!(
+            "顺序 {} 块（{} MB）耗时 {:?}",
+            total.div_ceil(STREAM_PREFETCH),
+            total / 1024 / 1024,
+            t0.elapsed()
+        );
+
+        // 预取命中后的小区间读（块中段）
+        if total > STREAM_PREFETCH + 12345 + 6789 {
+            let (b, _) = stream_read(&path, STREAM_PREFETCH + 12345, 6789).await.unwrap();
+            assert_eq!(&b[..], &full[(STREAM_PREFETCH + 12345) as usize..][..6789]);
+        }
+
+        // 随机偏移读（seek 场景，预取不命中走网络分块）
+        if total > 300 * 1024 {
+            let (b, _) = stream_read(&path, 300 * 1024 - 7, 4096).await.unwrap();
+            assert_eq!(&b[..], &full[(300 * 1024 - 7) as usize..][..4096]);
+        }
+
+        // 目录应报错而非打开
+        assert!(stream_meta(&path.rsplit_once('/').unwrap().0).await.is_err());
+    }
+}
+

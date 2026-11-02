@@ -2,7 +2,8 @@
    <video> 元素按 HTTP Range 语义分块拉取（seek 只读所需区间），
    单次响应封顶 MAX_CHUNK，2GB+ 视频不再整读进内存。
    目标经 percent-encode 编码在 URL 路径里：
-   · 普通文件 = 完整路径（本地路径或 smb:// 远程路径；远程每请求 stat+打开+区间读，断线自愈）；
+   · 普通文件 = 完整路径（本地路径或 smb:// 远程路径；远程侧句柄常驻 + 并发分块读
+     + 块间预取，见 smb.rs「流式播放」一节，断线自愈）；
    · zip 条目 = 「zip路径::条目名」（与前端复合路径同形），仅支持存储型（Stored）条目，
      压缩条目不可随机定位 → 返回错误，前端回退整读。
    无 Range 头的请求按 bytes=0- 处理（媒体元素总会带 Range；无 Range 时不封顶会整读大文件）。 */
@@ -122,11 +123,11 @@ fn serve_zip(zip: &str, entry: &str, range: Option<&str>) -> Response<Vec<u8>> {
     }
 }
 
-/* SMB 普通文件：每请求 stat 取总长 + 打开句柄区间读（RangeSource 断线自愈） */
+/* SMB 普通文件：句柄跨请求常驻（smb 侧播放槽缓存），total 取打开时 size，
+   命中零往返；数据读走 smb::stream_read（并发分块 + 块间预取，断线淘汰重开自愈） */
 fn serve_smb(path: &str, range: Option<&str>) -> Response<Vec<u8>> {
-    let total = match tauri::async_runtime::block_on(smb::stat(path)) {
-        Ok((t, _, false)) => t,
-        Ok((_, _, true)) => return err_response(StatusCode::NOT_FOUND, "这是远程目录"),
+    let total = match tauri::async_runtime::block_on(smb::stream_meta(path)) {
+        Ok(t) => t,
         Err(e) => return err_response(StatusCode::NOT_FOUND, e),
     };
     if total == 0 {
@@ -137,12 +138,12 @@ fn serve_smb(path: &str, range: Option<&str>) -> Response<Vec<u8>> {
         Ok(None) => (0, total.saturating_sub(1).min(MAX_CHUNK - 1)),
         Ok(Some((s, e))) => (s, e.min(s + MAX_CHUNK - 1)),
     };
-    match tauri::async_runtime::block_on(smb::read_range(path, s, e - s + 1)) {
+    match tauri::async_runtime::block_on(smb::stream_read(path, s, e - s + 1)) {
         Ok((buf, t)) if !buf.is_empty() => {
             let end = s + buf.len() as u64 - 1;
             partial(buf, s, end, t, content_type(path))
         }
-        Ok((_, t)) => err_416(t), // 文件在 stat 与读取间变小，区间已不成立
+        Ok((_, t)) => err_416(t), // 文件在 meta 与读取间变小，区间已不成立
         Err(err) => err_response(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
 }
