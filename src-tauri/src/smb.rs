@@ -650,6 +650,12 @@ const STREAM_SLOTS: usize = 4;
 const STREAM_SMALL: u64 = 256 * 1024;
 /// 微读的小块预取量（吸收索引表的连续小步进；只在空位/换小块时布防）
 const STREAM_SMALL_PF: u64 = 256 * 1024;
+/// 预取任务自身超时：裸 read_at 在弱网下可能无限挂起，超时放弃落 Empty
+/// （挂起的 Running 会占住状态位，微读布防全被「在途不打断」拒绝——
+/// 线上实测整窗零预取命中、每笔微读付整往返）
+const STREAM_PF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// 在途超龄：超过此时长未落盘视为挂起，微读布防可换下重启
+const STREAM_RUNNING_STALE: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// 诊断：流式路径累计网络读取字节数（含预取任务；微读不应触发兆级下载）
 static NET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -699,6 +705,7 @@ enum Prefetch {
     Running {
         start: u64,
         len: u64,
+        armed_at: std::time::Instant, // 超龄判定：微读布防可换下挂起的在途
         join: tauri::async_runtime::JoinHandle<Prefetched>,
     },
     Ready {
@@ -855,35 +862,98 @@ async fn arm_prefetch(
         }
         _ => {}
     }
+    let name = slot.path.rsplit('/').next().unwrap_or(&slot.path).to_string();
     match kind {
         ArmKind::Big => {
             if let Prefetch::Running { join, .. } = &mut *p {
                 join.abort(); // 播放器已 seek 走：放弃旧区域
             }
         }
-        ArmKind::Small => match &*p {
-            // 陈旧 Ready（含大块）：换掉——不换的话微读区域永远零预取，
-            // 每笔都付整往返，串行请求下有效吞吐被掐死
-            Prefetch::Empty | Prefetch::Ready { .. } => {}
-            _ => return, // 在途任务（大块/小块）不打断：落盘后下一笔微读再换
-        },
+        ArmKind::Small => {
+            // 在途任务不打断（等它落盘后下一笔再换），但超龄视为挂起必须换下，
+            // 否则一个挂死的 Running 会让微读区域永远零预取
+            let stale = matches!(&*p, Prefetch::Running { armed_at, .. } if armed_at.elapsed() > STREAM_RUNNING_STALE);
+            if !matches!(&*p, Prefetch::Empty | Prefetch::Ready { .. }) && !stale {
+                if let Prefetch::Running { start: cur, armed_at, .. } = &*p {
+                    eprintln!(
+                        "[smb] {} {} 小块布防让位 @{}/{}（在途 @{} 已 {:.1}s）",
+                        crate::stream::ts(),
+                        name,
+                        start,
+                        len,
+                        cur,
+                        armed_at.elapsed().as_secs_f32()
+                    );
+                }
+                return;
+            }
+            if let Prefetch::Running { join, start: cur, armed_at, .. } = &mut *p {
+                eprintln!(
+                    "[smb] {} {} 换下超龄在途 @{}（已 {:.1}s）布防 @{}/{}",
+                    crate::stream::ts(),
+                    name,
+                    cur,
+                    armed_at.elapsed().as_secs_f32(),
+                    start,
+                    len
+                );
+                join.abort();
+            }
+        }
     }
     let slot2 = slot.clone();
     let r2 = reader.clone();
+    let task_name = name.clone();
     let join = tauri::async_runtime::spawn(async move {
-        let data = read_pipelined(&r2, start, len).await.ok().map(Arc::new);
+        let t0 = std::time::Instant::now();
+        let data = match tokio::time::timeout(STREAM_PF_TIMEOUT, read_pipelined(&r2, start, len)).await {
+            Ok(Ok(d)) => Some(Arc::new(d)),
+            Ok(Err(e)) => {
+                eprintln!("[smb] {} {} 预取失败 @{}/{}: {}", crate::stream::ts(), task_name, start, len, e);
+                None
+            }
+            Err(_) => {
+                eprintln!(
+                    "[smb] {} {} 预取超时(>{:?}) @{}/{}",
+                    crate::stream::ts(),
+                    task_name,
+                    STREAM_PF_TIMEOUT,
+                    start,
+                    len
+                );
+                None
+            }
+        };
         // 槽内仍是自己的 Running 才落盘（被替换/已被消费则只经返回值交给等待方）
         let mut p = slot2.prefetch.lock().await;
         let ours = matches!(&*p, Prefetch::Running { start: s, .. } if *s == start);
         if ours {
-            *p = match &data {
-                Some(d) => Prefetch::Ready { start, data: d.clone() },
-                None => Prefetch::Empty,
-            };
+            match &data {
+                Some(d) => {
+                    eprintln!(
+                        "[smb] {} {} 预取落盘 @{}/{} 用时{:?}",
+                        crate::stream::ts(),
+                        task_name,
+                        start,
+                        d.len(),
+                        t0.elapsed()
+                    );
+                    *p = Prefetch::Ready { start, data: d.clone() };
+                }
+                None => *p = Prefetch::Empty,
+            }
         }
         Prefetched { data }
     });
-    *p = Prefetch::Running { start, len, join };
+    eprintln!(
+        "[smb] {} {} 布防{} @{}/{}",
+        crate::stream::ts(),
+        name,
+        if matches!(kind, ArmKind::Big) { "大" } else { "小" },
+        start,
+        len
+    );
+    *p = Prefetch::Running { start, len, armed_at: std::time::Instant::now(), join };
 }
 
 /// 流式播放元信息：文件总长（复用常驻句柄，命中零往返）。目录报错为 NOT_FOUND 文案
@@ -951,7 +1021,7 @@ pub async fn stream_read(path: &str, offset: u64, len: u64) -> Result<(Vec<u8>, 
                 None
             } else {
                 match std::mem::replace(&mut *p, Prefetch::Empty) {
-                    Prefetch::Running { start, len, join } if prefetch_hit(start, len, offset, take) => {
+                    Prefetch::Running { start, len, join, .. } if prefetch_hit(start, len, offset, take) => {
                         Some((start, join))
                     }
                     other => {
