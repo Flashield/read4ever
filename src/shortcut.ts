@@ -122,8 +122,25 @@ export function initShortcuts(): void {
       return;
     }
 
-    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（数字/±/P/PgUp/PgDn/Home/End
-    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）、Space、T 与 Ctrl 组合不受影响
+    // 速度键不受插件视图屏蔽：速度是全局设置（工具栏速度标签常驻展示），
+    // 也实时驱动插件视图的宿主滚屏引擎（ctx.autoscroll）；内置/参考插件均未占用数字/± 键
+    if (key >= "1" && key <= "9") {
+      app.setSpeed(Number(key) * 45); // 1-9 预设档位 → 45..405 像素/秒
+      app.toast(`速度: ${Number(key) * 45} 像素/秒`);
+      return;
+    }
+    if (key === "+" || key === "=") {
+      app.adjustSpeed(1);
+      return;
+    }
+    if (key === "-") {
+      app.adjustSpeed(-1);
+      return;
+    }
+
+    // 插件视图激活期间，屏蔽作用于隐藏文本区的按键（P/PgUp/PgDn/Home/End
+    // 与功能键），交给插件自己的快捷键处理；Esc（关闭插件视图）、Space、T、Ctrl 组合
+    // 与速度键不受影响
     if (plugins.isActive()) return;
 
     // 功能键
@@ -149,19 +166,6 @@ export function initShortcuts(): void {
     }
 
     // 单键
-    if (key >= "1" && key <= "9") {
-      app.setSpeed(Number(key) * 45); // 1-9 预设档位 → 45..405 像素/秒
-      app.toast(`速度: ${Number(key) * 45} 像素/秒`);
-      return;
-    }
-    if (key === "+" || key === "=") {
-      app.adjustSpeed(1);
-      return;
-    }
-    if (key === "-") {
-      app.adjustSpeed(-1);
-      return;
-    }
     if (key === "p" || key === "P") {
       app.toggleScrollMode();
       return;

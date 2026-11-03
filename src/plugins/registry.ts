@@ -6,9 +6,16 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import * as app from "../app";
 import { holdAwake, releaseAwake } from "../keepawake";
 import * as mediaDock from "../mediaDock";
+import { createAutoscroll } from "./autoscroll";
 import type { MenuItemDef } from "../dropdown";
 import type { FileEntry, PluginPkgInfo } from "../types";
-import type { PluginOpenContext, PluginViewInstance, PluginViewStatus, Read4EverPlugin } from "./types";
+import type {
+  PluginAutoscroll,
+  PluginOpenContext,
+  PluginViewInstance,
+  PluginViewStatus,
+  Read4EverPlugin,
+} from "./types";
 
 const TEXT_RE = /\.(txt|zip)$/i;
 
@@ -59,6 +66,7 @@ export interface ViewEntry {
   inst: PluginViewInstance;
   pane: HTMLElement; // .plugin-view-pane，宿主于 #plugin-view-host
   status: PluginViewStatus;
+  autoscroll: PluginAutoscroll; // 宿主滚屏引擎（ctx.autoscroll 同一实例，关闭时停止）
   file: string; // 当前查看的文件名（zip 条目为条目名）
   openedName: string; // 打开的文件名（zip 内条目为 zip 自身文件名）
   ctxPath: string; // 当前文件路径（插件跨容器推进随之变化）
@@ -265,6 +273,7 @@ export function closeView(id: string): void {
     mediaDock.setActiveView("");
   }
   releaseAwake(`view:${id}`);
+  v.autoscroll.stop();
   try {
     v.inst.deactivate();
   } catch (e) {
@@ -346,12 +355,21 @@ export async function openFile(path: string): Promise<string | null> {
     const pane = document.createElement("div");
     pane.className = "plugin-view-pane";
     const inst = plugin.createView ? plugin.createView() : wrapSingleton(plugin);
+    // 状态上报与滚屏引擎先于 entry 就绪：视图销毁后迟到的调用按表内查无此实例忽略
+    const setStatus = (s: PluginViewStatus): void => {
+      const v = views.get(id);
+      if (!v) return;
+      Object.assign(v.status, s);
+      if (curActiveViewId === id) app.updateUI(); // 后台实例只更新表内状态，不动 UI
+    };
+    const autoscroll = createAutoscroll(id, setStatus);
     const e0: ViewEntry = {
       id,
       plugin,
       inst,
       pane,
       status: {},
+      autoscroll,
       file: baseName(base),
       openedName: baseName(zipPath || path),
       ctxPath: path,
@@ -380,10 +398,7 @@ export async function openFile(path: string): Promise<string | null> {
       loadBytes: (p) => loadBytesIn(owner, p),
       listContainer: () => listContainerIn(owner),
       streamUrlFor: wantStream ? streamUrlFor : undefined,
-      setStatus: (s) => {
-        Object.assign(owner.status, s);
-        if (curActiveViewId === id) app.updateUI(); // 后台实例只更新表内状态，不动 UI
-      },
+      setStatus,
       getSetting: <T>(key: string, def: T) => pluginSetting<T>(plugin.id, key, def),
       setSetting: (key, value) => setPluginSetting(plugin.id, key, value),
       toast: (t) => app.toast(t),
@@ -391,6 +406,7 @@ export async function openFile(path: string): Promise<string | null> {
         if (views.has(id)) holdAwake(`view:${id}`, on); // 视图已销毁：忽略迟到的持有请求
       },
       togglePlayback: () => app.togglePlayback(),
+      autoscroll,
     };
     document.getElementById("plugin-view-host")!.appendChild(pane);
     await inst.open(ctx);
@@ -402,6 +418,7 @@ export async function openFile(path: string): Promise<string | null> {
       const v = views.get(id);
       if (v) {
         releaseAwake(`view:${id}`);
+        v.autoscroll.stop();
         try {
           v.inst.deactivate();
         } catch (de) {

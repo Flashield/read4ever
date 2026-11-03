@@ -58,6 +58,7 @@ class EpubView implements PluginViewInstance {
   private lru = new Map<string, Uint8Array>();
   private unwatch: (() => void) | null = null;
   private saveTimer = 0;
+  private statusTimer = 0; // 滚动中状态栏节流定时器（随 deactivate 一并取消）
   private locateTimer = 0; // 30ms 定位定时器（导航后立即 deactivate 时一并取消，防错配落进度）
   active = true; // 公开：noUnusedLocals 拒收只写私有字段（同 image-viewer 约定）
   private chapterTitle = "";
@@ -77,6 +78,8 @@ class EpubView implements PluginViewInstance {
       return;
     }
     this.buildDom();
+    // 宿主滚屏引擎：滚到章末回调 onEnd 自动接下一章续滚（见 onScrollEnd）
+    ctx.autoscroll.attach(this.scroll, { onEnd: () => void this.onScrollEnd() });
     this.unwatch = watchTheme(() => this.applyTheme());
     const rec = this.readPos();
     const startIdx = rec && rec.i < this.book.spine.length ? rec.i : 0;
@@ -131,7 +134,10 @@ class EpubView implements PluginViewInstance {
     this.mount = document.createElement("div");
     this.mount.className = "rbepub-content";
     this.scroll.appendChild(this.mount);
-    this.scroll.addEventListener("scroll", () => this.scheduleSave(), { passive: true });
+    this.scroll.addEventListener("scroll", () => {
+      this.scheduleSave();
+      this.scheduleStatus();
+    }, { passive: true });
     this.scroll.addEventListener("keydown", (e) => this.onKey(e));
     // 链接拦截：单次挂载在滚动容器上，composedPath 穿透 shadow root（书籍样式模式）
     this.scroll.addEventListener("click", (e) => this.onContentClick(e));
@@ -307,6 +313,28 @@ class EpubView implements PluginViewInstance {
     await this.renderSpine(ni);
   }
 
+  /* 宿主滚屏能力（Space/滚屏按钮）：速度档、常亮、光标隐藏与显示格全由引擎接管 */
+  togglePlay(): void {
+    this.ctx.autoscroll.toggle();
+  }
+
+  isPlaying(): boolean {
+    return this.ctx.autoscroll.isScrolling();
+  }
+
+  /** 滚屏到章末：自动接下一章续滚；书末停止 */
+  private async onScrollEnd(): Promise<void> {
+    const ni = this.spineIdx + 1;
+    if (ni >= this.book.spine.length) {
+      this.ctx.toast("已读到书末");
+      this.syncStatus(); // 补终值百分比（滚动节流可能停在旧值）
+      return;
+    }
+    await this.renderSpine(ni);
+    if (!openViews.has(this)) return; // 等待期间视图已销毁：不再续滚
+    this.ctx.autoscroll.start();
+  }
+
   /* ========== 进度记忆 ========== */
 
   private posMap(): Record<string, SavedPos> {
@@ -325,6 +353,15 @@ class EpubView implements PluginViewInstance {
   private scheduleSave(): void {
     window.clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => this.saveProgress(), 2000);
+  }
+
+  /** 滚动中节流刷新状态栏（位置百分比），供滚屏/手动滚动实时反馈 */
+  private scheduleStatus(): void {
+    if (this.statusTimer) return;
+    this.statusTimer = window.setTimeout(() => {
+      this.statusTimer = 0;
+      this.syncStatus();
+    }, 250);
   }
 
   private saveProgress(): void {
@@ -384,7 +421,7 @@ class EpubView implements PluginViewInstance {
       position: `第 ${this.spineIdx + 1}/${this.book.spine.length} 章 · ${pct}%`,
       encoding: `EPUB ${this.book.version}`,
       mode: `模式: ${this.mode === "theme" ? "跟随主题" : "书籍样式"}`,
-      display: "-",
+      display: this.ctx.autoscroll.isScrolling() ? "滚屏中" : "-",
     });
   }
 
@@ -434,6 +471,7 @@ class EpubView implements PluginViewInstance {
     openViews.delete(this);
     this.unwatch?.();
     window.clearTimeout(this.saveTimer);
+    window.clearTimeout(this.statusTimer);
     window.clearTimeout(this.locateTimer);
     this.revokeBlobs();
   }
@@ -474,8 +512,8 @@ function mimeOf(path: string): string {
 const plugin: Read4EverPlugin = {
   id: PID,
   name: "EPUB 查看",
-  version: "1.0.0",
-  description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式",
+  version: "1.1.0",
+  description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式、自动滚屏跨章续滚",
   extensions: [".epub"],
   createView: () => new EpubView(),
   open: (ctx) => new EpubView().open(ctx), // 仅作 loader 校验占位（宿主在 createView 存在时不会调用）

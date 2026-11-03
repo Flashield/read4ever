@@ -37,6 +37,28 @@ export interface PluginViewInstance {
   isPlaying?(): boolean;
 }
 
+/** 宿主滚屏能力（ctx.autoscroll）：绑定视图滚动容器即得与文本阅读一致的自动滚屏。
+ *  速度实时跟随宿主速度档（1–9 档、+/- 与速度弹层即时生效）；滚屏期间引擎接管
+ *  屏幕常亮、光标隐藏（移动鼠标短暂显示）与状态栏"显示"格（滚屏中 / 停止写回 "-"，
+ *  插件自定义显示格文案请在停止后自行覆盖）；滚到末尾（含内容不足一屏）自动停止
+ *  并回调 onEnd，插件可换内容后 start() 续滚（EPUB 跨章连滚即此实现）。 */
+export interface PluginAutoscroll {
+  /** 绑定滚动容器（open 时调用一次即可；重复调用为换绑，滚动中不中断） */
+  attach(el: HTMLElement, opts?: AutoscrollAttachOptions): void;
+  /** 解绑并停止（视图关闭时宿主自动做，插件通常无需调用） */
+  detach(): void;
+  start(): void;
+  stop(): void;
+  /** 开关滚屏，返回滚动中与否 */
+  toggle(): boolean;
+  isScrolling(): boolean;
+}
+
+export interface AutoscrollAttachOptions {
+  /** 滚到末尾时回调（此时已自动停止）：换下一份内容后 start() 续滚 */
+  onEnd?(): void;
+}
+
 /** 插件打开文件的上下文 */
 export interface PluginOpenContext {
   /** 完整路径（zip 内条目为「zip路径::条目名」复合路径） */
@@ -83,6 +105,8 @@ export interface PluginOpenContext {
   /** 触发宿主「滚屏/播放」公共入口（等同菜单栏滚屏按钮 / Space 键）：
    *  宿主按当前视图分发——插件视图回调本插件的 togglePlay（若实现），文本视图开关滚屏 */
   togglePlayback(): void;
+  /** 宿主滚屏引擎：文档类插件 togglePlay 里 toggle()、isPlaying 里 isScrolling() 即可 */
+  autoscroll: PluginAutoscroll;
 }
 
 export interface Read4EverPlugin {

@@ -70,6 +70,7 @@ class MarkdownView implements PluginViewInstance {
     this.idx = ctx.siblingIndex;
     this.asSource = prefSource = ctx.getSetting("viewSource", false);
     this.buildDom();
+    ctx.autoscroll.attach(this.scroll); // 宿主滚屏引擎接管 this.scroll（togglePlay 即用）
     this.unwatch = watchTheme(() => this.applyTheme());
     const { text, label } = decodeText(ctx.bytes);
     this.text = text;
@@ -236,6 +237,15 @@ class MarkdownView implements PluginViewInstance {
     this.syncStatus();
   }
 
+  /* 宿主滚屏能力（Space/滚屏按钮）：速度档、常亮、光标隐藏与显示格全由引擎接管 */
+  togglePlay(): void {
+    this.ctx.autoscroll.toggle();
+  }
+
+  isPlaying(): boolean {
+    return this.ctx.autoscroll.isScrolling();
+  }
+
   private syncStatus(): void {
     const name = baseOf(this.path);
     this.ctx.setStatus({
@@ -244,7 +254,7 @@ class MarkdownView implements PluginViewInstance {
       encoding: `Markdown · ${this.encLabel}`,
       position: `第 ${this.idx + 1}/${this.siblings.length} 份`,
       mode: `模式: ${this.asSource ? "源码" : "渲染"}`,
-      display: "-",
+      display: this.ctx.autoscroll.isScrolling() ? "滚屏中" : "-",
     });
   }
 
@@ -278,8 +288,8 @@ function mimeOf(path: string): string {
 const plugin: Read4EverPlugin = {
   id: PID,
   name: "Markdown 查看",
-  version: "1.0.0",
-  description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板）",
+  version: "1.1.0",
+  description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板、自动滚屏）",
   extensions: [".md", ".markdown", ".mdown"],
   // loader 形状校验强制要求 open 存在（"缺少 open(ctx) 方法"）；多实例宿主实际走
   // createView().open(ctx)，此 open 仅作 loader 校验占位（宿主在 createView 存在时不会调用）

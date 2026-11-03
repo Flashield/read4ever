@@ -314,6 +314,11 @@ body.fullscreen #status-bar {
   cursor: none;
 }
 
+/* 插件视图滚屏：宿主 autoscroll 引擎给滚动容器加同一 class */
+.plugin-view-pane .scroll-hidden {
+  cursor: none;
+}
+
 .welcome-screen {
   display: flex;
   flex-direction: column;

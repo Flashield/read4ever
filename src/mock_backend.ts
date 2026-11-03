@@ -337,8 +337,8 @@ export default {
 /* dev 构建产物直读：vite 开发服务器按项目相对路径供应文件，
    未构建（dist/ 不存在）则静默跳过；manifest 元信息在此同步一份（构建时注意同步 manifest.json）。 */
 const DEV_PLUGINS = [
-  { id: "markdown-viewer", name: "Markdown 查看", version: "1.0.0", description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板）", extensions: [".md", ".markdown", ".mdown"] },
-  { id: "epub-viewer", name: "EPUB 查看", version: "1.0.0", description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式", extensions: [".epub"] },
+  { id: "markdown-viewer", name: "Markdown 查看", version: "1.1.0", description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板、自动滚屏）", extensions: [".md", ".markdown", ".mdown"] },
+  { id: "epub-viewer", name: "EPUB 查看", version: "1.1.0", description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式、自动滚屏跨章续滚", extensions: [".epub"] },
 ];
 const devMainJs = new Map<string, string>();
 const devPluginsReady = (async () => {
