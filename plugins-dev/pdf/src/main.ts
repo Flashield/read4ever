@@ -1,35 +1,16 @@
 /* PDF 阅读插件：pdf.js 渲染 PDF 注入插件视图宿主（原样渲染，不跟随主题）。
-   worker 以 blob 方式内联自启动（不依赖宿主 vite 配置），自包含单文件 ESM。 */
-import "./shims"; // 必须最先 import：垫片先于 pdfjs-dist 模块体求值
+   来源矩阵（探索笔记 04）：流式 URL 可达 → read4ever-stream:// Range 流式（大文件不整读，
+   disableAutoFetch 按需分块）；不可达（浏览器 mock / SMB zip 复合路径）→ ctx.bytes 整读；
+   流式探针/加载失败 → loadBytes 整读回退。整读路径过大小防线（超 256MB 报错、
+   超 1GB 提示先缓存到本地）。 */
 import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "../../../src/plugins/types";
-import workerText from "../dist/pdf.worker.min.mjs.txt";
+import { fullReadSizeError } from "./stream";
+import { openStreamed } from "./transport";
+import { ensureWorker } from "./worker";
 
 const PID = "pdf";
-
-let workerUrl = ""; // 模块级复用：worker 从 blob 实例化后 URL 即无存在必要，保留给后续打开复用
-
-/* pdf.js 6.5 直接依赖 2025 年新入库的 ES 方法（Map upsert、Uint8Array 二进制扩展、
-   Promise.withResolvers、Set.intersection）且不带垫片，旧内核没有会整体解析失败——
-   以 prologue 前置进 worker blob 补齐（与 src/shims.ts 同一组垫片，保持同步）。 */
-const WORKER_PROLOGUE = `
-function rbUpsert(p){Object.assign(p,{getOrInsert:function(k,v){if(!this.has(k))this.set(k,v);return this.get(k)},getOrInsertComputed:function(k,f){if(!this.has(k))this.set(k,f(k));return this.get(k)}})}
-if(!Map.prototype.getOrInsert)rbUpsert(Map.prototype);
-if(!WeakMap.prototype.getOrInsert)rbUpsert(WeakMap.prototype);
-if(!Uint8Array.prototype.toHex){Uint8Array.prototype.toHex=function(){let s='';for(const b of this)s+=b.toString(16).padStart(2,'0');return s}}
-if(!Uint8Array.prototype.toBase64){Uint8Array.prototype.toBase64=function(){let s='';for(let i=0;i<this.length;i+=32768)s+=String.fromCharCode.apply(null,this.subarray(i,i+32768));return btoa(s)}}
-if(!Uint8Array.fromBase64){Uint8Array.fromBase64=function(s){const b=atob(String(s).replace(/\\s+/g,''));const o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o}}
-if(!Set.prototype.intersection){Set.prototype.intersection=function(o){const t=this.size<=o.size?this:o,b=t===this?o:this,n=new Set();for(const v of t)if(b.has(v))n.add(v);return n}}
-if(!Promise.withResolvers){Promise.withResolvers=function(){let r,j;const p=new Promise(function(a,b){r=a;j=b});return{promise:p,resolve:r,reject:j}}}
-`;
-
-/** worker 以 blob 自启动（同源 blob URL 直接可用，无需宿主任何资源路径） */
-function ensureWorker(): void {
-  if (!workerUrl)
-    workerUrl = URL.createObjectURL(new Blob([WORKER_PROLOGUE + workerText], { type: "text/javascript" }));
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-}
 
 /** 渲染任务的结构化最小类型（页.render 返回对象即可赋值） */
 interface RenderTaskLike {
@@ -50,6 +31,7 @@ class PdfView implements PluginViewInstance {
   private loadTask: { promise: Promise<PDFDocumentProxy>; destroy(): Promise<void> } | null =
     null; // v6 起销毁走加载任务
   private version = ""; // PDF 版本号（getMetadata 的 PDFFormatVersion）
+  private streamed = false; // 本次打开走了流式路径（状态栏「编码」格标注）
   private scroll!: HTMLElement;
   private canvas!: HTMLCanvasElement;
   private renderTask: RenderTaskLike | null = null;
@@ -60,6 +42,7 @@ class PdfView implements PluginViewInstance {
   async open(ctx: PluginOpenContext): Promise<void> {
     this.ctx = ctx;
     this.active = true;
+    this.streamed = false;
     ctx.setStatus({
       title: ctx.name,
       file: ctx.name,
@@ -69,14 +52,29 @@ class PdfView implements PluginViewInstance {
       display: "-",
     });
     ensureWorker();
+    /* 数据路径分叉（探索笔记 04）：streamUrlFor 存在 ⇔ wantStream ⇔ ctx.bytes 为空。
+       有 URL 走 Range 流式，探针/加载失败回退整读（loadBytes）；无 URL（mock /
+       SMB zip 复合）ctx.bytes 已是完整字节。 */
+    const streamUrl = ctx.streamUrlFor?.(ctx.path);
     try {
-      // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes
-      this.loadTask = pdfjsLib.getDocument({ data: ctx.bytes.slice() });
-      this.pdf = await this.loadTask.promise;
-      const meta = await this.pdf.getMetadata();
+      if (typeof streamUrl === "string") {
+        try {
+          const doc = await openStreamed(streamUrl);
+          this.loadTask = doc.task;
+          this.pdf = doc.pdf;
+          this.streamed = true;
+        } catch {
+          this.cleanupLoadTask();
+          // 流式不可达：回退整读（本地 zip 压缩条目 404 / SMB 故障 / 协议异常）
+          if (!(await this.openFullRead(ctx, true))) return; // 防线拦截：已提示并关视图
+        }
+      } else if (!(await this.openFullRead(ctx, false))) {
+        return; // 防线拦截：已提示并关视图
+      }
+      const meta = await this.pdf!.getMetadata();
       this.version = (meta.info as { PDFFormatVersion?: string }).PDFFormatVersion || "";
     } catch (e) {
-      this.pdf = null;
+      this.cleanupLoadTask();
       ctx.toast(`PDF 解析失败：${String(e).slice(0, 80)}`);
       ctx.closeView();
       return;
@@ -90,6 +88,30 @@ class PdfView implements PluginViewInstance {
       },
     });
     await this.renderFit();
+  }
+
+  /** 整读打开（wantStream 路径 ctx.bytes 为空，须 loadBytes）。
+      返回 false = 大小防线拦截（已 toast 文案并 closeView） */
+  private async openFullRead(ctx: PluginOpenContext, viaLoadBytes: boolean): Promise<boolean> {
+    const bytes = viaLoadBytes ? await ctx.loadBytes(ctx.path) : ctx.bytes;
+    const oversize = fullReadSizeError(bytes.length);
+    if (oversize) {
+      ctx.toast(oversize);
+      ctx.closeView();
+      return false;
+    }
+    // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes
+    this.loadTask = pdfjsLib.getDocument({ data: bytes.slice() });
+    this.pdf = await this.loadTask.promise;
+    return true;
+  }
+
+  /** 销毁失败的加载任务并清引用（流式回退/解析失败/视图关闭共用） */
+  private cleanupLoadTask(): void {
+    const task = this.loadTask;
+    this.loadTask = null;
+    this.pdf = null;
+    if (task) void task.destroy().catch(() => {});
   }
 
   private buildDom(): void {
@@ -162,7 +184,7 @@ class PdfView implements PluginViewInstance {
     this.ctx.setStatus({
       title: this.ctx.name,
       file: this.ctx.name,
-      encoding: this.version ? `PDF ${this.version}` : "PDF",
+      encoding: this.version ? `PDF ${this.version}${this.streamed ? " 流式" : ""}` : "PDF",
       position: `第 1/${this.pdf?.numPages ?? "?"} 页`,
       mode: "模式: 适宽",
       display: this.ctx.autoscroll.isScrolling() ? "滚屏中" : "-",
@@ -190,9 +212,7 @@ class PdfView implements PluginViewInstance {
     this.ctx.autoscroll.detach();
     this.renderTask?.cancel();
     this.renderTask = null;
-    void this.loadTask?.destroy();
-    this.loadTask = null;
-    this.pdf = null;
+    this.cleanupLoadTask();
   }
 }
 
@@ -204,8 +224,9 @@ const plugin: Read4EverPlugin = {
   id: PID,
   name: "PDF 阅读器",
   version: "0.1.0",
-  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示，速度键与 Space 经宿主滚屏引擎可用",
+  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、大文件 Range 流式加载，速度键与 Space 经宿主滚屏引擎可用",
   extensions: [".pdf"],
+  wantsStream: true, // 宿主跳过字节预读（ctx.bytes 置空），经 ctx.streamUrlFor 走流式；回退整读见 open()
   open: (ctx) => view.open(ctx),
   togglePlay: () => view.togglePlay(),
   isPlaying: () => view.isPlaying(),
