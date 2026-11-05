@@ -496,6 +496,13 @@ class PdfView implements PluginViewInstance {
         canvas,
         viewport,
         transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+        // 注记静态渲染（T8）：canvas 直绘选型——印章/批注/表单字段外观流全部绘进 canvas
+        // （AnnotationMode.ENABLE 含全部注记与 Widget 外观），不做 DOM AnnotationLayer：
+        // 外观静态可见、天然不可交互（无注记 DOM 元素可点击/填写），且注记墨迹随 canvas
+        // 同一生命周期回收（reclaim/refit/deactivate 一并清理），不与 T4 文本层抢分层。
+        // 实证：中文审批样本 15 个 Sig Widget 在 ENABLE 下墨迹全数绘出、DISABLE 下归零
+        // （notes/scripts/t8/attribute_probe.py）。
+        annotationMode: pdfjsLib.AnnotationMode.ENABLE,
       });
       this.canvases.set(i, { el: canvas, task, textEl: null, textTask: null });
       try {
@@ -749,8 +756,8 @@ const view = new PdfView();
 const plugin: Read4EverPlugin = {
   id: PID,
   name: "PDF 阅读器",
-  version: "0.3.0",
-  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮），速度键与 Space 经宿主滚屏引擎可用",
+  version: "0.4.0",
+  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互），速度键与 Space 经宿主滚屏引擎可用",
   extensions: [".pdf"],
   open: (ctx) => view.open(ctx),
   togglePlay: () => view.togglePlay(),

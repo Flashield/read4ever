@@ -424,7 +424,7 @@ export default {
 const DEV_PLUGINS = [
   { id: "markdown-viewer", name: "Markdown 查看", version: "1.1.0", description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板、自动滚屏）", extensions: [".md", ".markdown", ".mdown"] },
   { id: "epub-viewer", name: "EPUB 查看", version: "1.1.0", description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式、自动滚屏跨章续滚", extensions: [".epub"] },
-  { id: "pdf", name: "PDF 阅读器", version: "0.3.0", description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮），速度键与 Space 经宿主滚屏引擎可用", extensions: [".pdf"] },
+  { id: "pdf", name: "PDF 阅读器", version: "0.4.0", description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互），速度键与 Space 经宿主滚屏引擎可用", extensions: [".pdf"] },
 ];
 const devMainJs = new Map<string, string>();
 const devPluginsReady = (async () => {
