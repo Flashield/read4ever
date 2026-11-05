@@ -1,6 +1,7 @@
 /* 视频查看插件：播放常见视频格式（含 zip 内视频）。
    基础功能：播放/暂停、进度条跳转、时间显示、倍速、音量/静音、全屏、
-   同目录/同压缩包内上一个/下一个、自动连播、最小化到托盘仍播放（可选，仅托盘路径豁免暂停）。
+   同目录/同压缩包内上一个/下一个、自动连播、重开续播（>3 秒才恢复，播完清除）、
+   最小化到托盘仍播放（可选，仅托盘路径豁免暂停）。
    大文件：声明 wantsStream——本地文件、本地 zip 存储型条目与 SMB 远程普通文件走宿主 read4ever-stream://
    协议（HTTP Range 分块，2GB+ 不整读内存），流式失败（远程 zip 条目、压缩条目等）自动回退字节整读。
    移动端就绪（docs/iOS移植方案.md D3/D4）：<video playsinline>、纯点击交互、
@@ -34,6 +35,46 @@ let autoplayNext = pluginSetting<boolean>(PID, "autoplayNext", true);
 let defaultRate = pluginSetting<number>(PID, "rate", 1);
 let trayKeepPlaying = pluginSetting<boolean>(PID, "trayKeepPlaying", false); // 最小化到托盘仍播放：仅托盘路径豁免全停
 
+/* ========== 续播位置（模块级共享：path → 秒；上限 300 条，Map 插入序淘汰最旧） ========== */
+
+const positions = new Map<string, number>();
+try {
+  const raw = pluginSetting<string>(PID, "positions", "");
+  if (raw) {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      for (const [k, v] of Object.entries(parsed as Record<string, number>))
+        if (typeof v === "number" && v > 0) positions.set(k, v);
+  }
+} catch {
+  /* 损坏忽略：无续播 */
+}
+let positionsDirty = false;
+
+function setPosition(path: string, sec: number): void {
+  positions.delete(path); // 重插到 Map 尾部 = 最近使用
+  positions.set(path, sec);
+  while (positions.size > 300) {
+    const oldest = positions.keys().next().value;
+    if (oldest === undefined) break;
+    positions.delete(oldest);
+  }
+  positionsDirty = true;
+}
+
+function clearPosition(path: string): void {
+  if (positions.delete(path)) {
+    positionsDirty = true;
+    persistPositions();
+  }
+}
+
+function persistPositions(): void {
+  if (!positionsDirty) return;
+  positionsDirty = false;
+  setPluginSetting(PID, "positions", JSON.stringify(Object.fromEntries(positions)));
+}
+
 /** 菜单动作的视图侧落点：当前激活视图若为本插件的实例则返回之
  *  （无视图/其他插件视图激活时为 null，菜单只改设置不动视图，与旧版行为一致） */
 function liveView(): VideoView | null {
@@ -64,6 +105,8 @@ class VideoView implements PluginViewInstance {
   private ctx: PluginOpenContext | null = null;
   private video: HTMLVideoElement | null = null;
   private globalIdx = 0;
+  private loadedPath = ""; // video 元素当前实际加载的媒体路径（与 UI 展示路径的职责区分）
+  private lastSlot = -1; // 15 秒槽位：播放中按槽落盘续播位置
   private seeking = false; // 用户正在拖进度条：timeupdate 暂不回写滑杆
   private sessionEl: HTMLElement | null = null; // 媒体坞完整控制行（挂在 #media-dock，不在 host 内）
   private mdPlay: HTMLButtonElement | null = null;
@@ -112,6 +155,7 @@ class VideoView implements PluginViewInstance {
 
   private async loadVideo(index: number, autoplay: boolean): Promise<void> {
     if (!this.ctx || !this.video) return;
+    this.saveCurrentPosition(); // 切换/重载：落盘上一视频位置
     this.globalIdx = Math.max(0, Math.min(index, this.ctx.siblings.length - 1));
     const path = this.ctx.siblings[this.globalIdx] || this.ctx.path;
     try {
@@ -121,11 +165,30 @@ class VideoView implements PluginViewInstance {
       if (!this.ctx || !this.video) return;
       this.currentStream = !!stream;
       this.video.src = url;
+      this.loadedPath = path; // src 提交点：自此暂停/槽位/播完落盘均归属新视频
+      this.lastSlot = -1;
       this.video.playbackRate = defaultRate;
       this.hideError();
       this.updateLabels();
       this.syncStatus();
       mediaDock.update(this.viewId, { title: baseName(path) }); // 连播/手动切换后迷你条标题跟随
+      // 续播：位置 >3 秒才跳转并提示（跨视图/标签页共享，按 path 索引）
+      const pos = positions.get(path);
+      if (pos && pos > 3) {
+        const v = this.video;
+        const seek = () => {
+          if (this.video === v && this.loadedPath === path) {
+            try {
+              v.currentTime = pos;
+              app.toast(`已续播 ${fmtTime(pos)}`);
+            } catch {
+              /* 已切走 */
+            }
+          }
+        };
+        if (v.readyState >= 1) seek();
+        else v.addEventListener("loadedmetadata", seek, { once: true });
+      }
       if (autoplay) {
         try {
           await this.video.play();
@@ -153,6 +216,13 @@ class VideoView implements PluginViewInstance {
     // 保持播放状态：手动切换与连播都继续播
     const wasPlaying = fromEnded || !(this.video?.paused ?? true);
     await this.loadVideo(target, wasPlaying);
+  }
+
+  /** 记录当前视频播放位置（ended 不记——播完的视频重开从头播） */
+  private saveCurrentPosition(): void {
+    const p = this.loadedPath;
+    if (!this.video || !p || this.video.ended || this.video.currentTime <= 0) return;
+    setPosition(p, this.video.currentTime);
   }
 
   togglePlay(): void {
@@ -340,6 +410,14 @@ class VideoView implements PluginViewInstance {
         this.mdProgress.value = String(Math.round((video.currentTime / video.duration) * 1000));
       if (this.mdCur) this.mdCur.textContent = fmtTime(video.currentTime);
       if (this.mdDur) this.mdDur.textContent = fmtTime(video.duration);
+      if (!video.paused && Number.isFinite(video.duration) && video.duration > 0) {
+        const slot = Math.floor(video.currentTime / 15);
+        if (slot !== this.lastSlot) {
+          this.lastSlot = slot;
+          this.saveCurrentPosition();
+          persistPositions();
+        }
+      }
       this.syncStatus();
     });
 
@@ -359,9 +437,14 @@ class VideoView implements PluginViewInstance {
       this.syncStatus();
     };
     video.addEventListener("play", syncPlayBtn);
-    video.addEventListener("pause", syncPlayBtn);
+    video.addEventListener("pause", () => {
+      if (this.video && !this.video.ended) this.saveCurrentPosition(); // ended 也发 pause：播完不记位置
+      persistPositions();
+      syncPlayBtn();
+    });
     video.addEventListener("ended", () => {
       syncPlayBtn();
+      clearPosition(this.loadedPath); // 播完的视频重开从头播
       if (autoplayNext) void this.nav(1, true);
     });
     video.addEventListener("error", () => {
@@ -434,6 +517,8 @@ class VideoView implements PluginViewInstance {
   }
 
   deactivate(): void {
+    this.saveCurrentPosition(); // 关视图：落盘位置
+    persistPositions();
     mediaDock.detach(this.viewId); // registry closeView 亦会 detach，此处幂等兜底
     this.sessionEl = null;
     this.mdPlay = null;
@@ -515,9 +600,9 @@ function menu(): MenuItemDef[] {
 export const videoViewerPlugin: Read4EverPlugin = {
   id: PID,
   name: "视频查看",
-  version: "1.4.0",
+  version: "1.5.0",
   description:
-    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播，可选「最小化托盘仍播放」托盘后台续播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）；支持多标签页多实例",
+    "播放常见视频格式（含 zip 内视频）：播放/暂停、进度条跳转、倍速、音量/静音、全屏，同目录/同压缩包内上一个/下一个与自动连播，重开自动续播上次位置（>3 秒才恢复，播完清除），可选「最小化托盘仍播放」托盘后台续播；2GB+ 大文件走宿主流式协议按需分块（本地文件、本地 zip 存储型条目与 SMB 远程普通文件；远程 zip 条目回退整读）；支持多标签页多实例",
   extensions: EXTENSIONS,
   wantsStream: true,
   trayPlaybackExempt: () => trayKeepPlaying,
