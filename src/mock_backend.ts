@@ -359,6 +359,17 @@ const DEMO_PDF_DATAURL = "data:application/pdf;base64," + bytesToBase64(makeDemo
 /* A4 尺寸 78 页长文档：多页连续滚屏/按需渲染/回收的演示与浏览器验证素材（对应 78 页真实论文样本） */
 const DEMO_PDF_LONG_DATAURL = "data:application/pdf;base64," + bytesToBase64(makeDemoPdf(78, 595, 842));
 
+/* T7 错误路径演示样本（追加在演示列表尾部，勿插中间——演示对话框/侧栏按序循环）：
+   加密（AES-256，用户密码 rb123）由 notes/scripts/t7/make_samples.py 经 pikepdf 生成后
+   以 base64 内联，运行时不依赖仓库外文件；全零与截断（截前 1/3）直接字节构造。 */
+const DEMO_PDF_ENCRYPTED_B64 =
+  "JVBERi0xLjcKJb/3ov4KMSAwIG9iago8PCAvRXh0ZW5zaW9ucyA8PCAvQURCRSA8PCAvQmFzZVZlcnNpb24gLzEuNyAvRXh0ZW5zaW9uTGV2ZWwgOCA+PiA+PiAvUGFnZXMgMiAwIFIgL1R5cGUgL0NhdGFsb2cgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL0NvdW50IDIgL0tpZHMgWyAzIDAgUiA0IDAgUiBdIC9UeXBlIC9QYWdlcyA+PgplbmRvYmoKMyAwIG9iago8PCAvQ29udGVudHMgNSAwIFIgL01lZGlhQm94IFsgMCAwIDU5NSA0MDAgXSAvUGFyZW50IDIgMCBSIC9SZXNvdXJjZXMgPDwgL0ZvbnQgPDwgL0YxIDYgMCBSID4+ID4+IC9UeXBlIC9QYWdlID4+CmVuZG9iago0IDAgb2JqCjw8IC9Db250ZW50cyA3IDAgUiAvTWVkaWFCb3ggWyAwIDAgNTk1IDQwMCBdIC9QYXJlbnQgMiAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNiAwIFIgPj4gPj4gL1R5cGUgL1BhZ2UgPj4KZW5kb2JqCjUgMCBvYmoKPDwgL0xlbmd0aCAxMTIgL0ZpbHRlciAvRmxhdGVEZWNvZGUgPj4Kc3RyZWFtCuTlRIP1n+uXrr+Ue0j7fm+tpLh0IDs2Lfcxv3S8pUYykV3haEbSAOmhupT+Fpn+W0zOTRftn7vafUDVO1+S3Sn20rHf/y5EdGS0hKqeXKBNifq+tQUoeB/Kll6s19aWa3pSk7lrijnBVJxVqaHOJmoKZW5kc3RyZWFtCmVuZG9iago2IDAgb2JqCjw8IC9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nIC9TdWJ0eXBlIC9UeXBlMSAvVHlwZSAvRm9udCA+PgplbmRvYmoKNyAwIG9iago8PCAvTGVuZ3RoIDExMiAvRmlsdGVyIC9GbGF0ZURlY29kZSA+PgpzdHJlYW0K1t4pnINt5J/qmTKTN9JVRsFeZykM+O+uCgOJBV9boiVI0sFB1swnopBtkE/R1Z2cxhxr1e128XZPoxXaQJcAQrbKn+L4A4FSdc9aWpcGMF79ZwhRMQkVE8YmgFq0avQXiLpPmkMhHKyfyu9Uu3/WMgplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL0NGIDw8IC9TdGRDRiA8PCAvQXV0aEV2ZW50IC9Eb2NPcGVuIC9DRk0gL0FFU1YzIC9MZW5ndGggMzIgPj4gPj4gL0ZpbHRlciAvU3RhbmRhcmQgL0xlbmd0aCAyNTYgL08gPDA0YmM1NzUyNWRmYTg3ZDEyYzJiZDE1ZGM5YTJhZTQzZDhhOGVjOGUxNTYzOWRmMzVmYWNkZGRkYzg3MDM1ODQ4Yjk1NTZhNTkxZmVkNjk1N2JlM2RjNTM1MmU2Njk0YT4gL09FIDw4YjJiYzg1MzU4YWE5N2Y5MTM2MDQ1ODliOWJjOTJkMjU2ZjFkOTkwN2FmMzA4YTI0NzRmNTY3OGRjNzJlMTVhPiAvUCAtMTAyOCAvUGVybXMgPDEzMjMwNjgzN2E0MTMwZGI2ODkzNmIzZDk0MWFkYTBjPiAvUiA2IC9TdG1GIC9TdGRDRiAvU3RyRiAvU3RkQ0YgL1UgPDNhMWVmZGE1MzVlNWM5ZWUxMGQ1OTg2ZDljNjAzNWQzNGFhOWU1N2FmN2E4MGY1MDg2MDJhMDBhZDk2ZDMxZjY1YmQwYzNlOGJhYWM5NWNmZjJiM2MxZWQwYzM1YjM4MT4gL1VFIDxjZTNmNGMzZDkxY2NlNzJiMTFhOTk4NTFhNDU5YWUzYTgyNjUwYWUwZWQ5ZDFhYTQ1NWYxMDA2MmIxY2NjOWE5PiAvViA1ID4+CmVuZG9iagp4cmVmCjAgOQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDEzMCAwMDAwMCBuIAowMDAwMDAwMTk1IDAwMDAwIG4gCjAwMDAwMDAzMjMgMDAwMDAgbiAKMDAwMDAwMDQ1MSAwMDAwMCBuIAowMDAwMDAwNjM1IDAwMDAwIG4gCjAwMDAwMDA3MzIgMDAwMDAgbiAKMDAwMDAwMDkxNiAwMDAwMCBuIAp0cmFpbGVyIDw8IC9Sb290IDEgMCBSIC9TaXplIDkgL0lEIFs8MjY1ZjhiY2E1MDBjYWU2NTdiZDIzYThjZWZkZjAzZDc+PDI2NWY4YmNhNTAwY2FlNjU3YmQyM2E4Y2VmZGYwM2Q3Pl0gL0VuY3J5cHQgOCAwIFIgPj4Kc3RhcnR4cmVmCjE0NjYKJSVFT0YK";
+const DEMO_PDF_ENCRYPTED_DATAURL = "data:application/pdf;base64," + DEMO_PDF_ENCRYPTED_B64;
+const DEMO_PDF_BROKEN_DATAURL = "data:application/pdf;base64," + bytesToBase64(new Uint8Array(16384));
+const demoPdfFull = makeDemoPdf(3);
+const DEMO_PDF_TRUNCATED_DATAURL =
+  "data:application/pdf;base64," + bytesToBase64(demoPdfFull.slice(0, (demoPdfFull.length / 3) | 0));
+
 /* ========== 演示外部插件（走完整外部链路：list → read main.js → blob import → register） ========== */
 
 const DEMO_PLUGIN_PKG = {
@@ -473,6 +484,9 @@ const mockFsRoot: MockDirNode = mockDir({
   "示例数据.hex": mockFile(
     "Read4Ever external plugin demo.\nThis plain-text file is shown by the demo\nhex-viewer plugin, loaded through the full\nexternal plugin pipeline (manifest -> main.js -> blob import).\n"
   ),
+  "加密演示.pdf": mockFile(DEMO_PDF_ENCRYPTED_DATAURL),
+  "损坏演示.pdf": mockFile(DEMO_PDF_BROKEN_DATAURL),
+  "截断演示.pdf": mockFile(DEMO_PDF_TRUNCATED_DATAURL),
 });
 
 const fsJoin = (dir: string, name: string): string => dir.replace(/[\\/]+$/, "") + "\\" + name;
