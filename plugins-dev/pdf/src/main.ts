@@ -5,6 +5,12 @@ import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "../../../src/plugins/types";
 import workerText from "../dist/pdf.worker.min.mjs.txt";
+import { parsePosMap, upsertPos, POS_DEBOUNCE_MS, type PdfSavedPos } from "./positions";
+
+/* 进度存档的纯逻辑具名导出：测试缝（playwright import dist 实例验证 LRU 淘汰序），
+   不影响插件包语义（loader 只取 default）；实现于 ./positions */
+export { parsePosMap, upsertPos, POS_LIMIT, POS_DEBOUNCE_MS } from "./positions";
+export type { PdfSavedPos, PosMap } from "./positions";
 
 const PID = "pdf";
 
@@ -108,6 +114,7 @@ class PdfView implements PluginViewInstance {
   private pageDims: { w: number; h: number }[] = []; // 每页 scale=1 视口尺寸（占位几何来源）
   private pages: HTMLDivElement[] = []; // 占位序列（固定尺寸，canvas 进出其中）
   private tops: number[] = []; // 占位顶部 y（含 12px 页边距），布局真值的 JS 副本免逐帧读 DOM
+  private heights: number[] = []; // 每页占位高（布局真值 JS 副本：关视图时 DOM 已隐藏读不到）
   private cssW = 0; // 当前适宽页宽
   private states = new Uint8Array(0); // 每页渲染态：0 空 1 排队 2 渲染中 3 完成
   private renderGen: number[] = []; // 每页在途渲染令牌（回收/重排作废在途提交）
@@ -127,6 +134,10 @@ class PdfView implements PluginViewInstance {
   private passInput: HTMLInputElement | null = null;
   private passHint: HTMLSpanElement | null = null;
   private passUpdate: ((password: string) => void) | null = null;
+  private ready = false; // 首次真实布局前不落进度（防打开即覆盖待恢复的存档，EPUB 同款门）
+  private pendingRestore: { i: number; r: number } | null = null; // 待恢复存档（文档+真实布局就绪时消费）
+  private lastSt = 0; // 最近滚动位置缓存（update 随动；关视图时宿主已隐藏、DOM scrollTop 读 0）
+  private saveTimer = 0; // 进度落盘防抖定时器（滚动停止 2 秒后落一次，EPUB 同款）
   active = true; // 公开：noUnusedLocals 拒收只写私有字段（同 EPUB 约定）
 
   async open(ctx: PluginOpenContext): Promise<void> {
@@ -142,6 +153,12 @@ class PdfView implements PluginViewInstance {
       display: "-",
     });
     ensureWorker();
+    // 单例复用先清上次残留（防未消费的恢复存档串扰到无记录文件），再读本文件进度
+    this.ready = false;
+    this.pendingRestore = null;
+    this.lastSt = 0;
+    const rec = this.readPos();
+    if (rec) this.pendingRestore = { i: rec.i, r: Math.min(1, Math.max(0, rec.r)) };
     this.buildDom();
     // 滚屏引擎挂到滚动容器：速度键/Space 经宿主 togglePlayback 递入；到末尾引擎自停并回调
     this.ctx.autoscroll.attach(this.scroll, {
@@ -183,7 +200,52 @@ class PdfView implements PluginViewInstance {
     if (this.destroyed) return;
     this.version = (meta.info as { PDFFormatVersion?: string }).PDFFormatVersion || "";
     await this.buildPages();
+    if (this.scroll.clientWidth >= 60) {
+      // 宿主已可见：布局真值在位，恢复定位立即消费并解除落盘门
+      this.consumePendingRestore();
+      this.ready = true;
+    }
     this.update();
+  }
+
+  /** 读本文件的进度存档（无/页索引非法返回 null） */
+  private readPos(): PdfSavedPos | null {
+    const rec = parsePosMap(this.ctx.getSetting("positions", "{}"))[this.ctx.path];
+    return rec && rec.i >= 0 ? rec : null;
+  }
+
+  /** 应用待恢复存档：定位「页顶 + 页内比」。布局未就绪（页序列未建）不消费，等下一次时机 */
+  private consumePendingRestore(): boolean {
+    if (!this.pendingRestore || !this.pages.length) return false;
+    const p = this.pendingRestore;
+    this.pendingRestore = null;
+    if (p.i >= this.pages.length) return false;
+    const h = this.heights[p.i] ?? 0;
+    const max = this.scroll.scrollHeight - this.scroll.clientHeight;
+    this.scroll.scrollTop = Math.max(0, Math.min(max, this.tops[p.i] + p.r * h));
+    if (p.i > 0 || p.r > 0.02) this.ctx.toast("已续读上次位置");
+    return true;
+  }
+
+  /** 落进度：存「页索引 + 页内滚动比」，经 ctx.setSetting 持久化（LRU 200 条见 positions.ts）。
+      关视图时宿主已先被隐藏（closeView 先 hidden 再 deactivate），故位置/页高全取 JS 布局真值 */
+  private saveProgress(): void {
+    if (!this.ready || !this.pdf || !this.pages.length) return; // 首次真实布局前不写（防覆盖存档）
+    const st = this.lastSt;
+    const i = Math.min(this.pageAt(st), this.pages.length - 1);
+    const h = this.heights[i] ?? 0;
+    const r = h > 0 ? Math.min(1, Math.max(0, (st - this.tops[i]) / h)) : 0;
+    const map = upsertPos(parsePosMap(this.ctx.getSetting("positions", "{}")), this.ctx.path, { i, r });
+    this.ctx.setSetting("positions", JSON.stringify(map));
+  }
+
+  /** 滚动防抖落进度（2 秒）：连续滚动只留最后一次，停稳即存 */
+  private scheduleSave(): void {
+    window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
+      this.saveTimer = 0;
+      this.saveProgress();
+    }, POS_DEBOUNCE_MS);
   }
   private buildDom(): void {
     const host = this.ctx.host;
@@ -291,6 +353,7 @@ class PdfView implements PluginViewInstance {
   private layout(): void {
     this.cssW = Math.max(120, this.scroll.clientWidth - 24); // 页左右留 12px×2
     this.tops = [];
+    this.heights = [];
     let y = 12;
     for (let i = 0; i < this.pages.length; i++) {
       const d = this.pageDims[i];
@@ -301,6 +364,7 @@ class PdfView implements PluginViewInstance {
       // 文本层等比缩放因子随缩放联动（文本层只读此变量，不需重建）
       this.pages[i].style.setProperty("--rb-scale", String(scale));
       this.tops.push(y);
+      this.heights.push(h);
       y += h + 12;
     }
   }
@@ -324,6 +388,7 @@ class PdfView implements PluginViewInstance {
 
   /** 滚动/布局变化后重算可视范围：回收缓冲外渲染层、入队缓冲内未渲染页、刷新状态栏页码 */
   private update(): void {
+    this.lastSt = this.scroll.scrollTop; // 滚动位置缓存（关视图后 DOM 读不到，见 saveProgress）
     if (!this.pdf || !this.pages.length) return;
     const st = this.scroll.scrollTop;
     const v0 = this.pageAt(st);
@@ -345,6 +410,7 @@ class PdfView implements PluginViewInstance {
   }
 
   private onScroll = (): void => {
+    this.scheduleSave(); // 滚动即续期防抖：连续滚动不落盘，停 2 秒才落一次
     if (this.rafId) return;
     this.rafId = requestAnimationFrame(() => {
       this.rafId = 0;
@@ -459,9 +525,13 @@ class PdfView implements PluginViewInstance {
     for (const i of [...this.canvases.keys()]) this.reclaim(i); // 连文本层一并回收（缩放联动靠 --rb-scale，重建兜底）
     this.states = new Uint8Array(this.pages.length);
     this.layout();
-    const nm = this.scroll.scrollHeight - this.scroll.clientHeight;
-    if (nm > 0) this.scroll.scrollTop = ratio * nm;
+    if (!this.consumePendingRestore()) {
+      // 有待恢复存档时按「页+页内比」定位；否则保持整体滚动比换算（窗口缩放不丢位置）
+      const nm = this.scroll.scrollHeight - this.scroll.clientHeight;
+      if (nm > 0) this.scroll.scrollTop = ratio * nm;
+    }
     this.update();
+    this.ready = true; // 真实布局已就绪：此后才允许落进度
   }
 
   /** 当前页码：占位几何判定（视口中线落在哪页），不等渲染完成 */
@@ -498,6 +568,9 @@ class PdfView implements PluginViewInstance {
   deactivate(): void {
     this.active = false;
     this.destroyed = true;
+    this.saveProgress(); // 关视图即存（不等防抖）：「关闭再开恢复」的稳定落点
+    window.clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
     this.hidePassword();
     window.clearTimeout(this.resizeTimer);
     if (this.rafId) cancelAnimationFrame(this.rafId);
@@ -517,6 +590,7 @@ class PdfView implements PluginViewInstance {
     this.renderGen = [];
     this.pages = [];
     this.tops = [];
+    this.heights = [];
     void this.loadTask?.destroy();
     this.loadTask = null;
     this.pdf = null;
