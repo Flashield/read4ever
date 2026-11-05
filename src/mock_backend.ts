@@ -291,7 +291,7 @@ const DEMO_VIDEO_B = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZj
 
 /** 手写 PDF 字节结构：Catalog/Pages/Font(Helvetica) + 每页一条内容流。
     只用 ASCII 文字与色块保证墨迹，不依赖外部字体与资源；页数给足让视图可滚到末尾。 */
-function makeDemoPdf(pageCount: number): Uint8Array {
+function makeDemoPdf(pageCount: number, pageW = 595, pageH = 2000): Uint8Array {
   const enc = new TextEncoder();
   const chunks: Uint8Array[] = [];
   const offsets: number[] = [0]; // 对象编号从 1 起，0 号占位
@@ -305,12 +305,11 @@ function makeDemoPdf(pageCount: number): Uint8Array {
     offsets[n] = pos;
     push(`${n} 0 obj\n`);
   };
-  /* 长页（595×2000）：T1 视图只渲染首页，单页须足够高才能给滚屏测量留行程、
-     又能让「滚到底自动停止」在 9 档下数十秒内可达 */
-  const pageH = 2000;
+  /* 默认长页（595×2000）：T1 视图只渲染首页，单页须足够高才能给滚屏测量留行程、
+     又能让「滚到底自动停止」在 9 档下数十秒内可达；第二参起可给 A4 等页尺寸（多页连续滚屏演示） */
   const pageContent = (n: number): string => {
     let s =
-      `0.25 0.42 0.72 rg\n50 ${pageH - 78} 495 46 re f\n0 0 0 rg\n` +
+      `0.25 0.42 0.72 rg\n50 ${pageH - 78} ${pageW - 100} 46 re f\n0 0 0 rg\n` +
       `BT /F1 22 Tf 58 ${pageH - 100} Td (Read4Ever PDF Demo) Tj ET\n` +
       `BT /F1 16 Tf 58 ${pageH - 132} Td (This is page ${n} of ${pageCount}.) Tj ET\n` +
       `BT /F1 12 Tf 58 ${pageH - 180} Td (Autoscroll shares the text reader speed steps: keys 1 to 9.) Tj ET\n` +
@@ -357,6 +356,19 @@ function makeDemoPdf(pageCount: number): Uint8Array {
 }
 
 const DEMO_PDF_DATAURL = "data:application/pdf;base64," + bytesToBase64(makeDemoPdf(3));
+/* A4 尺寸 78 页长文档：多页连续滚屏/按需渲染/回收的演示与浏览器验证素材（对应 78 页真实论文样本） */
+const DEMO_PDF_LONG_DATAURL = "data:application/pdf;base64," + bytesToBase64(makeDemoPdf(78, 595, 842));
+
+/* T7 错误路径演示样本（追加在演示列表尾部，勿插中间——演示对话框/侧栏按序循环）：
+   加密（AES-256，用户密码 rb123）由 notes/scripts/t7/make_samples.py 经 pikepdf 生成后
+   以 base64 内联，运行时不依赖仓库外文件；全零与截断（截前 1/3）直接字节构造。 */
+const DEMO_PDF_ENCRYPTED_B64 =
+  "JVBERi0xLjcKJb/3ov4KMSAwIG9iago8PCAvRXh0ZW5zaW9ucyA8PCAvQURCRSA8PCAvQmFzZVZlcnNpb24gLzEuNyAvRXh0ZW5zaW9uTGV2ZWwgOCA+PiA+PiAvUGFnZXMgMiAwIFIgL1R5cGUgL0NhdGFsb2cgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL0NvdW50IDIgL0tpZHMgWyAzIDAgUiA0IDAgUiBdIC9UeXBlIC9QYWdlcyA+PgplbmRvYmoKMyAwIG9iago8PCAvQ29udGVudHMgNSAwIFIgL01lZGlhQm94IFsgMCAwIDU5NSA0MDAgXSAvUGFyZW50IDIgMCBSIC9SZXNvdXJjZXMgPDwgL0ZvbnQgPDwgL0YxIDYgMCBSID4+ID4+IC9UeXBlIC9QYWdlID4+CmVuZG9iago0IDAgb2JqCjw8IC9Db250ZW50cyA3IDAgUiAvTWVkaWFCb3ggWyAwIDAgNTk1IDQwMCBdIC9QYXJlbnQgMiAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNiAwIFIgPj4gPj4gL1R5cGUgL1BhZ2UgPj4KZW5kb2JqCjUgMCBvYmoKPDwgL0xlbmd0aCAxMTIgL0ZpbHRlciAvRmxhdGVEZWNvZGUgPj4Kc3RyZWFtCuTlRIP1n+uXrr+Ue0j7fm+tpLh0IDs2Lfcxv3S8pUYykV3haEbSAOmhupT+Fpn+W0zOTRftn7vafUDVO1+S3Sn20rHf/y5EdGS0hKqeXKBNifq+tQUoeB/Kll6s19aWa3pSk7lrijnBVJxVqaHOJmoKZW5kc3RyZWFtCmVuZG9iago2IDAgb2JqCjw8IC9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nIC9TdWJ0eXBlIC9UeXBlMSAvVHlwZSAvRm9udCA+PgplbmRvYmoKNyAwIG9iago8PCAvTGVuZ3RoIDExMiAvRmlsdGVyIC9GbGF0ZURlY29kZSA+PgpzdHJlYW0K1t4pnINt5J/qmTKTN9JVRsFeZykM+O+uCgOJBV9boiVI0sFB1swnopBtkE/R1Z2cxhxr1e128XZPoxXaQJcAQrbKn+L4A4FSdc9aWpcGMF79ZwhRMQkVE8YmgFq0avQXiLpPmkMhHKyfyu9Uu3/WMgplbmRzdHJlYW0KZW5kb2JqCjggMCBvYmoKPDwgL0NGIDw8IC9TdGRDRiA8PCAvQXV0aEV2ZW50IC9Eb2NPcGVuIC9DRk0gL0FFU1YzIC9MZW5ndGggMzIgPj4gPj4gL0ZpbHRlciAvU3RhbmRhcmQgL0xlbmd0aCAyNTYgL08gPDA0YmM1NzUyNWRmYTg3ZDEyYzJiZDE1ZGM5YTJhZTQzZDhhOGVjOGUxNTYzOWRmMzVmYWNkZGRkYzg3MDM1ODQ4Yjk1NTZhNTkxZmVkNjk1N2JlM2RjNTM1MmU2Njk0YT4gL09FIDw4YjJiYzg1MzU4YWE5N2Y5MTM2MDQ1ODliOWJjOTJkMjU2ZjFkOTkwN2FmMzA4YTI0NzRmNTY3OGRjNzJlMTVhPiAvUCAtMTAyOCAvUGVybXMgPDEzMjMwNjgzN2E0MTMwZGI2ODkzNmIzZDk0MWFkYTBjPiAvUiA2IC9TdG1GIC9TdGRDRiAvU3RyRiAvU3RkQ0YgL1UgPDNhMWVmZGE1MzVlNWM5ZWUxMGQ1OTg2ZDljNjAzNWQzNGFhOWU1N2FmN2E4MGY1MDg2MDJhMDBhZDk2ZDMxZjY1YmQwYzNlOGJhYWM5NWNmZjJiM2MxZWQwYzM1YjM4MT4gL1VFIDxjZTNmNGMzZDkxY2NlNzJiMTFhOTk4NTFhNDU5YWUzYTgyNjUwYWUwZWQ5ZDFhYTQ1NWYxMDA2MmIxY2NjOWE5PiAvViA1ID4+CmVuZG9iagp4cmVmCjAgOQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDEzMCAwMDAwMCBuIAowMDAwMDAwMTk1IDAwMDAwIG4gCjAwMDAwMDAzMjMgMDAwMDAgbiAKMDAwMDAwMDQ1MSAwMDAwMCBuIAowMDAwMDAwNjM1IDAwMDAwIG4gCjAwMDAwMDA3MzIgMDAwMDAgbiAKMDAwMDAwMDkxNiAwMDAwMCBuIAp0cmFpbGVyIDw8IC9Sb290IDEgMCBSIC9TaXplIDkgL0lEIFs8MjY1ZjhiY2E1MDBjYWU2NTdiZDIzYThjZWZkZjAzZDc+PDI2NWY4YmNhNTAwY2FlNjU3YmQyM2E4Y2VmZGYwM2Q3Pl0gL0VuY3J5cHQgOCAwIFIgPj4Kc3RhcnR4cmVmCjE0NjYKJSVFT0YK";
+const DEMO_PDF_ENCRYPTED_DATAURL = "data:application/pdf;base64," + DEMO_PDF_ENCRYPTED_B64;
+const DEMO_PDF_BROKEN_DATAURL = "data:application/pdf;base64," + bytesToBase64(new Uint8Array(16384));
+const demoPdfFull = makeDemoPdf(3);
+const DEMO_PDF_TRUNCATED_DATAURL =
+  "data:application/pdf;base64," + bytesToBase64(demoPdfFull.slice(0, (demoPdfFull.length / 3) | 0));
 
 /* 大小防线演示样本（T5）：文件夹栏「超限样本.pdf」内容为懒生成标记，读取时才分配
    256MB+1 的伪 PDF——平时不占内存，仅供浏览器演示环境验证插件整读防线。 */
@@ -443,14 +455,14 @@ type MockDirNode = Extract<MockFsNode, { dir: true }>;
 const MOCK_FOLDER = "C:\\demo\\书库";
 const MOCK_MTIME = Date.now();
 
-const mockDir = (children: Record<string, MockFsNode> = {}): MockFsNode => ({
+const mockDir = (children: Record<string, MockFsNode> = {}): MockDirNode => ({
   dir: true,
   children: new Map(Object.entries(children)),
 });
 const mockFile = (content: string): MockFsNode => ({ dir: false, content, mtime: MOCK_MTIME });
 const demoText = (key: keyof typeof DEMO_BOOKS): string => DEMO_BOOKS[key].content;
 
-const mockFsRoot: MockFsNode = mockDir({
+const mockFsRoot: MockDirNode = mockDir({
   "西游记选段.txt": mockFile(demoText("C:\\demo\\西游记选段.txt")),
   "鲁迅杂文.txt": mockFile(demoText("C:\\demo\\鲁迅杂文.txt")),
   "传统": mockDir({ "传统小说.txt": mockFile(demoText("C:\\demo\\传统小说.txt")) }),
@@ -473,6 +485,7 @@ const mockFsRoot: MockFsNode = mockDir({
   "笔记.md": mockFile(DEMO_MD_NOTE),
   "游记.md": mockFile(DEMO_MD_TRAVEL),
   "示例文档.pdf": mockFile(DEMO_PDF_DATAURL),
+  "论文78页.pdf": mockFile(DEMO_PDF_LONG_DATAURL),
   "超限样本.pdf": mockFile(OVERSIZE_PDF_MARKER),
   "封面图片.png": mockFile(COVER_PNG),
   "演示之书.epub": mockFile(DEMO_EPUB_DATAURL),
@@ -481,6 +494,9 @@ const mockFsRoot: MockFsNode = mockDir({
   "示例数据.hex": mockFile(
     "Read4Ever external plugin demo.\nThis plain-text file is shown by the demo\nhex-viewer plugin, loaded through the full\nexternal plugin pipeline (manifest -> main.js -> blob import).\n"
   ),
+  "加密演示.pdf": mockFile(DEMO_PDF_ENCRYPTED_DATAURL),
+  "损坏演示.pdf": mockFile(DEMO_PDF_BROKEN_DATAURL),
+  "截断演示.pdf": mockFile(DEMO_PDF_TRUNCATED_DATAURL),
 });
 
 const fsJoin = (dir: string, name: string): string => dir.replace(/[\\/]+$/, "") + "\\" + name;
@@ -669,6 +685,12 @@ let cbId = 100;
 
 /* @ts-expect-error 扩展 window：标记演示模式（fullscreen.ts 据此走网页全屏而非原生窗口全屏） */
 window.__RB_BROWSER_DEMO__ = true;
+/* @ts-expect-error 扩展 window：演示辅助——向虚拟文件系统根目录注入 data: URL 文件（真实样本抽查用，仅浏览器演示环境存在） */
+window.__RB_MOCK_SETFILE__ = (name: string, dataUrl: string): boolean => {
+  if (!name || !dataUrl.startsWith("data:") || mockFsRoot.children.has(name)) return false;
+  mockFsRoot.children.set(name, mockFile(dataUrl));
+  return true;
+};
 /* @ts-expect-error 扩展 window */
 window.__TAURI_INTERNALS__ = {
   metadata: {

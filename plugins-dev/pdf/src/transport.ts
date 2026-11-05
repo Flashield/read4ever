@@ -4,7 +4,7 @@
    disableAutoFetch 打开：阻止 pdf.js 后台渐进拉全文件，大文件内存不随体积线性增长。 */
 import "./shims";
 import * as pdfjsLib from "pdfjs-dist";
-import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
+import type { PDFDocumentLoadingTask } from "pdfjs-dist";
 import { fetchRange, probeTotalSize } from "./stream";
 import { ensureWorker } from "./worker";
 
@@ -53,16 +53,17 @@ export class StreamRangeTransport extends pdfjsLib.PDFDataRangeTransport {
   }
 }
 
-export interface StreamedDoc {
-  pdf: PDFDocumentProxy;
+export interface StreamedStart {
   transport: StreamRangeTransport;
   task: PDFDocumentLoadingTask;
 }
 
-/** 流式打开：bytes=0-0 探针取总长 → 首块 1MB 尽快出首页 → 自定义 transport 交给 pdf.js。
-   探针失败（HTTP 非 206 / 缺总长）直接抛错，调用方回退整读；加载中途网络失败经
-   fatal 回调销毁加载任务（同样表现为本函数抛错） */
-export async function openStreamed(url: string): Promise<StreamedDoc> {
+/** 流式打开（启动不等待）：bytes=0-0 探针取总长 → 首块 1MB 尽快出首页 → 自定义 transport
+   交给 pdf.js。返回加载任务但**不 await promise**——调用方须先挂 onPassword 再 await
+   （加密 PDF 的密码请求随解析异步到达，await 前挂回调即可接住）。探针失败（HTTP 非 206 /
+   缺总长）直接抛错，调用方回退整读；加载中途网络失败经 fatal 回调销毁加载任务，表现为
+   调用方 await promise 处拒绝 */
+export async function startStreamed(url: string): Promise<StreamedStart> {
   const total = await probeTotalSize(url);
   const first = await fetchRange(url, 0, Math.min(RANGE_CHUNK, total) - 1);
   const transport = new StreamRangeTransport(url, total, first);
@@ -73,5 +74,5 @@ export async function openStreamed(url: string): Promise<StreamedDoc> {
     disableAutoFetch: true,
   });
   transport.setFatalHandler(() => void task.destroy().catch(() => {}));
-  return { pdf: await task.promise, transport, task };
+  return { transport, task };
 }
