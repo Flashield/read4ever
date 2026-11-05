@@ -370,6 +370,14 @@ const demoPdfFull = makeDemoPdf(3);
 const DEMO_PDF_TRUNCATED_DATAURL =
   "data:application/pdf;base64," + bytesToBase64(demoPdfFull.slice(0, (demoPdfFull.length / 3) | 0));
 
+/* 大小防线演示样本（T5）：文件夹栏「超限样本.pdf」内容为懒生成标记，读取时才分配 256MB+1 的伪 PDF——平时不占内存，仅供浏览器演示环境验证插件整读防线。 */
+const OVERSIZE_PDF_MARKER = "@rb-oversized-pdf";
+function makeOversizedPdf(): ArrayBuffer {
+  const big = new Uint8Array(256 * 1024 * 1024 + 1);
+  big.set(makeDemoPdf(1), 0);
+  return big.buffer as ArrayBuffer;
+}
+
 /* ========== 演示外部插件（走完整外部链路：list → read main.js → blob import → register） ========== */
 
 const DEMO_PLUGIN_PKG = {
@@ -487,6 +495,7 @@ const mockFsRoot: MockDirNode = mockDir({
   "加密演示.pdf": mockFile(DEMO_PDF_ENCRYPTED_DATAURL),
   "损坏演示.pdf": mockFile(DEMO_PDF_BROKEN_DATAURL),
   "截断演示.pdf": mockFile(DEMO_PDF_TRUNCATED_DATAURL),
+  "超限样本.pdf": mockFile(OVERSIZE_PDF_MARKER),
 });
 
 const fsJoin = (dir: string, name: string): string => dir.replace(/[\\/]+$/, "") + "\\" + name;
@@ -853,6 +862,7 @@ window.__TAURI_INTERNALS__ = {
         const node = fsGet(p);
         if (!node || node.dir) return Promise.reject("读取失败: " + p);
         const content = (node as { dir: false; content: string }).content;
+        if (content === OVERSIZE_PDF_MARKER) return Promise.resolve(makeOversizedPdf());
         if (content.startsWith("data:")) return Promise.resolve(dataUrlToBuffer(content));
         return Promise.resolve(new TextEncoder().encode(content).buffer as ArrayBuffer);
       }
