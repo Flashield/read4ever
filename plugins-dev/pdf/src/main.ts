@@ -2,7 +2,7 @@
    worker 以 blob 方式内联自启动（不依赖宿主 vite 配置），自包含单文件 ESM。 */
 import "./shims"; // 必须最先 import：垫片先于 pdfjs-dist 模块体求值
 import * as pdfjsLib from "pdfjs-dist";
-import type { PDFDocumentProxy } from "pdfjs-dist";
+import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "../../../src/plugins/types";
 import workerText from "../dist/pdf.worker.min.mjs.txt";
 
@@ -37,12 +37,50 @@ interface RenderTaskLike {
   promise: Promise<void>;
 }
 
+/** 文本层任务的结构化最小类型（pdf.js TextLayer：render 完成铺 span、cancel 中止） */
+interface TextLayerLike {
+  render(): Promise<unknown>;
+  cancel(): void;
+}
+
 const VIEW_CSS = `
 .rbpdf-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 7; display: flex; align-items: center; gap: 8px; padding: 4px 10px; height: 30px; box-sizing: border-box; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border-bottom: 1px solid var(--ui-border, #555); font-size: 13px; }
 .rbpdf-title { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 0; }
 .rbpdf-page { position: relative; flex: none; overflow: hidden; background: #d9d9d9; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
 .rbpdf-page canvas { display: block; background: #fff; }
+/* 文本层（pdf.js TextLayer 容器）：以 scale=1 视口铺 span（百分比定位），再整体等比缩放
+   --rb-scale 对齐 canvas——缩放时只改变量不重建，几何恒对齐。样式要点取自 pdf.js
+   pdf_viewer.css 的 .textLayer：透明文字 + 绝对定位 + transform-origin 0 0 + 半透明选区 */
+.rbpdf-text {
+  position: absolute; top: 0; left: 0; z-index: 2;
+  overflow: clip; line-height: 1; text-align: initial;
+  letter-spacing: normal; word-spacing: normal;
+  -webkit-text-size-adjust: none; text-size-adjust: none;
+  forced-color-adjust: none; color-scheme: only light;
+  transform-origin: 0 0;
+  transform: scale(var(--rb-scale, 1));
+  /* scale=1 视口的容器尺寸由 pdf.js setLayerDimensions 写入（total-scale-factor=1） */
+  --total-scale-factor: 1;
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.rbpdf-text :is(span, br) {
+  color: transparent; position: absolute; white-space: pre;
+  cursor: text; transform-origin: 0 0; user-select: text;
+  --font-height: 0; --scale-x: 1; --rotate: 0deg;
+}
+.rbpdf-text > :not(.markedContent),
+.rbpdf-text .markedContent span:not(.markedContent) {
+  z-index: 1;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.rbpdf-text .markedContent { display: contents; }
+.rbpdf-text ::selection { background: rgba(0, 0, 255, 0.25); color: transparent; }
 `;
 
 class PdfView implements PluginViewInstance {
@@ -58,7 +96,10 @@ class PdfView implements PluginViewInstance {
   private cssW = 0; // 当前适宽页宽
   private states = new Uint8Array(0); // 每页渲染态：0 空 1 排队 2 渲染中 3 完成
   private renderGen: number[] = []; // 每页在途渲染令牌（回收/重排作废在途提交）
-  private canvases = new Map<number, { el: HTMLCanvasElement; task: RenderTaskLike | null }>();
+  private canvases = new Map<
+    number,
+    { el: HTMLCanvasElement; task: RenderTaskLike | null; textEl: HTMLDivElement | null; textTask: TextLayerLike | null }
+  >();
   private queue: number[] = []; // 待渲染页（离视口中心近者优先），每次 update 整体重建
   private pumping = 0; // 在途渲染数（并发上限 2）
   private taskSeq = 0; // 渲染任务自增令牌
@@ -156,9 +197,12 @@ class PdfView implements PluginViewInstance {
     let y = 12;
     for (let i = 0; i < this.pages.length; i++) {
       const d = this.pageDims[i];
-      const h = Math.round((d.h * this.cssW) / d.w);
+      const scale = this.cssW / d.w;
+      const h = Math.round(d.h * scale);
       this.pages[i].style.width = `${this.cssW}px`;
       this.pages[i].style.height = `${h}px`;
+      // 文本层等比缩放因子随缩放联动（文本层只读此变量，不需重建）
+      this.pages[i].style.setProperty("--rb-scale", String(scale));
       this.tops.push(y);
       y += h + 12;
     }
@@ -222,7 +266,7 @@ class PdfView implements PluginViewInstance {
     }
   }
 
-  /** 回收第 i 页渲染层（占位保留高度），作废在途渲染令牌 */
+  /** 回收第 i 页渲染层与文本层（占位保留高度），作废在途渲染令牌 */
   private reclaim(i: number): void {
     const c = this.canvases.get(i);
     this.renderGen[i] = -1;
@@ -230,6 +274,8 @@ class PdfView implements PluginViewInstance {
     if (!c) return;
     c.task?.cancel();
     c.el.remove();
+    c.textTask?.cancel();
+    c.textEl?.remove();
     this.canvases.delete(i);
   }
 
@@ -258,18 +304,47 @@ class PdfView implements PluginViewInstance {
         viewport,
         transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
       });
-      this.canvases.set(i, { el: canvas, task });
+      this.canvases.set(i, { el: canvas, task, textEl: null, textTask: null });
       try {
         await task.promise;
       } catch (e) {
         if (e instanceof pdfjsLib.RenderingCancelledException) return; // 回收路径已清场
         throw e;
       }
-      if (this.renderGen[i] === seq) this.states[i] = 3;
+      if (this.renderGen[i] === seq) {
+        this.states[i] = 3;
+        this.buildTextLayer(i, page);
+      }
     } finally {
       this.pumping--;
       this.pump();
     }
+  }
+
+  /** 第 i 页叠文本层（canvas 完成后调用）：pdf.js TextLayer 以 scale=1 视口铺 span，
+      几何随 --rb-scale 等比缩放；disableNormalization 保持摘录与源文一致。
+      失败只损选择不影响画面，吞掉异常即可 */
+  private buildTextLayer(i: number, page: PDFPageProxy): void {
+    const slot = this.pages[i];
+    const rec = this.canvases.get(i);
+    if (!slot || !rec || rec.textEl) return;
+    const el = document.createElement("div");
+    el.className = "rbpdf-text";
+    slot.append(el);
+    let tl: TextLayerLike;
+    try {
+      tl = new pdfjsLib.TextLayer({
+        textContentSource: page.streamTextContent({ disableNormalization: true }),
+        container: el,
+        viewport: page.getViewport({ scale: 1 }),
+      });
+    } catch {
+      el.remove();
+      return;
+    }
+    rec.textEl = el;
+    rec.textTask = tl;
+    void tl.render().catch(() => { /* 回收取消（AbortException）或构建失败：画布仍是完整呈现 */ });
   }
 
   /** 宿主激活（0→实际宽）或窗口尺寸变化后自动重适宽（保持页内滚动比） */
@@ -284,12 +359,7 @@ class PdfView implements PluginViewInstance {
     const max = this.scroll.scrollHeight - this.scroll.clientHeight;
     const ratio = max > 0 ? this.scroll.scrollTop / max : 0;
     this.queue = [];
-    for (const [i, c] of [...this.canvases]) {
-      c.task?.cancel();
-      c.el.remove();
-      this.canvases.delete(i);
-      this.renderGen[i] = -1;
-    }
+    for (const i of [...this.canvases.keys()]) this.reclaim(i); // 连文本层一并回收（缩放联动靠 --rb-scale，重建兜底）
     this.states = new Uint8Array(this.pages.length);
     this.layout();
     const nm = this.scroll.scrollHeight - this.scroll.clientHeight;
@@ -340,6 +410,8 @@ class PdfView implements PluginViewInstance {
     for (const [, c] of this.canvases) {
       c.task?.cancel();
       c.el.remove();
+      c.textTask?.cancel();
+      c.textEl?.remove();
     }
     this.canvases.clear();
     this.states = new Uint8Array(0);
