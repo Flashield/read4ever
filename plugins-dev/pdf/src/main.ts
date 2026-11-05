@@ -22,6 +22,12 @@ export type { PdfSavedPos, PosMap } from "./positions";
 
 const PID = "pdf";
 
+/* 页渲染态（states 取值）：空占位 / 已排队 / 渲染中 / 完成 */
+const PG_EMPTY = 0;
+const PG_QUEUED = 1;
+const PG_RENDERING = 2;
+const PG_DONE = 3;
+
 /** 渲染任务的结构化最小类型（页.render 返回对象即可赋值） */
 interface RenderTaskLike {
   cancel(): void;
@@ -105,7 +111,7 @@ class PdfView implements PluginViewInstance {
   private tops: number[] = []; // 占位顶部 y（含 12px 页边距），布局真值的 JS 副本免逐帧读 DOM
   private heights: number[] = []; // 每页占位高（布局真值 JS 副本：关视图时 DOM 已隐藏读不到）
   private cssW = 0; // 当前适宽页宽
-  private states = new Uint8Array(0); // 每页渲染态：0 空 1 排队 2 渲染中 3 完成
+  private states = new Uint8Array(0); // 每页渲染态（PG_EMPTY/PG_QUEUED/PG_RENDERING/PG_DONE）
   private renderGen: number[] = []; // 每页在途渲染令牌（回收/重排作废在途提交）
   private canvases = new Map<
     number,
@@ -117,7 +123,8 @@ class PdfView implements PluginViewInstance {
   private rafId = 0;
   private maxAlive = 10; // 同时存在渲染层的硬上界（可视页 ±2 缓冲之外再兜底）
   private resizeTimer = 0;
-  private resizeOb: ResizeObserver | null = null; // 滚动容器尺寸变化驱动重适宽（宿主激活 0→宽、窗口缩放）
+  private resizeOb: ResizeObserver | null = null; // 滚动容器尺寸变化驱动重排（宿主激活 0→宽、窗口缩放、开面板）
+  private winResizedAt = 0; // 最近一次窗口 resize 时刻：refit 据此区分「窗口缩放→回适宽」与「仅容器变化→保持缩放」
   private zoomMode: "fit" | "percent" = "fit"; // 缩放模式：适宽（默认）或百分比
   private zoom = 1; // 百分比模式的缩放因子（1 = 100%），步进 ×1.15，钳位 0.2~5
   private pageInput!: HTMLInputElement; // 页码输入（回车跳页）
@@ -127,6 +134,8 @@ class PdfView implements PluginViewInstance {
   private static readonly ZOOM_MIN = 0.2;
   private static readonly ZOOM_MAX = 5;
   private static readonly ZOOM_STEP = 1.15;
+  private static readonly WIN_FIT_GRACE_MS = 300; // 窗口 resize 判定时效（refit 去抖 150ms，事件必落在窗口内）
+  private static readonly MIN_LAYOUT_W = 60; // 布局最小容器宽：低于视为宿主隐藏（display:none），不渲染
   private destroyed = false; // 视图已销毁：迟到的解析失败/密码回调静默收场
   private passEl: HTMLDivElement | null = null; // 加密 PDF 自建密码框（宿主无输入类对话框）
   private passInput: HTMLInputElement | null = null;
@@ -134,7 +143,7 @@ class PdfView implements PluginViewInstance {
   private passUpdate: ((password: string) => void) | null = null;
   private ready = false; // 首次真实布局前不落进度（防打开即覆盖待恢复的存档，EPUB 同款门）
   private pendingRestore: { i: number; r: number } | null = null; // 待恢复存档（文档+真实布局就绪时消费）
-  private lastSt = 0; // 最近滚动位置缓存（update 随动；关视图时宿主已隐藏、DOM scrollTop 读 0）
+  private lastScrollTop = 0; // 最近滚动位置缓存（update 随动；关视图时宿主已隐藏、DOM scrollTop 读 0）
   private saveTimer = 0; // 进度落盘防抖定时器（滚动停止 2 秒后落一次，EPUB 同款）
   active = true; // 公开：noUnusedLocals 拒收只写私有字段（同 EPUB 约定）
 
@@ -151,10 +160,14 @@ class PdfView implements PluginViewInstance {
       display: "-",
     });
     ensureWorker();
-    // 单例复用先清上次残留（防未消费的恢复存档串扰到无记录文件），再读本文件进度
+    // 单例复用先清上次残留（防未消费的恢复存档串扰到无记录文件），再读本文件进度；
+    // 缩放态一并回适宽——上次会话的百分比缩放不串扰到这次打开（重开后容器变化走
+    // refit 保持模式分支，不再像旧实现那样借 refit 强制回适宽，须在此显式复位）
     this.ready = false;
     this.pendingRestore = null;
-    this.lastSt = 0;
+    this.lastScrollTop = 0;
+    this.zoomMode = "fit";
+    this.zoom = 1;
     const rec = this.readPos();
     if (rec) this.pendingRestore = { i: rec.i, r: Math.min(1, Math.max(0, rec.r)) };
     this.buildDom();
@@ -199,7 +212,7 @@ class PdfView implements PluginViewInstance {
     if (this.destroyed) return;
     this.version = (meta.info as { PDFFormatVersion?: string }).PDFFormatVersion || "";
     await this.buildPages();
-    if (this.scroll.clientWidth >= 60) {
+    if (this.scroll.clientWidth >= PdfView.MIN_LAYOUT_W) {
       // 宿主已可见：布局真值在位，恢复定位立即消费并解除落盘门
       this.consumePendingRestore();
       this.ready = true;
@@ -233,8 +246,9 @@ class PdfView implements PluginViewInstance {
     if (!bytes.length) {
       try {
         bytes = await this.ctx.loadBytes(this.ctx.path);
-      } catch {
-        if (!this.destroyed) this.ctx.toast("无法读取文件内容");
+      } catch (e) {
+        // 透传宿主错误详情（如 SMB zip 条目撞宿主 1GB 上限的「请先缓存到本地」出路引导）
+        if (!this.destroyed) this.ctx.toast(`无法读取文件内容：${String(e)}`);
         return null;
       }
     }
@@ -281,7 +295,7 @@ class PdfView implements PluginViewInstance {
       关视图时宿主已先被隐藏（closeView 先 hidden 再 deactivate），故位置/页高全取 JS 布局真值 */
   private saveProgress(): void {
     if (!this.ready || !this.pdf || !this.pages.length) return; // 首次真实布局前不写（防覆盖存档）
-    const st = this.lastSt;
+    const st = this.lastScrollTop;
     const i = Math.min(this.pageAt(st), this.pages.length - 1);
     const h = this.heights[i] ?? 0;
     const r = h > 0 ? Math.min(1, Math.max(0, (st - this.tops[i]) / h)) : 0;
@@ -387,6 +401,7 @@ class PdfView implements PluginViewInstance {
     host.addEventListener("keydown", this.onKey); // 挂 pane：工具栏/阅读区内焦点都能翻页
     this.resizeOb = new ResizeObserver(this.onResize);
     this.resizeOb.observe(this.scroll);
+    window.addEventListener("resize", this.onWinResize); // 窗口缩放回适宽（与 RO 双路汇合同一次 refit）
   }
 
   /** 加密 PDF 密码输入（复用同一浮层：错误密码时 pdf.js 会再次回调，不叠框） */
@@ -520,7 +535,7 @@ class PdfView implements PluginViewInstance {
 
   /** 滚动/布局变化后重算可视范围：回收缓冲外渲染层、入队缓冲内未渲染页、刷新状态栏页码 */
   private update(): void {
-    this.lastSt = this.scroll.scrollTop; // 滚动位置缓存（关视图后 DOM 读不到，见 saveProgress）
+    this.lastScrollTop = this.scroll.scrollTop; // 滚动位置缓存（关视图后 DOM 读不到，见 saveProgress）
     if (!this.pdf || !this.pages.length) return;
     const st = this.scroll.scrollTop;
     const v0 = this.pageAt(st);
@@ -531,8 +546,8 @@ class PdfView implements PluginViewInstance {
     const center = st + this.scroll.clientHeight / 2;
     const want: number[] = [];
     for (let i = lo; i <= hi; i++) {
-      if (this.states[i] === 0) this.states[i] = 1;
-      if (this.states[i] === 1) want.push(i);
+      if (this.states[i] === PG_EMPTY) this.states[i] = PG_QUEUED;
+      if (this.states[i] === PG_QUEUED) want.push(i);
     }
     want.sort((a, b) => Math.abs(this.tops[a] - center) - Math.abs(this.tops[b] - center));
     // 硬上界兜底：可视页异常多时只留离视口中心最近的
@@ -554,8 +569,8 @@ class PdfView implements PluginViewInstance {
   private pump(): void {
     while (this.pumping < 2 && this.queue.length > 0) {
       const i = this.queue.shift() as number;
-      if (this.states[i] !== 1) continue;
-      this.states[i] = 2;
+      if (this.states[i] !== PG_QUEUED) continue;
+      this.states[i] = PG_RENDERING;
       this.pumping++;
       void this.renderPage(i, ++this.taskSeq);
     }
@@ -565,7 +580,7 @@ class PdfView implements PluginViewInstance {
   private reclaim(i: number): void {
     const c = this.canvases.get(i);
     this.renderGen[i] = -1;
-    if (this.states[i] !== 0) this.states[i] = 0;
+    if (this.states[i] !== PG_EMPTY) this.states[i] = PG_EMPTY;
     if (!c) return;
     c.task?.cancel();
     c.el.remove();
@@ -582,7 +597,7 @@ class PdfView implements PluginViewInstance {
       const d = this.pageDims[i];
       if (!pdf || !slot || !d) return;
       const page = await pdf.getPage(i + 1);
-      if (this.states[i] !== 2) return; // 等待期间被回收
+      if (this.states[i] !== PG_RENDERING) return; // 等待期间被回收
       if (this.renderGen[i] !== -1 && this.renderGen[i] !== seq) return; // 已有更新任务接管
       this.renderGen[i] = seq;
       const scale = this.scaleOf(i);
@@ -614,7 +629,7 @@ class PdfView implements PluginViewInstance {
         throw e;
       }
       if (this.renderGen[i] === seq) {
-        this.states[i] = 3;
+        this.states[i] = PG_DONE;
         this.buildTextLayer(i, page);
       }
     } finally {
@@ -649,11 +664,23 @@ class PdfView implements PluginViewInstance {
     void tl.render().catch(() => { /* 回收取消（AbortException）或构建失败：画布仍是完整呈现 */ });
   }
 
-  /** 宿主激活（0→实际宽）或窗口尺寸变化后自动重适宽（保持页内滚动比） */
+  /** 窗口尺寸变化：无条件回适宽（票 #4 AC 字面）。窗口缩放必同时触发 ResizeObserver，
+     两条去抖路径汇合同一次 refit，这里只负责留下「刚发生过窗口 resize」的时刻供判定 */
+  private onWinResize = (): void => {
+    this.winResizedAt = Date.now();
+    this.scheduleRefit();
+  };
+
+  /** 宿主激活（0→实际宽）、开面板等仅容器尺寸变化后自动重排（保持页内滚动比与缩放模式） */
   private onResize = (): void => {
+    this.scheduleRefit();
+  };
+
+  /** refit 去抖 150ms：连续尺寸变化（拖拽窗口/连开面板）只重排一次 */
+  private scheduleRefit(): void {
     window.clearTimeout(this.resizeTimer);
     this.resizeTimer = window.setTimeout(() => void this.refit(), 150);
-  };
+  }
 
   /** 清空全部渲染层与待渲染队列（refit/缩放共用：旧 canvas 尺寸不符须整体重渲染） */
   private clearRenders(): void {
@@ -662,13 +689,17 @@ class PdfView implements PluginViewInstance {
     this.states = new Uint8Array(this.pages.length);
   }
 
+  /** 尺寸变化后的重排：窗口缩放无条件回适宽（AC）；仅容器变化（开面板/激活显示）保持
+      当前缩放模式——fit 按新容器宽重新适宽推导，percent 按新容器重排但百分比不动 */
   private async refit(): Promise<void> {
     if (!this.pdf || !this.active) return;
-    if (this.scroll.clientWidth < 60) return; // 宿主尚隐藏（display:none）：无意义布局不渲染
+    if (this.scroll.clientWidth < PdfView.MIN_LAYOUT_W) return; // 宿主尚隐藏（display:none）：无意义布局不渲染
     const max = this.scroll.scrollHeight - this.scroll.clientHeight;
     const ratio = max > 0 ? this.scroll.scrollTop / max : 0;
-    this.zoomMode = "fit"; // resize 回归适宽（AC：窗口尺寸变化后自动重新适宽）
-    this.zoom = 1;
+    if (Date.now() - this.winResizedAt < PdfView.WIN_FIT_GRACE_MS) {
+      this.zoomMode = "fit"; // 窗口尺寸变化后自动重新适宽
+      this.zoom = 1;
+    }
     this.clearRenders();
     this.layout();
     if (!this.consumePendingRestore()) {
@@ -696,12 +727,17 @@ class PdfView implements PluginViewInstance {
     this.update(); // 目标位置与当前一致时无 scroll 事件，主动刷新保证目标页入渲染池
   }
 
+  /** 缩放钳位（zoomBy/onWheel 共享）：步进结果限制在 ZOOM_MIN~ZOOM_MAX */
+  private clampZoom(v: number): number {
+    return Math.min(PdfView.ZOOM_MAX, Math.max(PdfView.ZOOM_MIN, v));
+  }
+
   /** 按因子步进缩放（工具栏 +/−）：以视口中心的当前页为基准求有效缩放后切换百分比模式 */
   private zoomBy(factor: number): void {
     if (!this.pdf || !this.pages.length) return;
     const i = this.pageAt(this.scroll.scrollTop + this.scroll.clientHeight / 2);
     const cur = this.scaleOf(i);
-    const z = Math.min(PdfView.ZOOM_MAX, Math.max(PdfView.ZOOM_MIN, cur * factor));
+    const z = this.clampZoom(cur * factor);
     if (Math.abs(z - cur) < 1e-9) return; // 已在界限
     this.applyZoom("percent", z);
   }
@@ -745,10 +781,7 @@ class PdfView implements PluginViewInstance {
     const cy = e.clientY - rect.top;
     const i = this.pageAt(this.scroll.scrollTop + cy);
     const cur = this.scaleOf(i);
-    const z = Math.min(
-      PdfView.ZOOM_MAX,
-      Math.max(PdfView.ZOOM_MIN, cur * (e.deltaY < 0 ? PdfView.ZOOM_STEP : 1 / PdfView.ZOOM_STEP)),
-    );
+    const z = this.clampZoom(cur * (e.deltaY < 0 ? PdfView.ZOOM_STEP : 1 / PdfView.ZOOM_STEP));
     if (Math.abs(z - cur) < 1e-9) return; // 已在界限
     this.applyZoom("percent", z, cx, cy);
   };
@@ -837,17 +870,12 @@ class PdfView implements PluginViewInstance {
     this.rafId = 0;
     this.resizeOb?.disconnect();
     this.resizeOb = null;
+    window.removeEventListener("resize", this.onWinResize);
     this.hostEl?.removeEventListener("keydown", this.onKey);
     this.hostEl = null;
     this.ctx.autoscroll.detach();
     this.queue = [];
-    for (const [, c] of this.canvases) {
-      c.task?.cancel();
-      c.el.remove();
-      c.textTask?.cancel();
-      c.textEl?.remove();
-    }
-    this.canvases.clear();
+    for (const i of [...this.canvases.keys()]) this.reclaim(i); // 连文本层一并回收（与 reclaim 单一实现）
     this.states = new Uint8Array(0);
     this.renderGen = [];
     this.pages = [];
