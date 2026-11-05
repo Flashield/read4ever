@@ -11,8 +11,9 @@ const PID = "pdf";
 let workerUrl = ""; // 模块级复用：worker 从 blob 实例化后 URL 即无存在必要，保留给后续打开复用
 
 /* pdf.js 6.5 直接依赖 2025 年新入库的 ES 方法（Map upsert、Uint8Array 二进制扩展、
-   Promise.withResolvers、Set.intersection）且不带垫片，旧内核没有会整体解析失败——
-   以 prologue 前置进 worker blob 补齐（与 src/shims.ts 同一组垫片，保持同步）。 */
+   Promise.withResolvers、Set.intersection、Math.sumPrecise——加密解密路径必经）且不带垫片，
+   旧内核没有会整体解析失败——以 prologue 前置进 worker blob 补齐（与 src/shims.ts 同一组垫片，
+   保持同步）。 */
 const WORKER_PROLOGUE = `
 function rbUpsert(p){Object.assign(p,{getOrInsert:function(k,v){if(!this.has(k))this.set(k,v);return this.get(k)},getOrInsertComputed:function(k,f){if(!this.has(k))this.set(k,f(k));return this.get(k)}})}
 if(!Map.prototype.getOrInsert)rbUpsert(Map.prototype);
@@ -22,6 +23,7 @@ if(!Uint8Array.prototype.toBase64){Uint8Array.prototype.toBase64=function(){let 
 if(!Uint8Array.fromBase64){Uint8Array.fromBase64=function(s){const b=atob(String(s).replace(/\\s+/g,''));const o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o}}
 if(!Set.prototype.intersection){Set.prototype.intersection=function(o){const t=this.size<=o.size?this:o,b=t===this?o:this,n=new Set();for(const v of t)if(b.has(v))n.add(v);return n}}
 if(!Promise.withResolvers){Promise.withResolvers=function(){let r,j;const p=new Promise(function(a,b){r=a;j=b});return{promise:p,resolve:r,reject:j}}}
+if(!Math.sumPrecise){Math.sumPrecise=function(v){let s=0;for(const x of v)s+=x;return s}}
 `;
 
 /** worker 以 blob 自启动（同源 blob URL 直接可用，无需宿主任何资源路径） */
@@ -37,6 +39,13 @@ interface RenderTaskLike {
   promise: Promise<void>;
 }
 
+/** 加载任务的结构化最小类型（onPassword 为 pdf.js 6.x 任务属性，赋值即可挂回调） */
+interface LoadTaskLike {
+  promise: Promise<PDFDocumentProxy>;
+  destroy(): Promise<void>;
+  onPassword: Function; // 与 pdfjs-dist d.ts 同宽：本插件只赋值不调用
+}
+
 const VIEW_CSS = `
 .rbpdf-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 7; display: flex; align-items: center; gap: 8px; padding: 4px 10px; height: 30px; box-sizing: border-box; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border-bottom: 1px solid var(--ui-border, #555); font-size: 13px; }
 .rbpdf-bar button { border: 1px solid var(--ui-border, #555); background: var(--ui-bg, #2b2b2b); color: inherit; border-radius: 6px; padding: 2px 8px; cursor: pointer; font: inherit; }
@@ -48,13 +57,19 @@ const VIEW_CSS = `
 .rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px 0; }
 .rbpdf-page { position: relative; flex: none; margin: 0 auto; overflow: hidden; background: #d9d9d9; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
 .rbpdf-page canvas { display: block; background: #fff; }
+.rbpdf-pass { position: absolute; inset: 0; z-index: 9; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); }
+.rbpdf-pass-card { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; min-width: 260px; background: var(--ui-bg, #2b2b2b); color: var(--ui-text, #e0e0e0); border: 1px solid var(--ui-border, #555); border-radius: 6px; font-size: 13px; }
+.rbpdf-pass-input { box-sizing: border-box; width: 100%; padding: 5px 8px; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border: 1px solid var(--ui-border, #555); border-radius: 4px; font-size: 13px; }
+.rbpdf-pass-hint { min-height: 1.2em; color: #e07b7b; font-size: 12px; }
+.rbpdf-pass-ok { padding: 4px 14px; background: var(--accent, #4a9eff); color: #fff; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; }
+.rbpdf-pass-cancel { padding: 4px 14px; background: transparent; color: var(--ui-text, #e0e0e0); border: 1px solid var(--ui-border, #555); border-radius: 4px; font-size: 13px; cursor: pointer; }
+.rbpdf-pass-btns { display: flex; justify-content: flex-end; gap: 8px; }
 `;
 
 class PdfView implements PluginViewInstance {
   private ctx!: PluginOpenContext;
   private pdf: PDFDocumentProxy | null = null;
-  private loadTask: { promise: Promise<PDFDocumentProxy>; destroy(): Promise<void> } | null =
-    null; // v6 起销毁走加载任务
+  private loadTask: LoadTaskLike | null = null; // v6 起销毁走加载任务
   private version = ""; // PDF 版本号（getMetadata 的 PDFFormatVersion）
   private scroll!: HTMLElement;
   private pageDims: { w: number; h: number }[] = []; // 每页 scale=1 视口尺寸（占位几何来源）
@@ -80,11 +95,17 @@ class PdfView implements PluginViewInstance {
   private static readonly ZOOM_MIN = 0.2;
   private static readonly ZOOM_MAX = 5;
   private static readonly ZOOM_STEP = 1.15;
+  private destroyed = false; // 视图已销毁：迟到的解析失败/密码回调静默收场
+  private passEl: HTMLDivElement | null = null; // 加密 PDF 自建密码框（宿主无输入类对话框）
+  private passInput: HTMLInputElement | null = null;
+  private passHint: HTMLSpanElement | null = null;
+  private passUpdate: ((password: string) => void) | null = null;
   active = true; // 公开：noUnusedLocals 拒收只写私有字段（同 EPUB 约定）
 
   async open(ctx: PluginOpenContext): Promise<void> {
     this.ctx = ctx;
     this.active = true;
+    this.destroyed = false;
     ctx.setStatus({
       title: ctx.name,
       file: ctx.name,
@@ -94,20 +115,7 @@ class PdfView implements PluginViewInstance {
       display: "-",
     });
     ensureWorker();
-    try {
-      // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes
-      this.loadTask = pdfjsLib.getDocument({ data: ctx.bytes.slice() });
-      this.pdf = await this.loadTask.promise;
-      const meta = await this.pdf.getMetadata();
-      this.version = (meta.info as { PDFFormatVersion?: string }).PDFFormatVersion || "";
-    } catch (e) {
-      this.pdf = null;
-      ctx.toast(`PDF 解析失败：${String(e).slice(0, 80)}`);
-      ctx.closeView();
-      return;
-    }
     this.buildDom();
-    await this.buildPages();
     // 滚屏引擎挂到滚动容器：速度键/Space 经宿主 togglePlayback 递入；到末尾引擎自停并回调
     this.ctx.autoscroll.attach(this.scroll, {
       onEnd: () => {
@@ -115,6 +123,39 @@ class PdfView implements PluginViewInstance {
         this.syncStatus();
       },
     });
+    // 后台解析不阻塞 open：密码输入/报错期间宿主已可见可交互
+    //（open 返回前宿主 .hidden 未摘，阻塞等输入会死锁）
+    void this.loadDocument();
+  }
+
+  private async loadDocument(): Promise<void> {
+    try {
+      // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes
+      const task = pdfjsLib.getDocument({ data: this.ctx.bytes.slice() });
+      // 密码回调挂加载任务上（pdf.js 6.x：PasswordRequest 异步到达，此刻赋值无竞态）；
+      // code=INCORRECT_PASSWORD 时提示重试
+      task.onPassword = (update: (password: string) => void, code: number): void =>
+        this.showPassword(update, code === pdfjsLib.PasswordResponses.INCORRECT_PASSWORD);
+      this.loadTask = task;
+      this.pdf = await task.promise;
+    } catch (e) {
+      this.pdf = null;
+      if (this.destroyed) return; // 取消密码/视图已关：静默收场，不报错误 toast
+      // 无效数据/解析失败：明确中文报错后收场，应用可继续打开其他文件
+      this.ctx.toast(
+        e instanceof pdfjsLib.InvalidPDFException
+          ? "无法打开：文件已损坏或不是 PDF 文档"
+          : `PDF 打开失败：${String(e).slice(0, 80)}`
+      );
+      this.ctx.closeView();
+      return;
+    }
+    if (this.destroyed) return;
+    this.hidePassword();
+    const meta = await this.pdf.getMetadata();
+    if (this.destroyed) return;
+    this.version = (meta.info as { PDFFormatVersion?: string }).PDFFormatVersion || "";
+    await this.buildPages();
     this.update();
   }
   private buildDom(): void {
@@ -207,6 +248,62 @@ class PdfView implements PluginViewInstance {
     host.addEventListener("keydown", this.onKey); // 挂 pane：工具栏/阅读区内焦点都能翻页
     this.resizeOb = new ResizeObserver(this.onResize);
     this.resizeOb.observe(this.scroll);
+  }
+
+  /** 加密 PDF 密码输入（复用同一浮层：错误密码时 pdf.js 会再次回调，不叠框） */
+  private showPassword(update: (password: string) => void, incorrect = false): void {
+    if (this.destroyed) return;
+    this.passUpdate = update;
+    if (!this.passEl) {
+      const el = document.createElement("div");
+      el.className = "rbpdf-pass";
+      const card = document.createElement("div");
+      card.className = "rbpdf-pass-card";
+      const label = document.createElement("span");
+      label.textContent = "PDF 已加密";
+      const hint = document.createElement("span");
+      hint.className = "rbpdf-pass-hint";
+      const input = document.createElement("input");
+      input.type = "password";
+      input.className = "rbpdf-pass-input";
+      input.placeholder = "密码";
+      const ok = document.createElement("button");
+      ok.className = "rbpdf-pass-ok";
+      ok.textContent = "确定";
+      ok.addEventListener("click", () => this.passUpdate?.(input.value));
+      const cancel = document.createElement("button");
+      cancel.className = "rbpdf-pass-cancel";
+      cancel.textContent = "取消";
+      // 取消等同 Esc 关闭路径：销毁加载任务并收场（deactivate 置 destroyed，迟到异常静默）
+      cancel.addEventListener("click", () => {
+        this.hidePassword();
+        this.ctx.closeView();
+      });
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") this.passUpdate?.(input.value);
+      });
+      const btns = document.createElement("div");
+      btns.className = "rbpdf-pass-btns";
+      btns.append(cancel, ok);
+      card.append(label, hint, input, btns);
+      el.appendChild(card);
+      this.passEl = el;
+      this.passInput = input;
+      this.passHint = hint;
+      this.ctx.host.appendChild(el);
+    }
+    this.passHint!.textContent = incorrect ? "密码不正确，请重试" : "";
+    this.passEl.classList.remove("hidden");
+    this.passInput!.value = "";
+    this.passInput!.focus();
+  }
+
+  private hidePassword(): void {
+    this.passUpdate = null;
+    this.passEl?.remove();
+    this.passEl = null;
+    this.passInput = null;
+    this.passHint = null;
   }
 
   /** 收集每页尺寸并建占位序列（高度=页高×适宽缩放），布局总高一次到位——滚动中占位高度不动 */
@@ -548,6 +645,8 @@ class PdfView implements PluginViewInstance {
 
   deactivate(): void {
     this.active = false;
+    this.destroyed = true;
+    this.hidePassword();
     window.clearTimeout(this.resizeTimer);
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;

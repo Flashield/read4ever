@@ -1,6 +1,7 @@
 /* pdf.js 6.5 依赖 2025 年才进引擎的新方法且不带垫片，旧内核（WebView2/WKWebView 落后版本）
    会缺方法导致文档整体解析失败：Map/WeakMap upsert（getOrInsert/getOrInsertComputed）、
-   二进制扩展（Uint8Array.toHex/toBase64/fromBase64）、Promise.withResolvers、Set.intersection。
+   二进制扩展（Uint8Array.toHex/toBase64/fromBase64）、Promise.withResolvers、Set.intersection、
+   Math.sumPrecise（加密解密路径必经）。
    本模块必须先于 pdfjs-dist import（esbuild 按依赖序求值）；worker 是独立上下文，
    由 main.ts 的 WORKER_PROLOGUE 注入同一组垫片，两处需保持同步。 */
 
@@ -93,6 +94,20 @@ if (typeof (Promise as { withResolvers?: unknown }).withResolvers !== "function"
         reject = rej;
       });
       return { promise, resolve, reject };
+    },
+    writable: true,
+    configurable: true,
+  });
+}
+
+/* Math.sumPrecise（ES2025）：pdf.js 加密解密路径（哈希分支选择）与字体/xref 尺寸计算必经；
+   这些场景全是整数求和，朴素累加精确等价 */
+if (typeof (Math as { sumPrecise?: unknown }).sumPrecise !== "function") {
+  Object.defineProperty(Math, "sumPrecise", {
+    value: function (values: Iterable<number>): number {
+      let sum = 0;
+      for (const v of values) sum += v;
+      return sum;
     },
     writable: true,
     configurable: true,
