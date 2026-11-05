@@ -291,7 +291,7 @@ const DEMO_VIDEO_B = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZj
 
 /** 手写 PDF 字节结构：Catalog/Pages/Font(Helvetica) + 每页一条内容流。
     只用 ASCII 文字与色块保证墨迹，不依赖外部字体与资源；页数给足让视图可滚到末尾。 */
-function makeDemoPdf(pageCount: number): Uint8Array {
+function makeDemoPdf(pageCount: number, pageW = 595, pageH = 2000): Uint8Array {
   const enc = new TextEncoder();
   const chunks: Uint8Array[] = [];
   const offsets: number[] = [0]; // 对象编号从 1 起，0 号占位
@@ -305,12 +305,11 @@ function makeDemoPdf(pageCount: number): Uint8Array {
     offsets[n] = pos;
     push(`${n} 0 obj\n`);
   };
-  /* 长页（595×2000）：T1 视图只渲染首页，单页须足够高才能给滚屏测量留行程、
-     又能让「滚到底自动停止」在 9 档下数十秒内可达 */
-  const pageH = 2000;
+  /* 默认长页（595×2000）：T1 视图只渲染首页，单页须足够高才能给滚屏测量留行程、
+     又能让「滚到底自动停止」在 9 档下数十秒内可达；第二参起可给 A4 等页尺寸（多页连续滚屏演示） */
   const pageContent = (n: number): string => {
     let s =
-      `0.25 0.42 0.72 rg\n50 ${pageH - 78} 495 46 re f\n0 0 0 rg\n` +
+      `0.25 0.42 0.72 rg\n50 ${pageH - 78} ${pageW - 100} 46 re f\n0 0 0 rg\n` +
       `BT /F1 22 Tf 58 ${pageH - 100} Td (Read4Ever PDF Demo) Tj ET\n` +
       `BT /F1 16 Tf 58 ${pageH - 132} Td (This is page ${n} of ${pageCount}.) Tj ET\n` +
       `BT /F1 12 Tf 58 ${pageH - 180} Td (Autoscroll shares the text reader speed steps: keys 1 to 9.) Tj ET\n` +
@@ -357,6 +356,8 @@ function makeDemoPdf(pageCount: number): Uint8Array {
 }
 
 const DEMO_PDF_DATAURL = "data:application/pdf;base64," + bytesToBase64(makeDemoPdf(3));
+/* A4 尺寸 78 页长文档：多页连续滚屏/按需渲染/回收的演示与浏览器验证素材（对应 78 页真实论文样本） */
+const DEMO_PDF_LONG_DATAURL = "data:application/pdf;base64," + bytesToBase64(makeDemoPdf(78, 595, 842));
 
 /* T7 错误路径演示样本（追加在演示列表尾部，勿插中间——演示对话框/侧栏按序循环）：
    加密（AES-256，用户密码 rb123）由 notes/scripts/t7/make_samples.py 经 pikepdf 生成后
@@ -445,14 +446,14 @@ type MockDirNode = Extract<MockFsNode, { dir: true }>;
 const MOCK_FOLDER = "C:\\demo\\书库";
 const MOCK_MTIME = Date.now();
 
-const mockDir = (children: Record<string, MockFsNode> = {}): MockFsNode => ({
+const mockDir = (children: Record<string, MockFsNode> = {}): MockDirNode => ({
   dir: true,
   children: new Map(Object.entries(children)),
 });
 const mockFile = (content: string): MockFsNode => ({ dir: false, content, mtime: MOCK_MTIME });
 const demoText = (key: keyof typeof DEMO_BOOKS): string => DEMO_BOOKS[key].content;
 
-const mockFsRoot: MockFsNode = mockDir({
+const mockFsRoot: MockDirNode = mockDir({
   "西游记选段.txt": mockFile(demoText("C:\\demo\\西游记选段.txt")),
   "鲁迅杂文.txt": mockFile(demoText("C:\\demo\\鲁迅杂文.txt")),
   "传统": mockDir({ "传统小说.txt": mockFile(demoText("C:\\demo\\传统小说.txt")) }),
@@ -475,6 +476,7 @@ const mockFsRoot: MockFsNode = mockDir({
   "笔记.md": mockFile(DEMO_MD_NOTE),
   "游记.md": mockFile(DEMO_MD_TRAVEL),
   "示例文档.pdf": mockFile(DEMO_PDF_DATAURL),
+  "论文78页.pdf": mockFile(DEMO_PDF_LONG_DATAURL),
   "封面图片.png": mockFile(COVER_PNG),
   "演示之书.epub": mockFile(DEMO_EPUB_DATAURL),
   "示例视频A.mp4": mockFile(DEMO_VIDEO_A),
@@ -673,6 +675,12 @@ let cbId = 100;
 
 /* @ts-expect-error 扩展 window：标记演示模式（fullscreen.ts 据此走网页全屏而非原生窗口全屏） */
 window.__RB_BROWSER_DEMO__ = true;
+/* @ts-expect-error 扩展 window：演示辅助——向虚拟文件系统根目录注入 data: URL 文件（真实样本抽查用，仅浏览器演示环境存在） */
+window.__RB_MOCK_SETFILE__ = (name: string, dataUrl: string): boolean => {
+  if (!name || !dataUrl.startsWith("data:") || mockFsRoot.children.has(name)) return false;
+  mockFsRoot.children.set(name, mockFile(dataUrl));
+  return true;
+};
 /* @ts-expect-error 扩展 window */
 window.__TAURI_INTERNALS__ = {
   metadata: {

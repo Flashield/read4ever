@@ -49,8 +49,9 @@ interface LoadTaskLike {
 const VIEW_CSS = `
 .rbpdf-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 7; display: flex; align-items: center; gap: 8px; padding: 4px 10px; height: 30px; box-sizing: border-box; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border-bottom: 1px solid var(--ui-border, #555); font-size: 13px; }
 .rbpdf-title { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); }
-.rbpdf-canvas { display: block; margin: 12px auto; background: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
+.rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 0; }
+.rbpdf-page { position: relative; flex: none; overflow: hidden; background: #d9d9d9; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
+.rbpdf-page canvas { display: block; background: #fff; }
 .rbpdf-pass { position: absolute; inset: 0; z-index: 9; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); }
 .rbpdf-pass-card { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; min-width: 260px; background: var(--ui-bg, #2b2b2b); color: var(--ui-text, #e0e0e0); border: 1px solid var(--ui-border, #555); border-radius: 6px; font-size: 13px; }
 .rbpdf-pass-input { box-sizing: border-box; width: 100%; padding: 5px 8px; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border: 1px solid var(--ui-border, #555); border-radius: 4px; font-size: 13px; }
@@ -66,8 +67,18 @@ class PdfView implements PluginViewInstance {
   private loadTask: LoadTaskLike | null = null; // v6 起销毁走加载任务
   private version = ""; // PDF 版本号（getMetadata 的 PDFFormatVersion）
   private scroll!: HTMLElement;
-  private canvas!: HTMLCanvasElement;
-  private renderTask: RenderTaskLike | null = null;
+  private pageDims: { w: number; h: number }[] = []; // 每页 scale=1 视口尺寸（占位几何来源）
+  private pages: HTMLDivElement[] = []; // 占位序列（固定尺寸，canvas 进出其中）
+  private tops: number[] = []; // 占位顶部 y（含 12px 页边距），布局真值的 JS 副本免逐帧读 DOM
+  private cssW = 0; // 当前适宽页宽
+  private states = new Uint8Array(0); // 每页渲染态：0 空 1 排队 2 渲染中 3 完成
+  private renderGen: number[] = []; // 每页在途渲染令牌（回收/重排作废在途提交）
+  private canvases = new Map<number, { el: HTMLCanvasElement; task: RenderTaskLike | null }>();
+  private queue: number[] = []; // 待渲染页（离视口中心近者优先），每次 update 整体重建
+  private pumping = 0; // 在途渲染数（并发上限 2）
+  private taskSeq = 0; // 渲染任务自增令牌
+  private rafId = 0;
+  private maxAlive = 10; // 同时存在渲染层的硬上界（可视页 ±2 缓冲之外再兜底）
   private resizeTimer = 0;
   private resizeOb: ResizeObserver | null = null; // 滚动容器尺寸变化驱动重适宽（宿主激活 0→宽、窗口缩放）
   private destroyed = false; // 视图已销毁：迟到的解析失败/密码回调静默收场
@@ -130,9 +141,9 @@ class PdfView implements PluginViewInstance {
     const meta = await this.pdf.getMetadata();
     if (this.destroyed) return;
     this.version = (meta.info as { PDFFormatVersion?: string }).PDFFormatVersion || "";
-    await this.renderFit();
+    await this.buildPages();
+    this.update();
   }
-
   private buildDom(): void {
     const host = this.ctx.host;
     const style = document.createElement("style");
@@ -146,9 +157,7 @@ class PdfView implements PluginViewInstance {
     this.scroll = document.createElement("div");
     this.scroll.className = "rbpdf-scroll";
     this.scroll.tabIndex = 0;
-    this.canvas = document.createElement("canvas");
-    this.canvas.className = "rbpdf-canvas";
-    this.scroll.appendChild(this.canvas);
+    this.scroll.addEventListener("scroll", this.onScroll, { passive: true });
     host.append(style, bar, this.scroll);
     this.resizeOb = new ResizeObserver(this.onResize);
     this.resizeOb.observe(this.scroll);
@@ -210,33 +219,154 @@ class PdfView implements PluginViewInstance {
     this.passHint = null;
   }
 
-  /** 首页适宽渲染（devicePixelRatio 缩放保清晰；页边距 12px×2） */
-  private async renderFit(): Promise<void> {
-    if (!this.pdf) return;
-    const page = await this.pdf.getPage(1);
-    this.renderTask?.cancel();
-    const base = page.getViewport({ scale: 1 });
-    const cssW = Math.max(120, this.scroll.clientWidth - 24);
-    const scale = cssW / base.width;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const viewport = page.getViewport({ scale });
-    this.canvas.width = Math.floor(viewport.width * dpr);
-    this.canvas.height = Math.floor(viewport.height * dpr);
-    this.canvas.style.width = `${Math.floor(viewport.width)}px`;
-    this.canvas.style.height = `${Math.floor(viewport.height)}px`;
-    const task = page.render({
-      canvas: this.canvas,
-      viewport,
-      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
-    });
-    this.renderTask = task;
-    try {
-      await task.promise;
-    } catch (e) {
-      if (e instanceof pdfjsLib.RenderingCancelledException) return;
-      throw e;
+  /** 收集每页尺寸并建占位序列（高度=页高×适宽缩放），布局总高一次到位——滚动中占位高度不动 */
+  private async buildPages(): Promise<void> {
+    const pdf = this.pdf;
+    if (!pdf) return;
+    const n = pdf.numPages;
+    this.pageDims = [];
+    for (let i = 1; i <= n; i++) {
+      const page = await pdf.getPage(i);
+      const vp = page.getViewport({ scale: 1 });
+      this.pageDims.push({ w: vp.width, h: vp.height });
+      page.cleanup(); // 只留尺寸；渲染时再 getPage（pdf.js 自带页缓存）
     }
+    const frag = document.createDocumentFragment();
+    this.pages = [];
+    for (let i = 0; i < n; i++) {
+      const div = document.createElement("div");
+      div.className = "rbpdf-page";
+      frag.appendChild(div);
+      this.pages.push(div);
+    }
+    this.scroll.appendChild(frag);
+    this.renderGen = new Array(n).fill(-1);
+    this.states = new Uint8Array(n);
+    this.layout();
+  }
+
+  /** 按当前适宽重排占位尺寸与 tops 前缀（打开与窗口变化时调用）。
+      滚动容器为 flex 纵列 + gap 12 + 上下 padding 12：页间距不塌陷，tops 与 DOM 布局严格一致 */
+  private layout(): void {
+    this.cssW = Math.max(120, this.scroll.clientWidth - 24); // 页左右留 12px×2
+    this.tops = [];
+    let y = 12;
+    for (let i = 0; i < this.pages.length; i++) {
+      const d = this.pageDims[i];
+      const h = Math.round((d.h * this.cssW) / d.w);
+      this.pages[i].style.width = `${this.cssW}px`;
+      this.pages[i].style.height = `${h}px`;
+      this.tops.push(y);
+      y += h + 12;
+    }
+  }
+
+  /** 可视页定位：最后一个 tops[i] ≤ y 的页（夹在范围内） */
+  private pageAt(y: number): number {
+    const last = this.tops.length - 1;
+    if (last < 0) return 0;
+    let a = 0,
+      b = last,
+      r = 0;
+    while (a <= b) {
+      const m = (a + b) >> 1;
+      if (this.tops[m] <= y) {
+        r = m;
+        a = m + 1;
+      } else b = m - 1;
+    }
+    return r;
+  }
+
+  /** 滚动/布局变化后重算可视范围：回收缓冲外渲染层、入队缓冲内未渲染页、刷新状态栏页码 */
+  private update(): void {
+    if (!this.pdf || !this.pages.length) return;
+    const st = this.scroll.scrollTop;
+    const v0 = this.pageAt(st);
+    const v1 = this.pageAt(st + this.scroll.clientHeight);
+    const lo = Math.max(0, v0 - 2); // 可视页 ±2 缓冲
+    const hi = Math.min(this.pages.length - 1, v1 + 2);
+    for (const i of [...this.canvases.keys()]) if (i < lo || i > hi) this.reclaim(i);
+    const center = st + this.scroll.clientHeight / 2;
+    const want: number[] = [];
+    for (let i = lo; i <= hi; i++) {
+      if (this.states[i] === 0) this.states[i] = 1;
+      if (this.states[i] === 1) want.push(i);
+    }
+    want.sort((a, b) => Math.abs(this.tops[a] - center) - Math.abs(this.tops[b] - center));
+    // 硬上界兜底：可视页异常多时只留离视口中心最近的
+    this.queue = want.slice(0, Math.max(0, this.maxAlive - this.canvases.size));
+    this.pump();
     this.syncStatus();
+  }
+
+  private onScroll = (): void => {
+    if (this.rafId) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = 0;
+      this.update();
+    });
+  };
+
+  /** 启动待渲染队列，并发上限 2 */
+  private pump(): void {
+    while (this.pumping < 2 && this.queue.length > 0) {
+      const i = this.queue.shift() as number;
+      if (this.states[i] !== 1) continue;
+      this.states[i] = 2;
+      this.pumping++;
+      void this.renderPage(i, ++this.taskSeq);
+    }
+  }
+
+  /** 回收第 i 页渲染层（占位保留高度），作废在途渲染令牌 */
+  private reclaim(i: number): void {
+    const c = this.canvases.get(i);
+    this.renderGen[i] = -1;
+    if (this.states[i] !== 0) this.states[i] = 0;
+    if (!c) return;
+    c.task?.cancel();
+    c.el.remove();
+    this.canvases.delete(i);
+  }
+
+  /** 渲染第 i 页（0 起）进其占位（devicePixelRatio 缩放保清晰）；seq 作废即不提交 */
+  private async renderPage(i: number, seq: number): Promise<void> {
+    try {
+      const pdf = this.pdf;
+      const slot = this.pages[i];
+      const d = this.pageDims[i];
+      if (!pdf || !slot || !d) return;
+      const page = await pdf.getPage(i + 1);
+      if (this.states[i] !== 2) return; // 等待期间被回收
+      if (this.renderGen[i] !== -1 && this.renderGen[i] !== seq) return; // 已有更新任务接管
+      this.renderGen[i] = seq;
+      const scale = this.cssW / d.w;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width * dpr);
+      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      slot.replaceChildren(canvas);
+      const task = page.render({
+        canvas,
+        viewport,
+        transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+      });
+      this.canvases.set(i, { el: canvas, task });
+      try {
+        await task.promise;
+      } catch (e) {
+        if (e instanceof pdfjsLib.RenderingCancelledException) return; // 回收路径已清场
+        throw e;
+      }
+      if (this.renderGen[i] === seq) this.states[i] = 3;
+    } finally {
+      this.pumping--;
+      this.pump();
+    }
   }
 
   /** 宿主激活（0→实际宽）或窗口尺寸变化后自动重适宽（保持页内滚动比） */
@@ -250,9 +380,25 @@ class PdfView implements PluginViewInstance {
     if (this.scroll.clientWidth < 60) return; // 宿主尚隐藏（display:none）：无意义布局不渲染
     const max = this.scroll.scrollHeight - this.scroll.clientHeight;
     const ratio = max > 0 ? this.scroll.scrollTop / max : 0;
-    await this.renderFit();
+    this.queue = [];
+    for (const [i, c] of [...this.canvases]) {
+      c.task?.cancel();
+      c.el.remove();
+      this.canvases.delete(i);
+      this.renderGen[i] = -1;
+    }
+    this.states = new Uint8Array(this.pages.length);
+    this.layout();
     const nm = this.scroll.scrollHeight - this.scroll.clientHeight;
     if (nm > 0) this.scroll.scrollTop = ratio * nm;
+    this.update();
+  }
+
+  /** 当前页码：占位几何判定（视口中线落在哪页），不等渲染完成 */
+  private currentPage(): number {
+    const n = this.pages.length;
+    if (!n) return 1;
+    return Math.min(n, this.pageAt(this.scroll.scrollTop + this.scroll.clientHeight / 2) + 1);
   }
 
   private syncStatus(): void {
@@ -260,7 +406,7 @@ class PdfView implements PluginViewInstance {
       title: this.ctx.name,
       file: this.ctx.name,
       encoding: this.version ? `PDF ${this.version}` : "PDF",
-      position: `第 1/${this.pdf?.numPages ?? "?"} 页`,
+      position: `第 ${this.currentPage()}/${this.pdf?.numPages ?? "?"} 页`,
       mode: "模式: 适宽",
       display: this.ctx.autoscroll.isScrolling() ? "滚屏中" : "-",
     });
@@ -284,11 +430,21 @@ class PdfView implements PluginViewInstance {
     this.destroyed = true;
     this.hidePassword();
     window.clearTimeout(this.resizeTimer);
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
     this.resizeOb?.disconnect();
     this.resizeOb = null;
     this.ctx.autoscroll.detach();
-    this.renderTask?.cancel();
-    this.renderTask = null;
+    this.queue = [];
+    for (const [, c] of this.canvases) {
+      c.task?.cancel();
+      c.el.remove();
+    }
+    this.canvases.clear();
+    this.states = new Uint8Array(0);
+    this.renderGen = [];
+    this.pages = [];
+    this.tops = [];
     void this.loadTask?.destroy();
     this.loadTask = null;
     this.pdf = null;
