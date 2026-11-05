@@ -45,6 +45,22 @@ function preparePdfWorkerText(out) {
    Adobe-GB1/CNS1 基础序列全收（useCMap 扩展链逐级引用基础表，缺一环链条即断）。
    数据写入 dist/cmaps.gen.txt（gitignore，同 worker 文本先例），运行时
    main.ts 的 InlineBinaryDataFactory 按文件名解码。 */
+/* PDF 插件垫片单源：src/shims.ts 既作宿主侧 import 源，也经构建期用 esbuild 编译为
+   无 import/export 的 IIFE 文本写入 dist/shims.gen.txt（gitignore，同 worker 文本先例）；
+   worker.ts 把该文本拼进 worker blob 前部——替代曾手写复刻的 WORKER_PROLOGUE，
+   宿主与 worker 两个上下文永远同一份垫片实现，不再手工保持同步。 */
+async function preparePdfShims(out) {
+  const res = await build({
+    entryPoints: [join(devDir, "pdf", "src", "shims.ts")],
+    bundle: true,
+    format: "iife",
+    target: "es2022",
+    write: false,
+    logLevel: "silent",
+  });
+  writeFileSync(join(out, "shims.gen.txt"), res.outputFiles[0].text);
+}
+
 const CMAP_ZH_FAMILIES = /^(Adobe-(GB1|CNS1)|B5|CNS|ETen|GB|HK|UniCNS|UniGB)/;
 
 function preparePdfCmaps(out) {
@@ -67,6 +83,7 @@ for (const name of readdirSync(devDir)) {
   mkdirSync(out, { recursive: true });
   if (name === "pdf") {
     preparePdfWorkerText(out);
+    await preparePdfShims(out);
     const cmapCount = preparePdfCmaps(out);
     console.log(`[plugins] pdf：内联中文 CMaps ${cmapCount} 个`);
   }

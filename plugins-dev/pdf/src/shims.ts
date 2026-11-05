@@ -3,7 +3,8 @@
    二进制扩展（Uint8Array.toHex/toBase64/fromBase64）、Promise.withResolvers、Set.intersection、
    Math.sumPrecise（加密解密路径必经）。
    本模块必须先于 pdfjs-dist import（esbuild 按依赖序求值）；worker 是独立上下文，
-   由 main.ts 的 WORKER_PROLOGUE 注入同一组垫片，两处需保持同步。 */
+   构建期由 scripts/build-plugins.mjs 把本模块整体编译为 IIFE 文本（dist/shims.gen.txt），
+   worker.ts 拼进 worker blob 前部——单一实现，宿主与 worker 两个上下文共用，无需手工同步。 */
 
 function installUpserts(proto: object): void {
   Object.defineProperty(proto, "getOrInsert", {
