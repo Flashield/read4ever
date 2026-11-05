@@ -5,6 +5,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "../../../src/plugins/types";
 import workerText from "../dist/pdf.worker.min.mjs.txt";
+import cmapsJson from "../dist/cmaps.gen.txt";
 import { parsePosMap, upsertPos, POS_DEBOUNCE_MS, type PdfSavedPos } from "./positions";
 
 /* 进度存档的纯逻辑具名导出：测试缝（playwright import dist 实例验证 LRU 淘汰序），
@@ -37,6 +38,47 @@ function ensureWorker(): void {
   if (!workerUrl)
     workerUrl = URL.createObjectURL(new Blob([WORKER_PROLOGUE + workerText], { type: "text/javascript" }));
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+}
+
+/* 内联简繁中文 CMap（base64，构建脚本从 pdfjs-dist/cmaps 挑简繁系列打包，见
+   scripts/build-plugins.mjs）：非嵌入 CID 中文字体（GBK/Big5/UniGB/UniCNS 等预定义
+   编码）靠这些表把 CID 映射到 Unicode，缺失时整段文字渲染为空白/豆腐块。
+   pdf.js 6.5 经 getDocument 的 BinaryDataFactory 取这些数据（旧版 CMapReaderFactory
+   已废除）：worker 发 FetchBinaryData{kind:"cMapUrl", filename:"<名>.bcmap"} 回主线程，
+   cMapPacked 默认 true → 返回二进制即按压缩表解码。其余 kind（standardFontDataUrl/
+   wasmUrl）本插件未提供 URL，保持 DOMBinaryDataFactory 同款「无 URL 即报错」语义
+   （字体获取失败时 pdf.js 自行降级系统字体，standard_fonts 不随包分发）。 */
+const CMAPS: Record<string, string> = JSON.parse(cmapsJson) as Record<string, string>;
+
+function bytesFromBase64(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** 从内联数据供表的 BinaryDataFactory：cmap 全走内联（零网络），同名缓存由 pdf.js 侧负责 */
+class InlineBinaryDataFactory {
+  private readonly urls: Record<string, string | null>;
+  constructor(urls: { cMapUrl?: string | null; standardFontDataUrl?: string | null; wasmUrl?: string | null } = {}) {
+    this.urls = {
+      cMapUrl: urls.cMapUrl ?? null,
+      standardFontDataUrl: urls.standardFontDataUrl ?? null,
+      wasmUrl: urls.wasmUrl ?? null,
+    };
+  }
+  async fetch(arg: { kind: string; filename: string }): Promise<Uint8Array> {
+    if (arg.kind === "cMapUrl") {
+      const b64 = CMAPS[arg.filename.replace(/\.bcmap$/i, "")];
+      if (b64 === undefined) throw new Error(`未内联的 CMap：${arg.filename}`);
+      return bytesFromBase64(b64);
+    }
+    const base = this.urls[arg.kind];
+    if (!base) throw new Error(`Ensure that the \`${arg.kind}\` API parameter is provided.`);
+    const resp = await fetch(base + arg.filename);
+    if (!resp.ok) throw new Error(`Unable to load data at: ${base}${arg.filename}`);
+    return new Uint8Array(await resp.arrayBuffer());
+  }
 }
 
 /** 渲染任务的结构化最小类型（页.render 返回对象即可赋值） */
@@ -188,8 +230,9 @@ class PdfView implements PluginViewInstance {
 
   private async loadDocument(): Promise<void> {
     try {
-      // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes
-      const task = pdfjsLib.getDocument({ data: this.ctx.bytes.slice() });
+      // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes；
+      // BinaryDataFactory 供内联中文 CMaps（非嵌入 CID 中文字体必需）
+      const task = pdfjsLib.getDocument({ data: this.ctx.bytes.slice(), BinaryDataFactory: InlineBinaryDataFactory });
       // 密码回调挂加载任务上（pdf.js 6.x：PasswordRequest 异步到达，此刻赋值无竞态）；
       // code=INCORRECT_PASSWORD 时提示重试
       task.onPassword = (update: (password: string) => void, code: number): void =>

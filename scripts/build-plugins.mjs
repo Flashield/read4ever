@@ -39,6 +39,24 @@ function preparePdfWorkerText(out) {
   copyFileSync(src, join(out, "pdf.worker.min.mjs.txt"));
 }
 
+/* PDF 插件把 pdfjs-dist 的简繁中文系列 CMap（.bcmap 二进制压缩预定义字符映射）以 base64
+   内联进产物：非嵌入 CID 中文字体（GBK/Big5/UniGB/UniCNS 等编码）依赖这些表把 CID 映射
+   到 Unicode，缺失时整段文字渲染为空白或豆腐块。日/韩文系列不收（用不到，控包体积），
+   Adobe-GB1/CNS1 基础序列全收（useCMap 扩展链逐级引用基础表，缺一环链条即断）。
+   数据写入 dist/cmaps.gen.txt（gitignore，同 worker 文本先例），运行时
+   main.ts 的 InlineBinaryDataFactory 按文件名解码。 */
+const CMAP_ZH_FAMILIES = /^(Adobe-(GB1|CNS1)|B5|CNS|ETen|GB|HK|UniCNS|UniGB)/;
+
+function preparePdfCmaps(out) {
+  const dir = join(root, "node_modules", "pdfjs-dist", "cmaps");
+  if (!existsSync(dir)) throw new Error("pdfjs-dist 未安装，无法内联中文 CMaps");
+  const packed = {};
+  for (const n of readdirSync(dir).filter((f) => f.endsWith(".bcmap") && CMAP_ZH_FAMILIES.test(f)))
+    packed[n.slice(0, -".bcmap".length)] = readFileSync(join(dir, n)).toString("base64");
+  writeFileSync(join(out, "cmaps.gen.txt"), JSON.stringify(packed));
+  return Object.keys(packed).length;
+}
+
 execSync("npx tsc --noEmit -p plugins-dev/tsconfig.json", { cwd: root, stdio: "inherit" });
 
 for (const name of readdirSync(devDir)) {
@@ -47,7 +65,11 @@ for (const name of readdirSync(devDir)) {
   if (!readdirSync(dir).includes("manifest.json")) continue; // 非插件目录（tsconfig 等）
   const out = join(dir, "dist");
   mkdirSync(out, { recursive: true });
-  if (name === "pdf") preparePdfWorkerText(out);
+  if (name === "pdf") {
+    preparePdfWorkerText(out);
+    const cmapCount = preparePdfCmaps(out);
+    console.log(`[plugins] pdf：内联中文 CMaps ${cmapCount} 个`);
+  }
   await build({
     entryPoints: [join(dir, "src/main.ts")],
     bundle: true,
