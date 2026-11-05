@@ -1,11 +1,18 @@
 /* PDF 阅读插件：pdf.js 渲染 PDF 注入插件视图宿主（原样渲染，不跟随主题）。
-   worker 以 blob 方式内联自启动（不依赖宿主 vite 配置），自包含单文件 ESM。 */
+   worker 以 blob 方式内联自启动（不依赖宿主 vite 配置），自包含单文件 ESM。
+   数据路径在 acquireTask 分叉：声明 wantsStream 且宿主给得出流式 URL（Tauri 本地文件、
+   本地 zip 存储型条目、SMB 普通文件）走 read4ever-stream:// Range 流式，大文件不整读内存；
+   探针失败（本地 zip 压缩条目等）经 ctx.loadBytes 回退整读；浏览器 mock 与 SMB zip 条目
+   宿主直接给整读 bytes。整读超限由大小防线挡下（256MB 自限 / 超 1GB 提示先缓存到本地）。
+   两条路都返回 LoadTaskLike 交给同一段密码/错误/恢复（T6/T7）链路。 */
 import "./shims"; // 必须最先 import：垫片先于 pdfjs-dist 模块体求值
 import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { PluginOpenContext, PluginViewInstance, Read4EverPlugin } from "../../../src/plugins/types";
-import workerText from "../dist/pdf.worker.min.mjs.txt";
-import cmapsJson from "../dist/cmaps.gen.txt";
+import { ensureWorker } from "./worker";
+import { fullReadSizeError } from "./stream";
+import { startStreamed } from "./transport";
+import { InlineBinaryDataFactory } from "./cmaps";
 import { parsePosMap, upsertPos, POS_DEBOUNCE_MS, type PdfSavedPos } from "./positions";
 
 /* 进度存档的纯逻辑具名导出：测试缝（playwright import dist 实例验证 LRU 淘汰序），
@@ -14,72 +21,6 @@ export { parsePosMap, upsertPos, POS_LIMIT, POS_DEBOUNCE_MS } from "./positions"
 export type { PdfSavedPos, PosMap } from "./positions";
 
 const PID = "pdf";
-
-let workerUrl = ""; // 模块级复用：worker 从 blob 实例化后 URL 即无存在必要，保留给后续打开复用
-
-/* pdf.js 6.5 直接依赖 2025 年新入库的 ES 方法（Map upsert、Uint8Array 二进制扩展、
-   Promise.withResolvers、Set.intersection、Math.sumPrecise——加密解密路径必经）且不带垫片，
-   旧内核没有会整体解析失败——以 prologue 前置进 worker blob 补齐（与 src/shims.ts 同一组垫片，
-   保持同步）。 */
-const WORKER_PROLOGUE = `
-function rbUpsert(p){Object.assign(p,{getOrInsert:function(k,v){if(!this.has(k))this.set(k,v);return this.get(k)},getOrInsertComputed:function(k,f){if(!this.has(k))this.set(k,f(k));return this.get(k)}})}
-if(!Map.prototype.getOrInsert)rbUpsert(Map.prototype);
-if(!WeakMap.prototype.getOrInsert)rbUpsert(WeakMap.prototype);
-if(!Uint8Array.prototype.toHex){Uint8Array.prototype.toHex=function(){let s='';for(const b of this)s+=b.toString(16).padStart(2,'0');return s}}
-if(!Uint8Array.prototype.toBase64){Uint8Array.prototype.toBase64=function(){let s='';for(let i=0;i<this.length;i+=32768)s+=String.fromCharCode.apply(null,this.subarray(i,i+32768));return btoa(s)}}
-if(!Uint8Array.fromBase64){Uint8Array.fromBase64=function(s){const b=atob(String(s).replace(/\\s+/g,''));const o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o}}
-if(!Set.prototype.intersection){Set.prototype.intersection=function(o){const t=this.size<=o.size?this:o,b=t===this?o:this,n=new Set();for(const v of t)if(b.has(v))n.add(v);return n}}
-if(!Promise.withResolvers){Promise.withResolvers=function(){let r,j;const p=new Promise(function(a,b){r=a;j=b});return{promise:p,resolve:r,reject:j}}}
-if(!Math.sumPrecise){Math.sumPrecise=function(v){let s=0;for(const x of v)s+=x;return s}}
-`;
-
-/** worker 以 blob 自启动（同源 blob URL 直接可用，无需宿主任何资源路径） */
-function ensureWorker(): void {
-  if (!workerUrl)
-    workerUrl = URL.createObjectURL(new Blob([WORKER_PROLOGUE + workerText], { type: "text/javascript" }));
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-}
-
-/* 内联简繁中文 CMap（base64，构建脚本从 pdfjs-dist/cmaps 挑简繁系列打包，见
-   scripts/build-plugins.mjs）：非嵌入 CID 中文字体（GBK/Big5/UniGB/UniCNS 等预定义
-   编码）靠这些表把 CID 映射到 Unicode，缺失时整段文字渲染为空白/豆腐块。
-   pdf.js 6.5 经 getDocument 的 BinaryDataFactory 取这些数据（旧版 CMapReaderFactory
-   已废除）：worker 发 FetchBinaryData{kind:"cMapUrl", filename:"<名>.bcmap"} 回主线程，
-   cMapPacked 默认 true → 返回二进制即按压缩表解码。其余 kind（standardFontDataUrl/
-   wasmUrl）本插件未提供 URL，保持 DOMBinaryDataFactory 同款「无 URL 即报错」语义
-   （字体获取失败时 pdf.js 自行降级系统字体，standard_fonts 不随包分发）。 */
-const CMAPS: Record<string, string> = JSON.parse(cmapsJson) as Record<string, string>;
-
-function bytesFromBase64(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-/** 从内联数据供表的 BinaryDataFactory：cmap 全走内联（零网络），同名缓存由 pdf.js 侧负责 */
-class InlineBinaryDataFactory {
-  private readonly urls: Record<string, string | null>;
-  constructor(urls: { cMapUrl?: string | null; standardFontDataUrl?: string | null; wasmUrl?: string | null } = {}) {
-    this.urls = {
-      cMapUrl: urls.cMapUrl ?? null,
-      standardFontDataUrl: urls.standardFontDataUrl ?? null,
-      wasmUrl: urls.wasmUrl ?? null,
-    };
-  }
-  async fetch(arg: { kind: string; filename: string }): Promise<Uint8Array> {
-    if (arg.kind === "cMapUrl") {
-      const b64 = CMAPS[arg.filename.replace(/\.bcmap$/i, "")];
-      if (b64 === undefined) throw new Error(`未内联的 CMap：${arg.filename}`);
-      return bytesFromBase64(b64);
-    }
-    const base = this.urls[arg.kind];
-    if (!base) throw new Error(`Ensure that the \`${arg.kind}\` API parameter is provided.`);
-    const resp = await fetch(base + arg.filename);
-    if (!resp.ok) throw new Error(`Unable to load data at: ${base}${arg.filename}`);
-    return new Uint8Array(await resp.arrayBuffer());
-  }
-}
 
 /** 渲染任务的结构化最小类型（页.render 返回对象即可赋值） */
 interface RenderTaskLike {
@@ -156,6 +97,7 @@ class PdfView implements PluginViewInstance {
   private ctx!: PluginOpenContext;
   private pdf: PDFDocumentProxy | null = null;
   private loadTask: LoadTaskLike | null = null; // v6 起销毁走加载任务
+  private streamed = false; // 本次加载走流式 Range 传输（状态栏标注 + 流式验证证据）
   private version = ""; // PDF 版本号（getMetadata 的 PDFFormatVersion）
   private scroll!: HTMLElement;
   private pageDims: { w: number; h: number }[] = []; // 每页 scale=1 视口尺寸（占位几何来源）
@@ -229,10 +171,10 @@ class PdfView implements PluginViewInstance {
   }
 
   private async loadDocument(): Promise<void> {
+    // 数据路径分叉：流式 / 整读在此选定加载任务，密码、错误、进度恢复对两条路径同一份
+    const task = await this.acquireTask();
+    if (!task) return; // 整读超限已报错收场（或视图已销毁）
     try {
-      // data 会转移 TypedArray 所有权，传副本保住 ctx.bytes；
-      // BinaryDataFactory 供内联中文 CMaps（非嵌入 CID 中文字体必需）
-      const task = pdfjsLib.getDocument({ data: this.ctx.bytes.slice(), BinaryDataFactory: InlineBinaryDataFactory });
       // 密码回调挂加载任务上（pdf.js 6.x：PasswordRequest 异步到达，此刻赋值无竞态）；
       // code=INCORRECT_PASSWORD 时提示重试
       task.onPassword = (update: (password: string) => void, code: number): void =>
@@ -264,6 +206,57 @@ class PdfView implements PluginViewInstance {
     }
     this.update();
   }
+
+  /** 数据路径分叉点：有流式 URL（Tauri 本地文件、本地 zip 存储型条目、SMB 普通文件）先试
+      Range 流式；探针失败（本地 zip 压缩条目 404 等）经 ctx.loadBytes 回退整读——
+      wantsStream 命中时宿主跳过预读（ctx.bytes 恒空），整读一律现读。其余场景（浏览器
+      mock、SMB zip 条目）宿主已给整读 bytes，直接走大小防线 */
+  private async acquireTask(): Promise<LoadTaskLike | null> {
+    this.streamed = false;
+    const url = this.ctx.streamUrlFor?.(this.ctx.path);
+    if (typeof url === "string") {
+      try {
+        const { task } = await startStreamed(url);
+        this.streamed = true;
+        return task;
+      } catch {
+        if (this.destroyed) return null; // 探针期间视图已关：静默收场
+        // 流式不可用：按字节整读回退（video-viewer 同款），超限防线在整读侧统一挡
+      }
+    }
+    return this.newFullReadTask();
+  }
+
+  /** 整读路径：bytes 交给 pdf.js；超限按大小防线明确报错收场 */
+  private async newFullReadTask(): Promise<LoadTaskLike | null> {
+    let bytes = this.ctx.bytes;
+    if (!bytes.length) {
+      try {
+        bytes = await this.ctx.loadBytes(this.ctx.path);
+      } catch {
+        if (!this.destroyed) this.ctx.toast("无法读取文件内容");
+        return null;
+      }
+    }
+    const err = fullReadSizeError(bytes.length);
+    if (err) {
+      if (!this.destroyed) {
+        this.ctx.toast(err);
+        this.ctx.closeView();
+      }
+      return null;
+    }
+    // data 会转移 TypedArray 所有权，传副本保住原始引用；
+    // BinaryDataFactory 供内联中文 CMaps（非嵌入 CID 中文字体必需，与流式路径共用）
+    return pdfjsLib.getDocument({ data: bytes.slice(), BinaryDataFactory: InlineBinaryDataFactory });
+  }
+
+  private cleanupLoadTask(): void {
+    void this.loadTask?.destroy();
+    this.loadTask = null;
+    this.pdf = null;
+  }
+
 
   /** 读本文件的进度存档（无/页索引非法返回 null） */
   private readPos(): PdfSavedPos | null {
@@ -807,7 +800,7 @@ class PdfView implements PluginViewInstance {
     this.ctx.setStatus({
       title: this.ctx.name,
       file: this.ctx.name,
-      encoding: this.version ? `PDF ${this.version}` : "PDF",
+      encoding: (this.version ? `PDF ${this.version}` : "PDF") + (this.streamed ? " 流式" : ""),
       position: `第 ${cur}/${this.pdf?.numPages ?? "?"} 页`,
       mode: `模式: ${this.zoomText()}`,
       display: this.ctx.autoscroll.isScrolling() ? "滚屏中" : "-",
@@ -860,9 +853,7 @@ class PdfView implements PluginViewInstance {
     this.pages = [];
     this.tops = [];
     this.heights = [];
-    void this.loadTask?.destroy();
-    this.loadTask = null;
-    this.pdf = null;
+    this.cleanupLoadTask();
   }
 }
 
@@ -874,8 +865,10 @@ const plugin: Read4EverPlugin = {
   id: PID,
   name: "PDF 阅读器",
   version: "0.4.0",
-  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互），速度键与 Space 经宿主滚屏引擎可用",
+  description:
+    "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互）、大文件 Range 流式加载（探针失败自动回退整读，256MB/1GB 分级防线），速度键与 Space 经宿主滚屏引擎可用",
   extensions: [".pdf"],
+  wantsStream: true,
   open: (ctx) => view.open(ctx),
   togglePlay: () => view.togglePlay(),
   isPlaying: () => view.isPlaying(),

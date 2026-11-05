@@ -59,6 +59,33 @@ pub fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder
 /* ========== 请求处理 ========== */
 
 pub fn serve(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    // JS fetch() 消费方（PDF 插件 Range 流式）需要 CORS：自定义 scheme 与应用源跨域，
+    // 且带自定义 Range 头会先发 OPTIONS 预检——响应缺 Access-Control-Allow-Origin 时
+    // fetch 直接抛错（<video src> 不检查 CORS，不受这些头影响）
+    if request.method().as_str() == "OPTIONS" {
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "range")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
+            .header(header::ACCESS_CONTROL_MAX_AGE, "86400")
+            .body(Vec::new())
+            .unwrap();
+    }
+    let mut response = serve_inner(request);
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        header::HeaderValue::from_static("content-range, accept-ranges, content-length"),
+    );
+    response
+}
+
+fn serve_inner(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let raw = request.uri().path();
     let decoded = percent_decode_str(raw.strip_prefix('/').unwrap_or(raw))
         .decode_utf8_lossy()

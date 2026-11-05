@@ -370,6 +370,14 @@ const demoPdfFull = makeDemoPdf(3);
 const DEMO_PDF_TRUNCATED_DATAURL =
   "data:application/pdf;base64," + bytesToBase64(demoPdfFull.slice(0, (demoPdfFull.length / 3) | 0));
 
+/* 大小防线演示样本（T5）：文件夹栏「超限样本.pdf」内容为懒生成标记，读取时才分配 256MB+1 的伪 PDF——平时不占内存，仅供浏览器演示环境验证插件整读防线。 */
+const OVERSIZE_PDF_MARKER = "@rb-oversized-pdf";
+function makeOversizedPdf(): ArrayBuffer {
+  const big = new Uint8Array(256 * 1024 * 1024 + 1);
+  big.set(makeDemoPdf(1), 0);
+  return big.buffer as ArrayBuffer;
+}
+
 /* ========== 演示外部插件（走完整外部链路：list → read main.js → blob import → register） ========== */
 
 const DEMO_PLUGIN_PKG = {
@@ -424,7 +432,7 @@ export default {
 const DEV_PLUGINS = [
   { id: "markdown-viewer", name: "Markdown 查看", version: "1.1.0", description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板、自动滚屏）", extensions: [".md", ".markdown", ".mdown"] },
   { id: "epub-viewer", name: "EPUB 查看", version: "1.1.0", description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式、自动滚屏跨章续滚", extensions: [".epub"] },
-  { id: "pdf", name: "PDF 阅读器", version: "0.4.0", description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互），速度键与 Space 经宿主滚屏引擎可用", extensions: [".pdf"] },
+  { id: "pdf", name: "PDF 阅读器", version: "0.4.0", description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互）、大文件 Range 流式加载（探针失败自动回退整读，256MB/1GB 分级防线），速度键与 Space 经宿主滚屏引擎可用", extensions: [".pdf"] },
 ];
 const devMainJs = new Map<string, string>();
 const devPluginsReady = (async () => {
@@ -487,6 +495,7 @@ const mockFsRoot: MockDirNode = mockDir({
   "加密演示.pdf": mockFile(DEMO_PDF_ENCRYPTED_DATAURL),
   "损坏演示.pdf": mockFile(DEMO_PDF_BROKEN_DATAURL),
   "截断演示.pdf": mockFile(DEMO_PDF_TRUNCATED_DATAURL),
+  "超限样本.pdf": mockFile(OVERSIZE_PDF_MARKER),
 });
 
 const fsJoin = (dir: string, name: string): string => dir.replace(/[\\/]+$/, "") + "\\" + name;
@@ -853,6 +862,7 @@ window.__TAURI_INTERNALS__ = {
         const node = fsGet(p);
         if (!node || node.dir) return Promise.reject("读取失败: " + p);
         const content = (node as { dir: false; content: string }).content;
+        if (content === OVERSIZE_PDF_MARKER) return Promise.resolve(makeOversizedPdf());
         if (content.startsWith("data:")) return Promise.resolve(dataUrlToBuffer(content));
         return Promise.resolve(new TextEncoder().encode(content).buffer as ArrayBuffer);
       }
