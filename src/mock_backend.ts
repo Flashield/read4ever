@@ -370,15 +370,6 @@ const demoPdfFull = makeDemoPdf(3);
 const DEMO_PDF_TRUNCATED_DATAURL =
   "data:application/pdf;base64," + bytesToBase64(demoPdfFull.slice(0, (demoPdfFull.length / 3) | 0));
 
-/* 大小防线演示样本（T5）：文件夹栏「超限样本.pdf」内容为懒生成标记，读取时才分配
-   256MB+1 的伪 PDF——平时不占内存，仅供浏览器演示环境验证插件整读防线。 */
-const OVERSIZE_PDF_MARKER = "@rb-oversized-pdf";
-function makeOversizedPdf(): ArrayBuffer {
-  const big = new Uint8Array(256 * 1024 * 1024 + 1);
-  big.set(makeDemoPdf(1), 0);
-  return big.buffer as ArrayBuffer;
-}
-
 /* ========== 演示外部插件（走完整外部链路：list → read main.js → blob import → register） ========== */
 
 const DEMO_PLUGIN_PKG = {
@@ -433,7 +424,7 @@ export default {
 const DEV_PLUGINS = [
   { id: "markdown-viewer", name: "Markdown 查看", version: "1.1.0", description: "渲染 Markdown 为富文本阅读视图（跟随阅读主题、大纲面板、自动滚屏）", extensions: [".md", ".markdown", ".mdown"] },
   { id: "epub-viewer", name: "EPUB 查看", version: "1.1.0", description: "EPUB 阅读：目录导航、进度记忆、跟随主题/书籍样式双模式、自动滚屏跨章续滚", extensions: [".epub"] },
-  { id: "pdf", name: "PDF 阅读器", version: "0.1.0", description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、大文件 Range 流式加载，速度键与 Space 经宿主滚屏引擎可用", extensions: [".pdf"] },
+  { id: "pdf", name: "PDF 阅读器", version: "0.4.0", description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮）、注记静态渲染（印章/签名/表单外观可见不可交互）、大文件 Range 流式加载（探针失败自动回退整读，256MB/1GB 分级防线），速度键与 Space 经宿主滚屏引擎可用", extensions: [".pdf"] },
 ];
 const devMainJs = new Map<string, string>();
 const devPluginsReady = (async () => {
@@ -486,7 +477,6 @@ const mockFsRoot: MockDirNode = mockDir({
   "游记.md": mockFile(DEMO_MD_TRAVEL),
   "示例文档.pdf": mockFile(DEMO_PDF_DATAURL),
   "论文78页.pdf": mockFile(DEMO_PDF_LONG_DATAURL),
-  "超限样本.pdf": mockFile(OVERSIZE_PDF_MARKER),
   "封面图片.png": mockFile(COVER_PNG),
   "演示之书.epub": mockFile(DEMO_EPUB_DATAURL),
   "示例视频A.mp4": mockFile(DEMO_VIDEO_A),
@@ -613,6 +603,7 @@ function mockSmbList(p: string, natural: boolean): Record<string, unknown>[] | n
 }
 
 let dialogCounter = 0;
+let lastSavedPdfPos: string | undefined; // 最近一次持久化的 PDF 插件进度串（save_store 变化检测基准）
 const storeData = {
   settings: {
     themeName: "羊皮纸",
@@ -706,9 +697,20 @@ window.__TAURI_INTERNALS__ = {
     switch (cmd) {
       case "load_store":
         return Promise.resolve(JSON.parse(JSON.stringify(storeData)));
-      case "save_store":
+      case "save_store": {
+        // 浏览器验证缝：PDF 插件进度落盘的外部可观察信号——与上一次持久化的存档串比较
+        //（mock 的 invoke 收到的是活对象引用，改前/改后同源比较恒相等，故记最近持久化值）
+        const cur = (args.data as { settings?: { pluginSettings?: Record<string, Record<string, string>> } })
+          .settings?.pluginSettings?.pdf?.positions;
         Object.assign(storeData, args.data);
+        if (cur !== lastSavedPdfPos) {
+          const w = window as unknown as { __RB_POS_SAVES__?: number; __RB_POS_LAST__?: string };
+          w.__RB_POS_SAVES__ = (w.__RB_POS_SAVES__ ?? 0) + 1;
+          w.__RB_POS_LAST__ = cur;
+          lastSavedPdfPos = cur;
+        }
         return Promise.resolve(null);
+      }
       case "set_window_title":
         document.title = String(args.title ?? "Read4Ever");
         return Promise.resolve(null);
@@ -851,7 +853,6 @@ window.__TAURI_INTERNALS__ = {
         const node = fsGet(p);
         if (!node || node.dir) return Promise.reject("读取失败: " + p);
         const content = (node as { dir: false; content: string }).content;
-        if (content === OVERSIZE_PDF_MARKER) return Promise.resolve(makeOversizedPdf());
         if (content.startsWith("data:")) return Promise.resolve(dataUrlToBuffer(content));
         return Promise.resolve(new TextEncoder().encode(content).buffer as ArrayBuffer);
       }
