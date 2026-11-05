@@ -5,9 +5,9 @@
    已废除）：worker 发 FetchBinaryData{kind:"cMapUrl", filename:"<名>.bcmap"} 回主线程，
    cMapPacked 默认 true → 返回二进制即按压缩表解码。整读（main.ts newFullReadTask）与
    流式（transport.ts startStreamed）两条 getDocument 路径都必须挂同一工厂——非嵌入
-   CID 字体的文档无论哪条路都依赖 CMap。其余 kind（standardFontDataUrl/wasmUrl）本插件
-   未提供 URL，保持 DOMBinaryDataFactory 同款「无 URL 即报错」语义（字体获取失败时
-   pdf.js 自行降级系统字体，standard_fonts 不随包分发）。 */
+   CID 字体的文档无论哪条路都依赖 CMap。两调用点均无参构造：本工厂只供内联 cmap，
+   其余 kind（standardFontDataUrl/wasmUrl）无数据可给，保持「即报错」语义（字体获取
+   失败时 pdf.js 自行降级系统字体，standard_fonts 不随包分发）。 */
 import cmapsJson from "../dist/cmaps.gen.txt?raw";
 
 const CMAPS: Record<string, string> = JSON.parse(cmapsJson) as Record<string, string>;
@@ -21,24 +21,10 @@ function bytesFromBase64(s: string): Uint8Array {
 
 /** 从内联数据供表的 BinaryDataFactory：cmap 全走内联（零网络），同名缓存由 pdf.js 侧负责 */
 export class InlineBinaryDataFactory {
-  private readonly urls: Record<string, string | null>;
-  constructor(urls: { cMapUrl?: string | null; standardFontDataUrl?: string | null; wasmUrl?: string | null } = {}) {
-    this.urls = {
-      cMapUrl: urls.cMapUrl ?? null,
-      standardFontDataUrl: urls.standardFontDataUrl ?? null,
-      wasmUrl: urls.wasmUrl ?? null,
-    };
-  }
   async fetch(arg: { kind: string; filename: string }): Promise<Uint8Array> {
-    if (arg.kind === "cMapUrl") {
-      const b64 = CMAPS[arg.filename.replace(/\.bcmap$/i, "")];
-      if (b64 === undefined) throw new Error(`未内联的 CMap：${arg.filename}`);
-      return bytesFromBase64(b64);
-    }
-    const base = this.urls[arg.kind];
-    if (!base) throw new Error(`Ensure that the \`${arg.kind}\` API parameter is provided.`);
-    const resp = await fetch(base + arg.filename);
-    if (!resp.ok) throw new Error(`Unable to load data at: ${base}${arg.filename}`);
-    return new Uint8Array(await resp.arrayBuffer());
+    if (arg.kind !== "cMapUrl") throw new Error(`Ensure that the \`${arg.kind}\` API parameter is provided.`);
+    const b64 = CMAPS[arg.filename.replace(/\.bcmap$/i, "")];
+    if (b64 === undefined) throw new Error(`未内联的 CMap：${arg.filename}`);
+    return bytesFromBase64(b64);
   }
 }
