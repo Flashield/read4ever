@@ -1,0 +1,10 @@
+{
+  "id": "pdf",
+  "name": "PDF 阅读器",
+  "version": "0.1.0",
+  "description": "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示，速度键与 Space 经宿主滚屏引擎可用",
+  "author": "Read4Ever",
+  "api": 1,
+  "entry": "main.js",
+  "extensions": [".pdf"]
+}

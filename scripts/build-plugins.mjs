@@ -3,7 +3,7 @@
 import { build } from "esbuild";
 import { zipSync, strToU8 } from "fflate";
 import { execSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,7 +21,23 @@ const LIB_BANNERS = {
       return `/*! 内含 marked v${ver}（MIT License）© MarkedJS、Christopher Jeffrey — https://github.com/markedjs/marked */`;
     },
   },
+  "pdfjs-dist": {
+    marker: "node_modules/pdfjs-dist/",
+    banner: () => {
+      const ver = JSON.parse(readFileSync(join(root, "node_modules", "pdfjs-dist", "package.json"), "utf8")).version;
+      return `/*! 内含 pdf.js v${ver}（Apache License 2.0）© Mozilla Foundation — https://github.com/mozilla/pdf.js */`;
+    },
+  },
 };
+
+/* PDF 插件把 pdf.js worker 以文本内联进产物（运行时 blob 自启动，见 plugins-dev/pdf/src/main.ts）。
+   esbuild 无 query-loader 机制：打包前把 worker 源码复制为 .txt，配合下方 loader: { ".txt": "text" }
+   以字符串导入；副本落在 dist/（gitignore），不进版本控制。 */
+function preparePdfWorkerText(out) {
+  const src = join(root, "node_modules", "pdfjs-dist", "build", "pdf.worker.min.mjs");
+  if (!existsSync(src)) throw new Error("pdfjs-dist 未安装，无法内联 PDF worker");
+  copyFileSync(src, join(out, "pdf.worker.min.mjs.txt"));
+}
 
 execSync("npx tsc --noEmit -p plugins-dev/tsconfig.json", { cwd: root, stdio: "inherit" });
 
@@ -31,6 +47,7 @@ for (const name of readdirSync(devDir)) {
   if (!readdirSync(dir).includes("manifest.json")) continue; // 非插件目录（tsconfig 等）
   const out = join(dir, "dist");
   mkdirSync(out, { recursive: true });
+  if (name === "pdf") preparePdfWorkerText(out);
   await build({
     entryPoints: [join(dir, "src/main.ts")],
     bundle: true,
@@ -39,6 +56,7 @@ for (const name of readdirSync(devDir)) {
     outfile: join(out, "main.js"),
     minify: false, // 产物保持可读，便于用户审查外部插件代码
     legalComments: "inline", // markdown-viewer 打包了 MIT 协议的 marked，版权声明保留在产物注释
+    loader: { ".txt": "text" }, // PDF 插件的 worker 文本副本以字符串导入内联
     logLevel: "warning",
   });
   const mainJs = join(out, "main.js");
@@ -47,6 +65,10 @@ for (const name of readdirSync(devDir)) {
     if (code.includes(marker)) code = `${banner()}\n${code}`;
   }
   writeFileSync(mainJs, code);
+  /* 浏览器演示通道（mock_backend 经 vite dev fetch 产物）：vite 会转换 .js 静态请求
+     （import 分析对 pdf.js 的动态 import 注入 /@vite/client，blob 模块里无法解析），
+     故另存一份非 JS 扩展名的同内容副本供演示 fetch 原文；桌面端 .rbplugin 仍装 main.js。 */
+  writeFileSync(join(out, "main.js.txt"), code);
   const pkg = zipSync(
     {
       "manifest.json": new Uint8Array(readFileSync(join(dir, "manifest.json"))),
