@@ -603,6 +603,7 @@ function mockSmbList(p: string, natural: boolean): Record<string, unknown>[] | n
 }
 
 let dialogCounter = 0;
+let lastSavedPdfPos: string | undefined; // 最近一次持久化的 PDF 插件进度串（save_store 变化检测基准）
 const storeData = {
   settings: {
     themeName: "羊皮纸",
@@ -696,9 +697,20 @@ window.__TAURI_INTERNALS__ = {
     switch (cmd) {
       case "load_store":
         return Promise.resolve(JSON.parse(JSON.stringify(storeData)));
-      case "save_store":
+      case "save_store": {
+        // 浏览器验证缝：PDF 插件进度落盘的外部可观察信号——与上一次持久化的存档串比较
+        //（mock 的 invoke 收到的是活对象引用，改前/改后同源比较恒相等，故记最近持久化值）
+        const cur = (args.data as { settings?: { pluginSettings?: Record<string, Record<string, string>> } })
+          .settings?.pluginSettings?.pdf?.positions;
         Object.assign(storeData, args.data);
+        if (cur !== lastSavedPdfPos) {
+          const w = window as unknown as { __RB_POS_SAVES__?: number; __RB_POS_LAST__?: string };
+          w.__RB_POS_SAVES__ = (w.__RB_POS_SAVES__ ?? 0) + 1;
+          w.__RB_POS_LAST__ = cur;
+          lastSavedPdfPos = cur;
+        }
         return Promise.resolve(null);
+      }
       case "set_window_title":
         document.title = String(args.title ?? "Read4Ever");
         return Promise.resolve(null);
