@@ -60,9 +60,14 @@ interface LoadTaskLike {
 
 const VIEW_CSS = `
 .rbpdf-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 7; display: flex; align-items: center; gap: 8px; padding: 4px 10px; height: 30px; box-sizing: border-box; background: var(--panel-bg, #1e1e1e); color: var(--ui-text, #e0e0e0); border-bottom: 1px solid var(--ui-border, #555); font-size: 13px; }
+.rbpdf-bar button { border: 1px solid var(--ui-border, #555); background: var(--ui-bg, #2b2b2b); color: inherit; border-radius: 6px; padding: 2px 8px; cursor: pointer; font: inherit; }
+.rbpdf-bar button:hover { background: var(--ui-hover, #3d3d3d); }
+.rbpdf-pageno { width: 44px; text-align: center; border: 1px solid var(--ui-border, #555); background: var(--ui-bg, #2b2b2b); color: inherit; border-radius: 6px; padding: 2px 4px; font: inherit; }
+.rbpdf-ptotal { opacity: 0.75; white-space: nowrap; }
+.rbpdf-zoom-label { min-width: 44px; text-align: center; opacity: 0.85; white-space: nowrap; }
 .rbpdf-title { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 0; }
-.rbpdf-page { position: relative; flex: none; overflow: hidden; background: #d9d9d9; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
+.rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px 0; }
+.rbpdf-page { position: relative; flex: none; margin: 0 auto; overflow: hidden; background: #d9d9d9; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
 .rbpdf-page canvas { display: block; background: #fff; }
 /* 文本层（pdf.js TextLayer 容器）：以 scale=1 视口铺 span（百分比定位），再整体等比缩放
    --rb-scale 对齐 canvas——缩放时只改变量不重建，几何恒对齐。样式要点取自 pdf.js
@@ -129,6 +134,15 @@ class PdfView implements PluginViewInstance {
   private maxAlive = 10; // 同时存在渲染层的硬上界（可视页 ±2 缓冲之外再兜底）
   private resizeTimer = 0;
   private resizeOb: ResizeObserver | null = null; // 滚动容器尺寸变化驱动重适宽（宿主激活 0→宽、窗口缩放）
+  private zoomMode: "fit" | "percent" = "fit"; // 缩放模式：适宽（默认）或百分比
+  private zoom = 1; // 百分比模式的缩放因子（1 = 100%），步进 ×1.15，钳位 0.2~5
+  private pageInput!: HTMLInputElement; // 页码输入（回车跳页）
+  private pageTotal!: HTMLElement; // 总页数标签
+  private zoomLabel!: HTMLElement; // 缩放状态标签（适宽 / 115%）
+  private hostEl: HTMLElement | null = null; // 键盘监听挂宿主 pane：工具栏点击后焦点不出视图
+  private static readonly ZOOM_MIN = 0.2;
+  private static readonly ZOOM_MAX = 5;
+  private static readonly ZOOM_STEP = 1.15;
   private destroyed = false; // 视图已销毁：迟到的解析失败/密码回调静默收场
   private passEl: HTMLDivElement | null = null; // 加密 PDF 自建密码框（宿主无输入类对话框）
   private passInput: HTMLInputElement | null = null;
@@ -253,15 +267,88 @@ class PdfView implements PluginViewInstance {
     style.textContent = VIEW_CSS;
     const bar = document.createElement("div");
     bar.className = "rbpdf-bar plugin-topbar"; // 沉浸全屏自动吸附
+    // 页码导航：上一页 / 页码输入 / 总页数 / 下一页（列首对齐翻页，见 gotoPage）
+    const prev = document.createElement("button");
+    prev.className = "rbpdf-prev";
+    prev.title = "上一页";
+    prev.textContent = "◀";
+    prev.addEventListener("click", () => {
+      this.gotoPage(this.currentPage() - 1);
+      this.scroll.focus();
+    });
+    this.pageInput = document.createElement("input");
+    this.pageInput.className = "rbpdf-pageno";
+    this.pageInput.type = "text";
+    this.pageInput.inputMode = "numeric";
+    this.pageInput.title = "页码，回车跳转";
+    this.pageInput.value = "1";
+    this.pageInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const v = parseInt(this.pageInput.value, 10);
+      if (Number.isFinite(v)) this.gotoPage(v); // 非数字忽略；超界在 gotoPage 内 clamp
+      this.pageInput.blur();
+      this.scroll.focus();
+    });
+    this.pageTotal = document.createElement("span");
+    this.pageTotal.className = "rbpdf-ptotal";
+    this.pageTotal.textContent = "/ ?";
+    const next = document.createElement("button");
+    next.className = "rbpdf-next";
+    next.title = "下一页";
+    next.textContent = "▶";
+    next.addEventListener("click", () => {
+      this.gotoPage(this.currentPage() + 1);
+      this.scroll.focus();
+    });
     const title = document.createElement("span");
     title.className = "rbpdf-title";
     title.textContent = this.ctx.name;
-    bar.append(title);
+    // 缩放：− / 标签 / ＋ / 适宽 / 100%
+    const zout = document.createElement("button");
+    zout.className = "rbpdf-zout";
+    zout.title = "缩小";
+    zout.textContent = "−";
+    zout.addEventListener("click", () => {
+      this.zoomBy(1 / PdfView.ZOOM_STEP);
+      this.scroll.focus();
+    });
+    this.zoomLabel = document.createElement("span");
+    this.zoomLabel.className = "rbpdf-zoom-label";
+    this.zoomLabel.textContent = "适宽";
+    const zin = document.createElement("button");
+    zin.className = "rbpdf-zin";
+    zin.title = "放大";
+    zin.textContent = "+";
+    zin.addEventListener("click", () => {
+      this.zoomBy(PdfView.ZOOM_STEP);
+      this.scroll.focus();
+    });
+    const fit = document.createElement("button");
+    fit.className = "rbpdf-fit";
+    fit.title = "适宽";
+    fit.textContent = "适宽";
+    fit.addEventListener("click", () => {
+      this.applyZoom("fit");
+      this.scroll.focus();
+    });
+    const z100 = document.createElement("button");
+    z100.className = "rbpdf-z100";
+    z100.title = "原始大小";
+    z100.textContent = "100%";
+    z100.addEventListener("click", () => {
+      this.applyZoom("percent", 1);
+      this.scroll.focus();
+    });
+    bar.append(prev, this.pageInput, this.pageTotal, next, title, zout, this.zoomLabel, zin, fit, z100);
     this.scroll = document.createElement("div");
     this.scroll.className = "rbpdf-scroll";
     this.scroll.tabIndex = 0;
     this.scroll.addEventListener("scroll", this.onScroll, { passive: true });
+    this.scroll.addEventListener("wheel", this.onWheel); // Ctrl+滚轮缩放（preventDefault 挡浏览器页面缩放）
     host.append(style, bar, this.scroll);
+    this.hostEl = host;
+    host.addEventListener("keydown", this.onKey); // 挂 pane：工具栏/阅读区内焦点都能翻页
     this.resizeOb = new ResizeObserver(this.onResize);
     this.resizeOb.observe(this.scroll);
   }
@@ -348,21 +435,30 @@ class PdfView implements PluginViewInstance {
     this.layout();
   }
 
-  /** 按当前适宽重排占位尺寸与 tops 前缀（打开与窗口变化时调用）。
+  /** 第 i 页（0 起）的渲染/占位缩放：适宽 = 容器宽推导；百分比 = 固定因子（唯一缩放推导点，
+      layout 与 renderPage 都经此取值，保证占位几何与 canvas 严格一致） */
+  private scaleOf(i: number): number {
+    const d = this.pageDims[i];
+    if (!d || !d.w) return 1;
+    return this.zoomMode === "fit" ? this.cssW / d.w : this.zoom;
+  }
+
+  /** 按当前缩放模式重排占位尺寸与 tops 前缀（打开/窗口变化/缩放时调用）。
       滚动容器为 flex 纵列 + gap 12 + 上下 padding 12：页间距不塌陷，tops 与 DOM 布局严格一致 */
   private layout(): void {
-    this.cssW = Math.max(120, this.scroll.clientWidth - 24); // 页左右留 12px×2
+    if (this.zoomMode === "fit") this.cssW = Math.max(120, this.scroll.clientWidth - 24); // 页左右留 12px×2
     this.tops = [];
     this.heights = [];
     let y = 12;
     for (let i = 0; i < this.pages.length; i++) {
       const d = this.pageDims[i];
-      const scale = this.cssW / d.w;
-      const h = Math.round(d.h * scale);
-      this.pages[i].style.width = `${this.cssW}px`;
+      const s = this.scaleOf(i); // 有效缩放（适宽或百分比）：占位几何与文本层共用同一推导
+      const w = Math.round(d.w * s);
+      const h = Math.round(d.h * s);
+      this.pages[i].style.width = `${w}px`;
       this.pages[i].style.height = `${h}px`;
       // 文本层等比缩放因子随缩放联动（文本层只读此变量，不需重建）
-      this.pages[i].style.setProperty("--rb-scale", String(scale));
+      this.pages[i].style.setProperty("--rb-scale", String(s));
       this.tops.push(y);
       this.heights.push(h);
       y += h + 12;
@@ -453,7 +549,7 @@ class PdfView implements PluginViewInstance {
       if (this.states[i] !== 2) return; // 等待期间被回收
       if (this.renderGen[i] !== -1 && this.renderGen[i] !== seq) return; // 已有更新任务接管
       this.renderGen[i] = seq;
-      const scale = this.cssW / d.w;
+      const scale = this.scaleOf(i);
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
@@ -516,14 +612,21 @@ class PdfView implements PluginViewInstance {
     this.resizeTimer = window.setTimeout(() => void this.refit(), 150);
   };
 
+  /** 清空全部渲染层与待渲染队列（refit/缩放共用：旧 canvas 尺寸不符须整体重渲染） */
+  private clearRenders(): void {
+    this.queue = [];
+    for (const i of [...this.canvases.keys()]) this.reclaim(i); // 连文本层一并回收（缩放联动靠 --rb-scale，重建兜底）
+    this.states = new Uint8Array(this.pages.length);
+  }
+
   private async refit(): Promise<void> {
     if (!this.pdf || !this.active) return;
     if (this.scroll.clientWidth < 60) return; // 宿主尚隐藏（display:none）：无意义布局不渲染
     const max = this.scroll.scrollHeight - this.scroll.clientHeight;
     const ratio = max > 0 ? this.scroll.scrollTop / max : 0;
-    this.queue = [];
-    for (const i of [...this.canvases.keys()]) this.reclaim(i); // 连文本层一并回收（缩放联动靠 --rb-scale，重建兜底）
-    this.states = new Uint8Array(this.pages.length);
+    this.zoomMode = "fit"; // resize 回归适宽（AC：窗口尺寸变化后自动重新适宽）
+    this.zoom = 1;
+    this.clearRenders();
     this.layout();
     if (!this.consumePendingRestore()) {
       // 有待恢复存档时按「页+页内比」定位；否则保持整体滚动比换算（窗口缩放不丢位置）
@@ -534,6 +637,114 @@ class PdfView implements PluginViewInstance {
     this.ready = true; // 真实布局已就绪：此后才允许落进度
   }
 
+  /** 手动导航（跳页/翻页/缩放）前停掉自动滚屏：引擎每帧覆写 scrollTop，不停则操作看似失灵 */
+  private manualNav(): void {
+    if (this.ctx?.autoscroll.isScrolling()) this.ctx.autoscroll.stop();
+  }
+
+  /** 跳到第 p 页（1 起）：clamp 进页范围、滚动到该页顶（列首对齐）。
+      文档未就绪（后台加载中）静默容错 */
+  private gotoPage(p: number): void {
+    const n = this.pdf?.numPages ?? 0;
+    if (!n || !this.pages.length || !this.tops.length) return;
+    const t = Math.min(n, Math.max(1, Math.round(p)));
+    this.manualNav();
+    this.scroll.scrollTop = this.tops[t - 1];
+    this.update(); // 目标位置与当前一致时无 scroll 事件，主动刷新保证目标页入渲染池
+  }
+
+  /** 按因子步进缩放（工具栏 +/−）：以视口中心的当前页为基准求有效缩放后切换百分比模式 */
+  private zoomBy(factor: number): void {
+    if (!this.pdf || !this.pages.length) return;
+    const i = this.pageAt(this.scroll.scrollTop + this.scroll.clientHeight / 2);
+    const cur = this.scaleOf(i);
+    const z = Math.min(PdfView.ZOOM_MAX, Math.max(PdfView.ZOOM_MIN, cur * factor));
+    if (Math.abs(z - cur) < 1e-9) return; // 已在界限
+    this.applyZoom("percent", z);
+  }
+
+  /** 应用缩放并保持锚点不漂移：ax/ay 是锚点视口坐标（Ctrl+滚轮传光标位置；按钮/复位为视口中心）。
+      锚点所在页内取几何占比，重排后按新占位几何还原 scrollTop/scrollLeft——光标下内容保持不动 */
+  private applyZoom(mode: "fit" | "percent", zoom = this.zoom, ax?: number, ay?: number): void {
+    if (!this.pdf || !this.pages.length) return;
+    const cx = ax ?? this.scroll.clientWidth / 2;
+    const cy = ay ?? this.scroll.clientHeight / 2;
+    const yc0 = this.scroll.scrollTop + cy;
+    const i = this.pageAt(yc0);
+    const d0 = this.pageDims[i];
+    if (!d0) return;
+    const s0 = this.scaleOf(i);
+    const h0 = Math.max(1, Math.round(d0.h * s0));
+    const w0 = Math.max(1, Math.round(d0.w * s0));
+    const fracY = Math.min(1, Math.max(0, (yc0 - this.tops[i]) / h0));
+    const left0 = Math.max(0, (this.scroll.clientWidth - w0) / 2);
+    const fracX = Math.min(1, Math.max(0, (this.scroll.scrollLeft + cx - left0) / w0));
+    this.manualNav();
+    this.zoomMode = mode;
+    if (mode === "percent") this.zoom = zoom;
+    this.clearRenders();
+    this.layout();
+    const s1 = this.scaleOf(i);
+    const h1 = Math.max(1, Math.round(d0.h * s1));
+    const w1 = Math.max(1, Math.round(d0.w * s1));
+    const left1 = Math.max(0, (this.scroll.clientWidth - w1) / 2);
+    this.scroll.scrollTop = Math.max(0, this.tops[i] + fracY * h1 - cy);
+    this.scroll.scrollLeft = Math.max(0, left1 + fracX * w1 - cx);
+    this.update();
+  }
+
+  /** Ctrl+滚轮步进缩放，锚点=光标处内容；其余滚轮（含无修饰滚屏）不拦 */
+  private onWheel = (e: WheelEvent): void => {
+    if (!this.active || !e.ctrlKey || !this.pdf || !this.pages.length) return;
+    e.preventDefault(); // 挡浏览器页面缩放
+    const rect = this.scroll.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const i = this.pageAt(this.scroll.scrollTop + cy);
+    const cur = this.scaleOf(i);
+    const z = Math.min(
+      PdfView.ZOOM_MAX,
+      Math.max(PdfView.ZOOM_MIN, cur * (e.deltaY < 0 ? PdfView.ZOOM_STEP : 1 / PdfView.ZOOM_STEP)),
+    );
+    if (Math.abs(z - cur) < 1e-9) return; // 已在界限
+    this.applyZoom("percent", z, cx, cy);
+  };
+
+  /** 键盘翻页（挂宿主 pane）：PgDn/→ 下一页、PgUp/← 上一页、Home/End 首末页。
+      以视图激活态门控；输入框内按键（Home/End/箭头是编辑键）不劫持；
+      Ctrl/⌘/Alt 组归宿主（Ctrl+PgDn/PgUp=上一/下一个文件）；Space/+/-/1-9/Esc 归宿主不碰 */
+  private onKey = (e: KeyboardEvent): void => {
+    if (!this.active) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    switch (e.key) {
+      case "PageDown":
+      case "ArrowRight":
+        e.preventDefault();
+        this.gotoPage(this.currentPage() + 1);
+        break;
+      case "PageUp":
+      case "ArrowLeft":
+        e.preventDefault();
+        this.gotoPage(this.currentPage() - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        this.gotoPage(1);
+        break;
+      case "End":
+        e.preventDefault();
+        this.gotoPage(this.pdf?.numPages ?? 1);
+        break;
+    }
+  };
+
+  /** 缩放文案：适宽 / 百分比（状态栏模式与工具栏标签共用） */
+  private zoomText(): string {
+    return this.zoomMode === "fit" ? "适宽" : `${Math.round(this.zoom * 100)}%`;
+  }
+
   /** 当前页码：占位几何判定（视口中线落在哪页），不等渲染完成 */
   private currentPage(): number {
     const n = this.pages.length;
@@ -542,18 +753,24 @@ class PdfView implements PluginViewInstance {
   }
 
   private syncStatus(): void {
+    const cur = this.currentPage();
     this.ctx.setStatus({
       title: this.ctx.name,
       file: this.ctx.name,
       encoding: this.version ? `PDF ${this.version}` : "PDF",
-      position: `第 ${this.currentPage()}/${this.pdf?.numPages ?? "?"} 页`,
-      mode: "模式: 适宽",
+      position: `第 ${cur}/${this.pdf?.numPages ?? "?"} 页`,
+      mode: `模式: ${this.zoomText()}`,
       display: this.ctx.autoscroll.isScrolling() ? "滚屏中" : "-",
     });
+    // 工具栏随动：页码输入（输入中不覆写）、总页数、缩放标签
+    if (document.activeElement !== this.pageInput) this.pageInput.value = String(cur);
+    this.pageTotal.textContent = `/ ${this.pdf?.numPages ?? "?"}`;
+    this.zoomLabel.textContent = this.zoomText();
   }
 
   setActive(on: boolean): void {
     this.active = on;
+    if (on) this.syncStatus(); // 转前台恢复状态栏（后台期间被其他视图覆写）
   }
 
   /** Space 暂停/继续（宿主 togglePlayback 分发到本插件） */
@@ -577,6 +794,8 @@ class PdfView implements PluginViewInstance {
     this.rafId = 0;
     this.resizeOb?.disconnect();
     this.resizeOb = null;
+    this.hostEl?.removeEventListener("keydown", this.onKey);
+    this.hostEl = null;
     this.ctx.autoscroll.detach();
     this.queue = [];
     for (const [, c] of this.canvases) {
@@ -604,8 +823,8 @@ const view = new PdfView();
 const plugin: Read4EverPlugin = {
   id: PID,
   name: "PDF 阅读器",
-  version: "0.1.0",
-  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示，速度键与 Space 经宿主滚屏引擎可用",
+  version: "0.3.0",
+  description: "PDF 阅读：pdf.js 连续滚屏渲染、适宽显示、页码跳转与翻页键、缩放（+/−/适宽/100%/Ctrl 滚轮），速度键与 Space 经宿主滚屏引擎可用",
   extensions: [".pdf"],
   open: (ctx) => view.open(ctx),
   togglePlay: () => view.togglePlay(),
