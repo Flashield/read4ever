@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """T9 验收素材生成器：中文 CID 样本（豆腐块检查）与 500 页大样本（性能验收线）。
 
-用法（仓库根执行；依赖 reportlab + Pillow：`pip install --user reportlab Pillow`）：
-  python3 scripts/gen_pdf_samples.py cid    # 非嵌入 CID 中文字体样本，2 页约 5KB
-  python3 scripts/gen_pdf_samples.py big    # 500 页 / 50MB 量级大样本
-输出目录：仓库外 ../../examples/generated/（默认相对仓库根，脚本内 OUTPUT 常量可改），
-同名覆盖、可重复执行；样本文件不进版本控制。
+用法（仓库根执行；依赖 reportlab + Pillow(+numpy)：`pip install --user reportlab Pillow numpy`）：
+  python3 scripts/gen_pdf_samples.py cid                 # 非嵌入 CID 中文字体样本，2 页约 5KB
+  python3 scripts/gen_pdf_samples.py big                 # 500 页 / 50MB 量级大样本
+  可选：--out DIR 指定输出目录；--font TTF 指定 big 用中文字体（否则自动探测，见下）
+默认输出：<仓库根>/../examples/generated/（仓库外，样本不进版本控制），同名覆盖、可重复执行。
 
 两个样本的用途：
   cid —— reportlab UnicodeCIDFont（STSong-Light=简体 UniGB-UCS2-H / MSung-Light=繁体
@@ -15,12 +15,50 @@
          矢量装饰线，Droid Sans Fallback 字体嵌入（自带 cmap，不依赖插件 cmaps），
          内容流不压缩凑体积；用于滚动流畅/跳页即时/内存验收线。
 """
-import sys
+import shutil
+import subprocess
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-OUTPUT = Path("/home/zhuangbin/SyncProjects/20261008/examples/generated")  # 仓库外固定位置（工作区根 examples/generated，样本不进版本控制）
+# big 样本的中文嵌入字体探测候选（仅本机常见路径，--font 可显式指定）
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simsun.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+]
+
+
+def default_output() -> Path:
+    """默认输出目录：<仓库根>/../examples/generated（由脚本位置推导，仓库外不入版本控制）"""
+    repo_root = Path(__file__).resolve().parent.parent  # scripts/ 的上级即仓库根
+    return repo_root.parent / "examples" / "generated"
+
+
+def find_cjk_font() -> Path:
+    """探测可用的中文字体文件：常见路径逐一试探 → fontconfig fc-match 兜底；找不到即中文报错"""
+    for p in FONT_CANDIDATES:
+        if Path(p).is_file():
+            return Path(p)
+    fc = shutil.which("fc-match")
+    if fc:
+        try:
+            out = subprocess.run([fc, "-f", "%{file}", "sans:lang=zh-cn"], capture_output=True, text=True, timeout=10)
+            hit = out.stdout.strip()
+            if hit and Path(hit).is_file() and hit.lower().endswith((".ttf", ".ttc", ".otf")):
+                return Path(hit)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    raise SystemExit(
+        "错误：未找到可嵌入的中文字体（gen_big 需要）。"
+        "请用 --font /路径/字体.ttf 显式指定，或安装 fonts-droid-fallback / fonts-noto-cjk。"
+    )
 
 # 简繁中文词表（唯一正文原料：按页索引确定性取词，保证每页内容不同、可复跑一致）
 ZH_WORDS = [
@@ -84,7 +122,7 @@ def gen_page_image(page_no: int) -> "Image.Image":
     return img
 
 
-def gen_cid() -> None:
+def gen_cid(out_dir: Path) -> None:
     """非嵌入 CID 中文字体样本（豆腐块红-绿断言素材）"""
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
@@ -93,7 +131,7 @@ def gen_cid() -> None:
 
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))  # 预定义 CMap UniGB-UCS2-H，不嵌字体
     pdfmetrics.registerFont(UnicodeCIDFont("MSung-Light"))  # UniCNS-UCS2-H（繁体）
-    out = OUTPUT / "cid中文样本.pdf"
+    out = out_dir / "cid中文样本.pdf"
     c = canvas.Canvas(str(out), pagesize=A4)
     w, h = A4
     y = h - 72
@@ -127,7 +165,7 @@ def gen_cid() -> None:
     print(f"[cid] {out}（{len(raw)} 字节，非嵌入 CID：UniGB-UCS2-H + UniCNS-UCS2-H）")
 
 
-def gen_big(pages: int = 500) -> None:
+def gen_big(out_dir: Path, pages: int = 500, font: Path | None = None) -> None:
     """500 页大样本（性能验收线素材）"""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.utils import ImageReader
@@ -135,9 +173,10 @@ def gen_big(pages: int = 500) -> None:
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
 
-    ttf = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
+    ttf = str(font) if font else str(find_cjk_font())
+    print(f"[big] 嵌入字体：{ttf}")
     pdfmetrics.registerFont(TTFont("RbFallback", ttf))
-    out = OUTPUT / "五百页大样本.pdf"
+    out = out_dir / "五百页大样本.pdf"
     w, h = A4
     c = canvas.Canvas(str(out), pagesize=A4, pageCompression=0)  # 内容流不压缩（体积诚实来自内容）
     for n in range(1, pages + 1):
@@ -181,12 +220,15 @@ def gen_big(pages: int = 500) -> None:
 
 
 if __name__ == "__main__":
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    what = sys.argv[1] if len(sys.argv) > 1 else ""
-    if what == "cid":
-        gen_cid()
-    elif what == "big":
-        gen_big()
+    import argparse
+
+    ap = argparse.ArgumentParser(description="PDF 插件验收素材生成器（cid=豆腐块样本 / big=500 页性能样本）")
+    ap.add_argument("what", choices=["cid", "big"], help="cid=非嵌入 CID 中文样本；big=500 页大样本")
+    ap.add_argument("--out", type=Path, default=default_output(), help=f"输出目录（默认 {default_output()}）")
+    ap.add_argument("--font", type=Path, default=None, help="big 样本嵌入的中文字体（默认自动探测，cid 不需要）")
+    args = ap.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+    if args.what == "cid":
+        gen_cid(args.out)
     else:
-        print(__doc__)
-        sys.exit(2)
+        gen_big(args.out, font=args.font)
