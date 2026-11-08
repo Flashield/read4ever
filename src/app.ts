@@ -50,6 +50,7 @@ function defaultStore(): StoreData {
       autoRestore: true,
       keepAwake: true,
       playBorderless: false, // 播放/滚屏开始时自动进入无边框模式
+      playOnTop: false, // 播放/滚屏期间自动置顶
       activeKeywordGroupId: "",
       lastFolderPath: "",
       folderAutoOpen: true,
@@ -658,9 +659,11 @@ function onPlaybackToggled(): void {
     if (state.store.settings.playBorderless && !fsActive && !fullscreen.isBorderless()) {
       void toggleBorderless();
     }
+    if (state.store.settings.playOnTop) fullscreen.setPlaybackOnTop(true);
   } else if (fullscreen.isBorderless()) {
     void toggleBorderless();
   }
+  // 播放置顶的停止还原由 startOnTopWatch 延时确认兜底（与无边框同款）
 }
 
 /* 无边框×播放兜底监视：仅无边框期间生效。播放态 true→false 后延时确认，
@@ -685,6 +688,32 @@ function startPlaybackWatch(): void {
       window.clearTimeout(watchConfirmTimer);
     }
     watchPrevPlaying = now;
+  }, 500);
+}
+
+/* 播放置顶兜底监视：引擎级自动停止（文末/插件终章/媒体播完）不经 onPlaybackToggled，
+   由本监视比对播放态，停止后延时确认再还原——确认窗口内恢复不算结束
+   （EPUB 换章 stop→加载下一章→start 的瞬时停止不闪断置顶）。 */
+let onTopPrevPlaying = false;
+let onTopConfirmTimer = 0;
+function startOnTopWatch(): void {
+  window.setInterval(() => {
+    if (!state.store.settings.playOnTop) {
+      window.clearTimeout(onTopConfirmTimer);
+      onTopPrevPlaying = false;
+      return;
+    }
+    const now = isPlaying();
+    if (now) {
+      window.clearTimeout(onTopConfirmTimer);
+      fullscreen.setPlaybackOnTop(true); // 幂等，内部去重
+    } else if (onTopPrevPlaying) {
+      window.clearTimeout(onTopConfirmTimer);
+      onTopConfirmTimer = window.setTimeout(() => {
+        if (!isPlaying()) fullscreen.setPlaybackOnTop(false);
+      }, 1000);
+    }
+    onTopPrevPlaying = now;
   }, 500);
 }
 
@@ -1184,6 +1213,28 @@ export async function toggleBorderless(): Promise<void> {
   updateUI();
 }
 
+/* ========== 窗口置顶（总是在最顶端 / 播放时在最顶端） ========== */
+
+export function isAlwaysOnTop(): boolean {
+  return fullscreen.isOnTop();
+}
+
+export function toggleAlwaysOnTop(): void {
+  const on = fullscreen.toggleAlwaysTop();
+  toast(on ? "窗口置顶：开" : "窗口置顶：关");
+  updateUI();
+}
+
+export function togglePlayOnTop(): void {
+  const on = !state.store.settings.playOnTop;
+  state.store.settings.playOnTop = on;
+  // 开→播放中立即置顶；关→显式动作立即还原（不经监视的 1 秒确认）
+  fullscreen.setPlaybackOnTop(on && isPlaying());
+  persist();
+  updateUI();
+  toast(on ? "播放时置顶：开" : "播放时置顶：关");
+}
+
 /** 进入托盘：全部标签页的滚屏与播放暂停（恢复显示后保持暂停，由用户手动继续）。
  *  滚屏引擎是激活 tab 单例，stopScroll 即全覆盖（含页模式定时翻页、释放屏幕常亮）。 */
 function pauseAllActivity(): void {
@@ -1256,6 +1307,8 @@ export function updateUI(): void {
   setBtn("btn-page-mode", reader.getMode() === "page");
   setBtn("btn-dual-page", reader.isDual());
   setBtn("btn-fullscreen", isFullscreen());
+  setBtn("btn-on-top", fullscreen.isOnTop());
+  setBtn("btn-play-on-top", state.store.settings.playOnTop);
   const simpBtn = document.getElementById("btn-simp-trad");
   if (simpBtn) simpBtn.textContent = displayModeLabel().slice(0, 1);
   updateStatus();
@@ -1404,6 +1457,7 @@ export async function boot(): Promise<void> {
   updateUI();
   startReadTicker();
   startPlaybackWatch();
+  startOnTopWatch();
 
   window.addEventListener("beforeunload", () => persistNow());
 

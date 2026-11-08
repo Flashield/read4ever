@@ -142,6 +142,9 @@ pub struct Settings {
     /// 播放/滚屏开始时自动进入无边框模式
     #[serde(default)]
     pub play_borderless: bool,
+    /// 播放/滚屏期间自动置顶（停止后还原）
+    #[serde(default)]
+    pub play_on_top: bool,
     /// 文件名自然排序
     #[serde(default = "default_true")]
     pub natural_sort: bool,
@@ -199,6 +202,7 @@ impl Default for Settings {
             bookshelf_active_id: String::new(),
             keep_awake: true,
             play_borderless: false,
+            play_on_top: false,
             natural_sort: true,
             open_in_new_tab: true,
             tab_switch_playback: "pause".to_string(),

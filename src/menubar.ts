@@ -38,6 +38,8 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { label: "双页模式", shortcut: "Ctrl+D", checked: () => reader.isDual(), action: () => app.toggleDual() },
     { label: "全屏阅读", shortcut: "F11", checked: () => app.isFullscreen(), action: () => app.toggleFullscreen() },
     { label: "无边框模式", shortcut: "F9", checked: () => app.isBorderless(), action: () => void app.toggleBorderless() },
+    { label: "总是在最顶端", shortcut: "Alt+T", checked: () => app.isAlwaysOnTop(), action: () => app.toggleAlwaysOnTop() },
+    { label: "播放时在最顶端", shortcut: "Alt+P", checked: () => app.state.store.settings.playOnTop, action: () => app.togglePlayOnTop() },
   ],
   read: () => [
     {
@@ -129,6 +131,8 @@ function showShortcuts(): void {
       "Ctrl+D        双页模式",
       "F11           全屏阅读（碰屏幕边缘呼出各栏）",
       "F9            无边框模式（窗口化隐藏标题栏与所有界面栏，碰边呼出）",
+      "Alt+T         总是在最顶端（窗口置顶开关）",
+      "Alt+P         播放时在最顶端（播放/滚屏期间自动置顶，停止还原）",
       "Ctrl+W        关闭当前标签页（含其插件视图；最后一个回欢迎页）",
       "Ctrl+,        设置",
       "T             隐藏到系统托盘",
@@ -214,6 +218,8 @@ export function initMenubar(): void {
   bind("btn-simp-trad", () => app.cycleDisplayMode());
   bind("btn-dual-page", () => app.toggleDual());
   bind("btn-fullscreen", () => app.toggleFullscreen());
+  bind("btn-on-top", () => app.toggleAlwaysOnTop());
+  bind("btn-play-on-top", () => app.togglePlayOnTop());
   bind("btn-hide", () => app.hideToTray());
 
   // 状态/工具栏速度标签：点击弹出具体数值的速度选择

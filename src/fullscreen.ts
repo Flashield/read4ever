@@ -162,6 +162,47 @@ export async function toggleBorderless(): Promise<void> {
   else await enterBorderless();
 }
 
+/* ========== 窗口置顶（公共功能）：生效规则纯派生——
+   置顶 ＝ 「总是在最顶端」(手动开关，即时状态不跨会话) ‖ 「播放时置顶」(播放期间的临时诉求，
+   由 app 侧播放开关联动/兜底监视驱动)。浏览器演示无窗口置顶概念，仅维护状态供 UI 高亮。 */
+
+let alwaysTop = false; // 「总是在最顶端」手动开关
+let playTopWanted = false; // 「播放时置顶」当前的临时诉求（播放中为 true）
+let appliedOnTop = false; // 已生效的派生态（去重，避免重复调用窗口 API / 重复派发事件）
+
+function applyOnTop(): void {
+  const want = alwaysTop || playTopWanted;
+  if (want === appliedOnTop) return;
+  appliedOnTop = want;
+  if (!isBrowserDemo()) {
+    try {
+      void getCurrentWindow().setAlwaysOnTop(want);
+    } catch {
+      /* 忽略 */
+    }
+  }
+  emitChanged();
+}
+
+/** 当前是否置顶生效（派生态，供工具栏/菜单高亮） */
+export function isOnTop(): boolean {
+  return appliedOnTop;
+}
+
+/** 翻转「总是在最顶端」手动开关，返回新状态 */
+export function toggleAlwaysTop(): boolean {
+  alwaysTop = !alwaysTop;
+  applyOnTop();
+  return alwaysTop;
+}
+
+/** 播放置顶诉求（app 侧在播放开始/确认结束时调用；幂等） */
+export function setPlaybackOnTop(on: boolean): void {
+  if (playTopWanted === on) return;
+  playTopWanted = on;
+  applyOnTop();
+}
+
 export function initFullscreen(): void {
   // 四边热区（CSS 控制仅沉浸时显示）
   for (const edge of EDGES) {
