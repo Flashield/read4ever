@@ -281,13 +281,6 @@ body {
   overflow-y: hidden;
 }
 
-/* 全屏阅读：隐藏界面元素 */
-body.fullscreen #menu-bar,
-body.fullscreen #toolbar,
-body.fullscreen #status-bar {
-  display: none;
-}
-
 /* 轻提示 */
 #rb-toast {
   position: fixed;
@@ -2242,6 +2235,13 @@ body.fs-immersive #find-bar,
 body.fs-immersive.panel-open #find-bar {
   top: 12px;
   right: 12px;
+}
+
+/* 无边框模式：阅读区滚动条一并隐藏（滚屏时滚动条持续跳动干扰沉浸；
+   热区呼出的面板滚动条不受影响） */
+body.borderless .reader-content::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /* ========== 设置中心 ========== */

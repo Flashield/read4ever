@@ -37,6 +37,7 @@ const MENUS: Record<string, () => MenuItemDef[]> = {
     { sep: true },
     { label: "双页模式", shortcut: "Ctrl+D", checked: () => reader.isDual(), action: () => app.toggleDual() },
     { label: "全屏阅读", shortcut: "F11", checked: () => app.isFullscreen(), action: () => app.toggleFullscreen() },
+    { label: "无边框模式", shortcut: "F9", checked: () => app.isBorderless(), action: () => void app.toggleBorderless() },
   ],
   read: () => [
     {
@@ -127,11 +128,12 @@ function showShortcuts(): void {
       "F5            重新排版（去硬回车）",
       "Ctrl+D        双页模式",
       "F11           全屏阅读（碰屏幕边缘呼出各栏）",
+      "F9            无边框模式（窗口化隐藏标题栏与所有界面栏，碰边呼出）",
       "Ctrl+W        关闭当前标签页（含其插件视图；最后一个回欢迎页）",
       "Ctrl+,        设置",
       "T             隐藏到系统托盘",
       "Ctrl+Q        退出",
-      "Esc           退出全屏 / 关闭查找、面板、弹窗",
+      "Esc           退出全屏或无边框 / 关闭查找、面板、弹窗",
     ].join("\n")
   );
 }

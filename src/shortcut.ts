@@ -109,6 +109,13 @@ export function initShortcuts(): void {
       return;
     }
 
+    // 无边框模式不受插件视图屏蔽（与 F11 同级的公共沉浸功能，F9 开、Esc/F9 关）
+    if (key === "F9") {
+      e.preventDefault();
+      void app.toggleBorderless();
+      return;
+    }
+
     // 滚屏/播放公共入口不受插件视图屏蔽：宿主按视图类型分发（文本滚屏 / 插件播放切换）
     if (key === " ") {
       e.preventDefault();

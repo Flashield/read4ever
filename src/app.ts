@@ -49,6 +49,7 @@ function defaultStore(): StoreData {
       lastScroll: 0,
       autoRestore: true,
       keepAwake: true,
+      playBorderless: false, // 播放/滚屏开始时自动进入无边框模式
       activeKeywordGroupId: "",
       lastFolderPath: "",
       folderAutoOpen: true,
@@ -591,6 +592,8 @@ function onReaderProgress(): void {
 
 function onPageEnd(): void {
   toast("已到达文末");
+  // 文本滚到文末＝播放真实结束：无边框立即退出还原（插件侧由兜底监视覆盖）
+  if (fullscreen.isBorderless()) void toggleBorderless();
 }
 
 /* 阅读时长计时（每秒） */
@@ -632,6 +635,7 @@ export function togglePlayback(): void {
     } catch (e) {
       console.error("[plugin] togglePlay 失败:", e);
     }
+    onPlaybackToggled();
     updateUI();
     return;
   }
@@ -641,7 +645,47 @@ export function togglePlayback(): void {
     toast(
       `开始${reader.getMode() === "page" ? "页模式翻页" : "滚屏"}（当前 ${reader.getSpeed()} 像素/秒）`
     );
+  onPlaybackToggled();
   updateUI();
+}
+
+/** 播放开关联动无边框：开始时按设置自动进入（原生全屏沉浸中不折腾、保持全屏）；
+ *  手动停止立即退出还原。引擎级自动停止（文末/插件终章/媒体播完）由
+ *  startPlaybackWatch 兜底；EPUB 跨章续滚的瞬时停止经延时确认忽略。 */
+function onPlaybackToggled(): void {
+  if (isPlaying()) {
+    const fsActive = fullscreen.isImmersive() && !fullscreen.isBorderless();
+    if (state.store.settings.playBorderless && !fsActive && !fullscreen.isBorderless()) {
+      void toggleBorderless();
+    }
+  } else if (fullscreen.isBorderless()) {
+    void toggleBorderless();
+  }
+}
+
+/* 无边框×播放兜底监视：仅无边框期间生效。播放态 true→false 后延时确认，
+ * 确认窗口内复原则不算结束（EPUB 换章 stop→加载下一章→start 的瞬时停止）；
+ * 仍未恢复才退出还原。极慢网络的章节加载超过确认窗口会误退出，属已知可接受边界。 */
+let watchPrevPlaying = false;
+let watchConfirmTimer = 0;
+function startPlaybackWatch(): void {
+  window.setInterval(() => {
+    if (!fullscreen.isBorderless()) {
+      window.clearTimeout(watchConfirmTimer);
+      watchPrevPlaying = false;
+      return;
+    }
+    const now = isPlaying();
+    if (watchPrevPlaying && !now) {
+      window.clearTimeout(watchConfirmTimer);
+      watchConfirmTimer = window.setTimeout(() => {
+        if (fullscreen.isBorderless() && !isPlaying()) void toggleBorderless();
+      }, 1000);
+    } else if (now) {
+      window.clearTimeout(watchConfirmTimer);
+    }
+    watchPrevPlaying = now;
+  }, 500);
 }
 
 function setScrollMode(m: reader.ScrollMode): void {
@@ -1118,13 +1162,26 @@ export function toggleDual(): void {
 }
 
 export function isFullscreen(): boolean {
-  return fullscreen.isImmersive();
+  // 仅指原生全屏沉浸：无边框期间菜单勾选与工具栏高亮不应落在全屏上
+  return fullscreen.isImmersive() && !fullscreen.isBorderless();
 }
 
 export async function toggleFullscreen(): Promise<void> {
-  const was = fullscreen.isImmersive();
+  const wasFs = fullscreen.isImmersive() && !fullscreen.isBorderless();
   await fullscreen.toggle();
-  if (!was) toast("全屏模式：F11/Esc 退出，鼠标碰屏幕边缘呼出各栏");
+  if (!wasFs) toast("全屏模式：F11/Esc 退出，鼠标碰屏幕边缘呼出各栏");
+}
+
+/* ========== 无边框模式（与全屏共用沉浸机制，窗口化 + 隐藏标题栏） ========== */
+
+export function isBorderless(): boolean {
+  return fullscreen.isBorderless();
+}
+
+export async function toggleBorderless(): Promise<void> {
+  await fullscreen.toggleBorderless();
+  if (fullscreen.isBorderless()) toast("无边框模式：F9/Esc 退出，鼠标碰屏幕边缘呼出各栏");
+  updateUI();
 }
 
 /** 进入托盘：全部标签页的滚屏与播放暂停（恢复显示后保持暂停，由用户手动继续）。
@@ -1156,6 +1213,11 @@ export function handleEscape(): void {
   const sm = document.getElementById("settings-modal");
   if (sm && !sm.classList.contains("hidden")) {
     void import("./settings").then((m) => m.closeSettings());
+    return;
+  }
+  // 无边框与全屏同为沉浸层，Esc 一次只退一层（不关面板/插件视图、不停止播放）
+  if (fullscreen.isBorderless()) {
+    void toggleBorderless();
     return;
   }
   if (fullscreen.isImmersive()) {
@@ -1341,6 +1403,7 @@ export async function boot(): Promise<void> {
 
   updateUI();
   startReadTicker();
+  startPlaybackWatch();
 
   window.addEventListener("beforeunload", () => persistNow());
 

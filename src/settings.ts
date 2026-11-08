@@ -37,6 +37,7 @@ function syncFromStore(): void {
   set("set-natural-sort", s.naturalSort);
   set("set-folder-recursive", s.folderListRecursive);
   set("set-keep-awake", s.keepAwake);
+  set("set-play-borderless", s.playBorderless);
   set("set-page-interval", s.pageInterval);
 }
 
@@ -73,6 +74,7 @@ export function initSettingsModal(): void {
     s().keepAwake = v;
     setKeepAwakeEnabled(v);
   });
+  bindCheck("set-play-borderless", (v) => (s().playBorderless = v));
   document.getElementById("set-page-interval")?.addEventListener("change", (e) => {
     const v = Math.max(1, Math.min(3600, Math.round(Number((e.target as HTMLInputElement).value)) || 10));
     s().pageInterval = v;
