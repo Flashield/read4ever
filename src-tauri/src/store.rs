@@ -142,6 +142,9 @@ pub struct Settings {
     /// 播放/滚屏开始时自动进入无边框模式
     #[serde(default)]
     pub play_borderless: bool,
+    /// 手动暂停时保持无边框模式（播完/文末等真实结束仍自动退出还原）
+    #[serde(default)]
+    pub pause_keep_borderless: bool,
     /// 播放/滚屏期间自动置顶（停止后还原）
     #[serde(default)]
     pub play_on_top: bool,
@@ -202,6 +205,7 @@ impl Default for Settings {
             bookshelf_active_id: String::new(),
             keep_awake: true,
             play_borderless: false,
+            pause_keep_borderless: false,
             play_on_top: false,
             natural_sort: true,
             open_in_new_tab: true,

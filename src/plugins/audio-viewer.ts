@@ -775,7 +775,7 @@ class AudioView implements PluginViewInstance {
       switch (btn.dataset.act) {
         case "prev": void this.nav(-1); break;
         case "next": void this.nav(1); break;
-        case "play": this.togglePlay(); break;
+        case "play": this.ctx?.togglePlayback(); break; // 走宿主入口：暂停×无边框联动统一生效
         case "mute": this.toggleMute(btn); break;
         case "loop": this.cycleLoop(btn); break;
         case "min": this.minimize(); break;
@@ -925,7 +925,7 @@ class AudioView implements PluginViewInstance {
     this.mdCur = el.querySelector(".md-cur");
     this.mdProgress = el.querySelector(".md-progress");
     this.mdDur = el.querySelector(".md-dur");
-    this.mdPlay!.addEventListener("click", () => this.togglePlay());
+    this.mdPlay!.addEventListener("click", () => this.ctx?.togglePlayback()); // 宿主入口：联动统一生效
     const progress = this.mdProgress!;
     progress.addEventListener("pointerdown", () => (this.seeking = true));
     progress.addEventListener("input", () => {

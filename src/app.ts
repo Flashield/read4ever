@@ -50,6 +50,7 @@ function defaultStore(): StoreData {
       autoRestore: true,
       keepAwake: true,
       playBorderless: false, // 播放/滚屏开始时自动进入无边框模式
+      pauseKeepBorderless: false, // 暂停时保持无边框模式（真实结束仍自动退出还原）
       playOnTop: false, // 播放/滚屏期间自动置顶
       activeKeywordGroupId: "",
       lastFolderPath: "",
@@ -651,17 +652,28 @@ export function togglePlayback(): void {
 }
 
 /** 播放开关联动无边框：开始时按设置自动进入（原生全屏沉浸中不折腾、保持全屏）；
- *  手动停止立即退出还原。引擎级自动停止（文末/插件终章/媒体播完）由
- *  startPlaybackWatch 兜底；EPUB 跨章续滚的瞬时停止经延时确认忽略。 */
+ *  手动停止按「暂停时保持无边框」设置决定退出或保持。引擎级自动停止（文末/插件终章/媒体播完）
+ *  不经此入口，由 startPlaybackWatch 兜底；EPUB 跨章续滚的瞬时停止经延时确认忽略。 */
+
+/* 暂停保持标志：手动暂停且设置开启时置位，保持无边框画面。清除时机：恢复播放、
+ * 兜底监视观察到播放（防内部恢复后残留，避免后续真实播完被误保）、退出无边框、监视无边框早退分支。 */
+let pauseKept = false;
+
 function onPlaybackToggled(): void {
   if (isPlaying()) {
+    pauseKept = false;
     const fsActive = fullscreen.isImmersive() && !fullscreen.isBorderless();
     if (state.store.settings.playBorderless && !fsActive && !fullscreen.isBorderless()) {
       void toggleBorderless();
     }
     if (state.store.settings.playOnTop) fullscreen.setPlaybackOnTop(true);
   } else if (fullscreen.isBorderless()) {
-    void toggleBorderless();
+    if (state.store.settings.pauseKeepBorderless) {
+      pauseKept = true;
+      toast("已暂停（保持无边框，Esc/F9 退出）");
+    } else {
+      void toggleBorderless();
+    }
   }
   // 播放置顶的停止还原由 startOnTopWatch 延时确认兜底（与无边框同款）
 }
@@ -676,16 +688,21 @@ function startPlaybackWatch(): void {
     if (!fullscreen.isBorderless()) {
       window.clearTimeout(watchConfirmTimer);
       watchPrevPlaying = false;
+      pauseKept = false;
       return;
     }
     const now = isPlaying();
-    if (watchPrevPlaying && !now) {
+    if (pauseKept && !now) {
+      // 手动暂停保持中：不布防退出，等恢复播放（标志在播放分支/下方 now 分支清除）
+      window.clearTimeout(watchConfirmTimer);
+    } else if (watchPrevPlaying && !now) {
       window.clearTimeout(watchConfirmTimer);
       watchConfirmTimer = window.setTimeout(() => {
         if (fullscreen.isBorderless() && !isPlaying()) void toggleBorderless();
       }, 1000);
     } else if (now) {
       window.clearTimeout(watchConfirmTimer);
+      pauseKept = false; // 内部恢复（如媒体坞直调）也清标志，防真实播完被误保
     }
     watchPrevPlaying = now;
   }, 500);
@@ -1210,6 +1227,7 @@ export function isBorderless(): boolean {
 export async function toggleBorderless(): Promise<void> {
   await fullscreen.toggleBorderless();
   if (fullscreen.isBorderless()) toast("无边框模式：F9/Esc 退出，鼠标碰屏幕边缘呼出各栏");
+  else pauseKept = false; // 退出还原时清暂停保持标志（含手动退出与联动退出）
   updateUI();
 }
 
