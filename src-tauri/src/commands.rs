@@ -223,6 +223,58 @@ pub fn exit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// 无边框中央拖动移窗（前端在阅读区按下位移超阈值后调用，见 fullscreen.ts）。
+/// macOS 不能直接用 start_dragging：tao 的 drag_window 只在 currentEvent 为内部
+/// 类型 0x15 时才合成 mouseDown（tauri-apps/tao#743），其余场景透传 currentEvent——
+/// 从 mousemove 阈值进来时那是 LeftMouseDragged/MouseMoved，而 AppKit 的
+/// performWindowDragWithEvent 要求传入发起拖动的 mouseDown，静默失败（drag-region
+/// 在 mousedown 时调用故无此问题）。这里不依赖 currentEvent，无条件按当前指针
+/// 位置合成 LeftMouseDown 再发起拖动。非 macOS 桌面转发 start_dragging；其余目标
+/// （iOS/安卓）无窗口拖动概念，报错兜底。
+#[tauri::command]
+pub fn center_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // clone 给闭包：run_on_main_thread(&self) 借用与 move 捕获不能同时作用于 window
+        let win = window.clone();
+        return window
+            .run_on_main_thread(move || {
+                use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
+                let Ok(ptr) = win.ns_window() else {
+                    return;
+                };
+                // SAFETY: ns_window() 即本窗口的 NSWindow 指针；run_on_main_thread
+                // 保证在主线程解引用（NSWindow 主线程专属类型）
+                let ns_window = unsafe { &*(ptr as *const NSWindow) };
+                let location = NSEvent::mouseLocation();
+                let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                    NSEventType::LeftMouseDown,
+                    location,
+                    NSEventModifierFlags::empty(), // 无修饰键
+                    0.0, // 时间戳：AppKit 只以位置/窗口号确定拖动初始状态
+                    ns_window.windowNumber(),
+                    None, // context：现代 AppKit 固定 nil
+                    0,    // eventNumber
+                    1,    // clickCount
+                    1.0,  // pressure
+                );
+                if let Some(event) = event {
+                    ns_window.performWindowDragWithEvent(&event);
+                }
+            })
+            .map_err(|e| e.to_string());
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        return window.start_dragging().map_err(|e| e.to_string());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = window;
+        return Err("窗口拖动仅桌面端支持".into());
+    }
+}
+
 /* ========== 文件夹浏览与文件操作 ========== */
 
 /// 目录条目（文件夹侧栏用）

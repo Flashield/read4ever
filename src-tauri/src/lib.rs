@@ -75,6 +75,7 @@ pub fn run() {
             commands::hide_to_tray,
             commands::show_from_tray,
             commands::exit_app,
+            commands::center_drag,
             commands::list_dir,
             commands::trash_path,
             commands::move_path,

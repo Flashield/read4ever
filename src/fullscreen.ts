@@ -7,6 +7,7 @@
    即自动接入（见 docs/插件开发.md）。
    不 import app.ts（避免循环依赖）；状态变化派发 rb-fullscreen-changed 由 app 同步 UI。 */
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 
 const IMMERSIVE_CLS = "fs-immersive";
 const BORDERLESS_CLS = "borderless"; // 无边框专属样式钩子（如隐藏阅读区滚动条）
@@ -187,11 +188,12 @@ function initBorderlessDrag(): void {
     if (Math.hypot(e.clientX - dragX, e.clientY - dragY) < DRAG_THRESHOLD) return;
     dragArmed = false;
     window.getSelection()?.removeAllRanges();
-    try {
-      void getCurrentWindow().startDragging();
-    } catch {
+    // 统一走自管命令（macOS 合成 LeftMouseDown 发起拖动，其余平台转发 start_dragging）：
+    // tao 的 start_dragging 在 macOS 依赖 currentEvent 恰为 mouseDown，从 mousemove
+    // 进来会静默失败，细节见 commands.rs 的 center_drag
+    invoke("center_drag").catch(() => {
       /* 忽略 */
-    }
+    });
   });
   window.addEventListener("mouseup", () => {
     dragArmed = false;

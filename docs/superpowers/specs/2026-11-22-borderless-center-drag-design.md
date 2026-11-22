@@ -37,3 +37,25 @@
 
 - `npm run build`（tsc 类型检查 + vite）+ `cargo check`（build.rs 会校验 capabilities 权限标识）
 - 浏览器演示回归：无边框切换、双击取词不受影响；真实拖窗为 OS 级行为，需用户桌面端手测
+
+## macOS 修正（2026-11-23，实测无法拖窗后追加）
+
+**根因**（证据链，源码级）：
+- tao 0.37.1 macOS `drag_window`（`platform_impl/macos/window.rs:929`）把 `NSApp.currentEvent`
+  透传给 `performWindowDragWithEvent:`，AppKit 要求该参数是「发起拖动的 mouseDown 事件」；
+  仅当 currentEvent 是内部类型 `0x15` 时才合成 mouseDown（tao#743 分享弹层场景）
+- data-tauri-drag-region 在 mousedown 时调用 → 主线程 currentEvent 恰为 mouseDown → 成功
+- 我们的阈值方案在 mousemove 才调 → 主线程 currentEvent 是 LeftMouseDragged/MouseMoved →
+  AppKit 拒绝 → 静默失败
+- 排除 `movableByWindowBackground`：WebKit `WebViewImpl.h` 写死 WKWebView 的
+  `mouseDownCanMoveWindow = false`
+
+**修复**：
+- `commands.rs` 新增 `center_drag` 命令：macOS 下主线程无条件按当前指针位置合成
+  LeftMouseDown（`NSEvent::mouseLocation()` + 本窗口 windowNumber）发起拖动；非 macOS
+  桌面转发 `start_dragging`；iOS 等目标报错兜底（`start_dragging` 是 tauri cfg(desktop) API）
+- `Cargo.toml` 仅 macOS 目标引入 `objc2-app-kit = "0.3"`（依赖树已有 0.3.2，零新增编译物；
+  feature 需含 NSResponder——NSWindow 类本体被它门控）
+- `fullscreen.ts` 改调 `invoke("center_drag")`，前端无平台分支
+- 本地无 macOS：独立最小工程交叉 `cargo check --target aarch64-apple-darwin` 验证 API 用法
+  （objc2 0.6 生成方法为安全调用，仅指针转换需 unsafe），再回填主工程
