@@ -162,6 +162,42 @@ export async function toggleBorderless(): Promise<void> {
   else await enterBorderless();
 }
 
+/* ========== 无边框中央拖动移窗：标题栏隐藏后由阅读区代管窗口拖动。
+   按下后位移超阈值才交系统拖窗：单击/双击取词不受影响，超阈即清掉半截选区
+   （拖选文字让位于拖窗，退出无边框一切恢复）。插件视图/面板/热区均为上层
+   元素不会命中；普通窗口模式有标题栏，不引入。 */
+const DRAG_THRESHOLD = 5; // 位移超过此像素数才判为拖窗
+
+let dragArmed = false; // 拖窗武装：合法按下后置位，超阈触发或 mouseup 解除
+let dragX = 0;
+let dragY = 0;
+
+function initBorderlessDrag(): void {
+  const el = document.getElementById("reader-content");
+  if (!el) return;
+  el.addEventListener("mousedown", (e) => {
+    dragArmed = false; // 下次按下先复位（拖窗开始后 mouseup 被 OS 吞掉，靠这里兜底）
+    if (!isBorderless() || isBrowserDemo() || e.button !== 0) return;
+    dragArmed = true;
+    dragX = e.clientX;
+    dragY = e.clientY;
+  });
+  el.addEventListener("mousemove", (e) => {
+    if (!dragArmed) return;
+    if (Math.hypot(e.clientX - dragX, e.clientY - dragY) < DRAG_THRESHOLD) return;
+    dragArmed = false;
+    window.getSelection()?.removeAllRanges();
+    try {
+      void getCurrentWindow().startDragging();
+    } catch {
+      /* 忽略 */
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    dragArmed = false;
+  });
+}
+
 /* ========== 窗口置顶（公共功能）：生效规则纯派生——
    置顶 ＝ 「总是在最顶端」(手动开关，即时状态不跨会话) ‖ 「播放时置顶」(播放期间的临时诉求，
    由 app 侧播放开关联动/兜底监视驱动)。浏览器演示无窗口置顶概念，仅维护状态供 UI 高亮。 */
@@ -204,6 +240,8 @@ export function setPlaybackOnTop(on: boolean): void {
 }
 
 export function initFullscreen(): void {
+  initBorderlessDrag(); // 无边框期间阅读区中央拖动移窗
+
   // 四边热区（CSS 控制仅沉浸时显示）
   for (const edge of EDGES) {
     const z = document.createElement("div");

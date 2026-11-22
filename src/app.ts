@@ -1226,7 +1226,7 @@ export function isBorderless(): boolean {
 
 export async function toggleBorderless(): Promise<void> {
   await fullscreen.toggleBorderless();
-  if (fullscreen.isBorderless()) toast("无边框模式：F9/Esc 退出，鼠标碰屏幕边缘呼出各栏");
+  if (fullscreen.isBorderless()) toast("无边框模式：F9/Esc 退出，碰边呼出各栏，按住中央拖动可移窗");
   else pauseKept = false; // 退出还原时清暂停保持标志（含手动退出与联动退出）
   updateUI();
 }
