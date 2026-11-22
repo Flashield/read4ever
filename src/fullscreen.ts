@@ -6,8 +6,7 @@
    两模式互斥、后开优先。插件视图内工具栏挂 .plugin-topbar / .plugin-bottombar
    即自动接入（见 docs/插件开发.md）。
    不 import app.ts（避免循环依赖）；状态变化派发 rb-fullscreen-changed 由 app 同步 UI。 */
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 
 const IMMERSIVE_CLS = "fs-immersive";
 const BORDERLESS_CLS = "borderless"; // 无边框专属样式钩子（如隐藏阅读区滚动条）
@@ -164,39 +163,78 @@ export async function toggleBorderless(): Promise<void> {
 }
 
 /* ========== 无边框中央拖动移窗：标题栏隐藏后由阅读区代管窗口拖动。
-   按下后位移超阈值才交系统拖窗：单击/双击取词不受影响，超阈即清掉半截选区
-   （拖选文字让位于拖窗，退出无边框一切恢复）。插件视图/面板/热区均为上层
-   元素不会命中；普通窗口模式有标题栏，不引入。 */
+   按下后位移超阈值才进入自管拖动，此后按「mousedown 时窗口位 + webview
+   mousemove 增量 × 缩放」setPosition 跟随（绝对对齐，不累积漂移）。
+   不走 tao 的 start_dragging——macOS 下它要求 currentEvent 恰为发起拖动的
+   mouseDown，从 mousemove 阈值进来 AppKit 静默拒绝（见无边框拖窗设计文档）；
+   也不用 cursorPosition()——tao 的 macOS 实现把 mouseLocation 点坐标与
+   像素高度混算（X 是点、Y 是像素高−点），与 setPosition 的物理像素不可换算。
+   webview 增量方案无需全局光标：拖窗时光标始终钉在窗口内抓取点，事件不会断。
+   取词是 WebKit 原生选区行为（mousedown 默认），不能 preventDefault；拖动中
+   每次移动压住原生拖选（无边框期间拖选文字本就让位于拖窗，退出无边框一切恢复）。
+   插件视图/面板/热区均为上层元素不会命中；浏览器演示无窗口概念，不启用；
+   普通窗口模式有标题栏，不引入。 */
 const DRAG_THRESHOLD = 5; // 位移超过此像素数才判为拖窗
 
-let dragArmed = false; // 拖窗武装：合法按下后置位，超阈触发或 mouseup 解除
-let dragX = 0;
+let dragArmed = false; // 拖窗武装：合法按下且窗口位就绪后置位，超阈触发或 mouseup 解除
+let dragging = false; // 自管拖动进行中（超阈后）
+let dragX = 0; // mousedown 起点（webview CSS px）
 let dragY = 0;
+let winX = 0; // mousedown 时窗口左上角（物理 px）
+let winY = 0;
+let winScale = 1; // 缩放：CSS px → 物理 px（跨不同缩放显示器的拖动会有轻微误差，可接受）
 
 function initBorderlessDrag(): void {
   const el = document.getElementById("reader-content");
   if (!el) return;
   el.addEventListener("mousedown", (e) => {
-    dragArmed = false; // 下次按下先复位（拖窗开始后 mouseup 被 OS 吞掉，靠这里兜底）
+    dragArmed = false;
+    dragging = false;
     if (!isBorderless() || isBrowserDemo() || e.button !== 0) return;
-    dragArmed = true;
     dragX = e.clientX;
     dragY = e.clientY;
+    // 先取窗口位与缩放再武装：未就绪前超阈不触发（IPC 毫秒级，人手 5px 远慢于此）
+    const win = getCurrentWindow();
+    void Promise.all([win.outerPosition(), win.scaleFactor()])
+      .then(([pos, scale]) => {
+        winX = pos.x;
+        winY = pos.y;
+        winScale = scale;
+        dragArmed = true;
+      })
+      .catch(() => {
+        /* 取窗口位失败则本次按下不武装 */
+      });
   });
   el.addEventListener("mousemove", (e) => {
     if (!dragArmed) return;
     if (Math.hypot(e.clientX - dragX, e.clientY - dragY) < DRAG_THRESHOLD) return;
     dragArmed = false;
-    window.getSelection()?.removeAllRanges();
-    // 统一走自管命令（macOS 合成 LeftMouseDown 发起拖动，其余平台转发 start_dragging）：
-    // tao 的 start_dragging 在 macOS 依赖 currentEvent 恰为 mouseDown，从 mousemove
-    // 进来会静默失败，细节见 commands.rs 的 center_drag
-    invoke("center_drag").catch(() => {
-      /* 忽略 */
-    });
+    dragging = true;
+    window.getSelection()?.removeAllRanges(); // 清掉半截选区，让位于拖窗
+  });
+  // 跟随与收尾挂 window 层：读区外持续；拖窗时窗口跟着光标走，光标不会出窗
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    window.getSelection()?.removeAllRanges(); // 压住原生拖选
+    void getCurrentWindow()
+      .setPosition(
+        new PhysicalPosition(
+          Math.round(winX + (e.clientX - dragX) * winScale),
+          Math.round(winY + (e.clientY - dragY) * winScale),
+        ),
+      )
+      .catch(() => {
+        /* 忽略 */
+      });
   });
   window.addEventListener("mouseup", () => {
     dragArmed = false;
+    dragging = false;
+  });
+  window.addEventListener("blur", () => {
+    dragArmed = false;
+    dragging = false; // 拖动中被系统弹层抢走焦点即停
   });
 }
 

@@ -50,14 +50,6 @@ keepawake = "0.6"
 # 默认单实例：重复启动唤起已有窗口（docs/spec/托盘暂停与单实例多开方案.md）
 tauri-plugin-single-instance = "2"
 
-# 无边框中央拖动移窗（commands.rs 的 center_drag）：macOS 下 tao 的 start_dragging 依赖
-# currentEvent 恰为 mouseDown，从 mousemove 阈值进来时拿到的是 dragged/moved 事件，
-# performWindowDragWithEvent 会被 AppKit 静默拒绝——改为无条件按当前指针位置合成
-# LeftMouseDown 再发起拖动（即 tao #743 的合成手法，独立工程交叉验证过 API 用法）。
-# objc2 系随 tauri/tao 已在依赖树（0.3 同版零新增编译物），仅 macOS 目标引入，iOS 门禁不受影响。
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSWindow", "NSGraphicsContext", "NSResponder"] }
-
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["macros", "rt"] }

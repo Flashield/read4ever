@@ -38,24 +38,26 @@
 - `npm run build`（tsc 类型检查 + vite）+ `cargo check`（build.rs 会校验 capabilities 权限标识）
 - 浏览器演示回归：无边框切换、双击取词不受影响；真实拖窗为 OS 级行为，需用户桌面端手测
 
-## macOS 修正（2026-11-23，实测无法拖窗后追加）
+## 实现期修订记录（2026-11-23）
 
-**根因**（证据链，源码级）：
-- tao 0.37.1 macOS `drag_window`（`platform_impl/macos/window.rs:929`）把 `NSApp.currentEvent`
-  透传给 `performWindowDragWithEvent:`，AppKit 要求该参数是「发起拖动的 mouseDown 事件」；
-  仅当 currentEvent 是内部类型 `0x15` 时才合成 mouseDown（tao#743 分享弹层场景）
-- data-tauri-drag-region 在 mousedown 时调用 → 主线程 currentEvent 恰为 mouseDown → 成功
-- 我们的阈值方案在 mousemove 才调 → 主线程 currentEvent 是 LeftMouseDragged/MouseMoved →
-  AppKit 拒绝 → 静默失败
-- 排除 `movableByWindowBackground`：WebKit `WebViewImpl.h` 写死 WKWebView 的
-  `mouseDownCanMoveWindow = false`
+macOS 桌面手测发现拖动无效，两轮修复后定位到根因。调试方法：`RB_DEBUG_DRAG=1`
+注入 JS 探针（结果写悬浮角标，窗口坐标用外部 CGWindowList 工具观测），三个
+决定性实验——Rust 侧 `set_position` 正常（排除 tao/AppKit 层）、JS 侧
+`cursorPosition` 正常、JS 侧 `setPosition` 被拒并回显权限名——直接定案。
 
-**修复**：
-- `commands.rs` 新增 `center_drag` 命令：macOS 下主线程无条件按当前指针位置合成
-  LeftMouseDown（`NSEvent::mouseLocation()` + 本窗口 windowNumber）发起拖动；非 macOS
-  桌面转发 `start_dragging`；iOS 等目标报错兜底（`start_dragging` 是 tauri cfg(desktop) API）
-- `Cargo.toml` 仅 macOS 目标引入 `objc2-app-kit = "0.3"`（依赖树已有 0.3.2，零新增编译物；
-  feature 需含 NSResponder——NSWindow 类本体被它门控）
-- `fullscreen.ts` 改调 `invoke("center_drag")`，前端无平台分支
-- 本地无 macOS：独立最小工程交叉 `cargo check --target aarch64-apple-darwin` 验证 API 用法
-  （objc2 0.6 生成方法为安全调用，仅指针转换需 unsafe），再回填主工程
+1. **根因：capabilities 缺 `core:window:allow-set-position`**。自管拖窗调用
+   `win.setPosition()` 被 IPC 权限层拒绝，错误又被 `.catch(() => {})` 吞掉，
+   表现为窗口纹丝不动。这是本仓库第三次踩「窗口 API 权限静默拒绝」坑
+   （前两次：置顶缺 allow-set-always-on-top、拖动缺 allow-start-dragging）。
+   补权限 + 新增 `src-tauri/tests/capabilities.rs` 固定前端实际用到的窗口写
+   权限清单（变异验证过会红），防第四次。
+2. **方案微调：放弃 rAF 轮询 `cursorPosition()`，改事件驱动**。tao 0.37.1 的
+   macOS `cursor_position()` 实现（platform_impl/macos/util/mod.rs）把
+   `NSEvent mouseLocation`（点坐标，Y 自底向上）与
+   `CGDisplay::pixels_high()`（像素）混算，返回值 X 是点、Y 是「像素高−点」，
+   与 `outerPosition`/`setPosition` 的物理像素不可换算（探针实测 scale=2 下
+   X 偏一半、Y 量纲错乱）。现改为：mousedown 时取一次窗口物理位与
+   `scaleFactor()`，之后以 webview `mousemove` 的 clientX/Y 增量 × 缩放求
+   setPosition 目标——拖窗时光标始终钉在窗口内抓取点，webview 事件不会断，
+   也免掉每帧 IPC 轮询。
+3. 前次提交 ec05c3c 的合成 mouseDown 方案（objc2-app-kit）整体移除。
