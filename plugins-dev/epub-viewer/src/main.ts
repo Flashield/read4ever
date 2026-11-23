@@ -34,6 +34,9 @@ const VIEW_CSS = `
 .rbepub-toc-row:hover { background: var(--ui-hover, #3d3d3d); }
 .rbepub-toc-row.active { color: var(--accent, #4a9eff); }
 .rbepub-empty { padding: 40px; text-align: center; opacity: 0.6; }
+/* 沉浸（全屏/无边框）时顶栏滑出为绝对定位脱离文档流：滚动容器/目录补占整栏，顶部不留宿主主题色空条（同 .vv-stage 约定） */
+body.fs-immersive .rbepub-scroll { inset: 0; }
+body.fs-immersive .rbepub-toc { top: 0; }
 `;
 
 interface SavedPos {

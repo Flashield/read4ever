@@ -56,6 +56,8 @@ const VIEW_CSS = `
 .rbpdf-zoom-label { min-width: 44px; text-align: center; opacity: 0.85; white-space: nowrap; }
 .rbpdf-title { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rbpdf-scroll { position: absolute; inset: 30px 0 0 0; overflow: auto; outline: none; background: var(--panel-bg, #1e1e1e); display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px 0; }
+/* 沉浸（全屏/无边框）时顶栏滑出为绝对定位脱离文档流：滚动容器补占整栏，顶部不留宿主主题色空条（同 .vv-stage 约定） */
+body.fs-immersive .rbpdf-scroll { inset: 0; }
 .rbpdf-page { position: relative; flex: none; margin: 0 auto; overflow: hidden; background: #d9d9d9; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45); }
 .rbpdf-page canvas { display: block; background: #fff; }
 /* 文本层（pdf.js TextLayer 容器）：以 scale=1 视口铺 span（百分比定位），再整体等比缩放
