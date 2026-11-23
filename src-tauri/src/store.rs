@@ -148,6 +148,9 @@ pub struct Settings {
     /// 播放/滚屏期间自动置顶（停止后还原）
     #[serde(default)]
     pub play_on_top: bool,
+    /// 窗口置顶三态："never" | "play" | "always"（play=播放/滚屏期间置顶，停止后还原）
+    #[serde(default = "default_on_top_mode")]
+    pub on_top_mode: String,
     /// 文件名自然排序
     #[serde(default = "default_true")]
     pub natural_sort: bool,
@@ -173,6 +176,10 @@ pub struct Settings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_on_top_mode() -> String {
+    "never".to_string()
 }
 
 impl Default for Settings {
@@ -207,6 +214,7 @@ impl Default for Settings {
             play_borderless: false,
             pause_keep_borderless: false,
             play_on_top: false,
+            on_top_mode: "never".to_string(),
             natural_sort: true,
             open_in_new_tab: true,
             tab_switch_playback: "pause".to_string(),

@@ -247,16 +247,18 @@ function initBorderlessDrag(): void {
   });
 }
 
-/* ========== 窗口置顶（公共功能）：生效规则纯派生——
-   置顶 ＝ 「总是在最顶端」(手动开关，即时状态不跨会话) ‖ 「播放时置顶」(播放期间的临时诉求，
-   由 app 侧播放开关联动/兜底监视驱动)。浏览器演示无窗口置顶概念，仅维护状态供 UI 高亮。 */
+/* ========== 窗口置顶（公共功能）：三态开关「从不/播放时/总是」，开关值是唯一真值——
+   从不恒不置顶，总是恒置顶，播放时仅播放期间置顶（播放诉求由 app 侧联动/兜底监视驱动，
+   播放开始/结束不改开关值）。浏览器演示无窗口置顶概念，仅维护状态供 UI 高亮。 */
 
-let alwaysTop = false; // 「总是在最顶端」手动开关
-let playTopWanted = false; // 「播放时置顶」当前的临时诉求（播放中为 true）
+export type OnTopMode = "never" | "play" | "always";
+
+let onTopMode: OnTopMode = "never"; // 三态开关当前值（启动时由 app 按持久化设置同步）
+let playTopWanted = false; // 播放期间的置顶诉求（播放中为 true）
 let appliedOnTop = false; // 已生效的派生态（去重，避免重复调用窗口 API / 重复派发事件）
 
 function applyOnTop(): void {
-  const want = alwaysTop || playTopWanted;
+  const want = onTopMode === "always" || (onTopMode === "play" && playTopWanted);
   if (want === appliedOnTop) return;
   appliedOnTop = want;
   if (!isBrowserDemo()) {
@@ -269,16 +271,16 @@ function applyOnTop(): void {
   emitChanged();
 }
 
-/** 当前是否置顶生效（派生态，供工具栏/菜单高亮） */
-export function isOnTop(): boolean {
-  return appliedOnTop;
+/** 读取三态开关当前值 */
+export function getOnTopMode(): OnTopMode {
+  return onTopMode;
 }
 
-/** 翻转「总是在最顶端」手动开关，返回新状态 */
-export function toggleAlwaysTop(): boolean {
-  alwaysTop = !alwaysTop;
+/** 设置三态开关（显式动作，立即生效——不经监视的 1 秒确认） */
+export function setOnTopMode(m: OnTopMode): void {
+  if (onTopMode === m) return;
+  onTopMode = m;
   applyOnTop();
-  return alwaysTop;
 }
 
 /** 播放置顶诉求（app 侧在播放开始/确认结束时调用；幂等） */

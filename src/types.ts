@@ -34,7 +34,8 @@ export interface Settings {
   keepAwake: boolean; // 滚屏/定时翻页/插件播放时保持屏幕常亮（阻止屏保/待机）
   playBorderless: boolean; // 播放/滚屏开始时自动进入无边框模式（窗口化隐藏标题栏与全部界面栏）
   pauseKeepBorderless: boolean; // 暂停时保持无边框模式（播完/文末等真实结束仍自动退出还原）
-  playOnTop: boolean; // 播放/滚屏期间自动置顶（窗口保持在其他窗口之上，停止后还原）
+  playOnTop: boolean; // 旧「播放时在最顶端」开关残留：仅供启动迁移读取，不再置回 true
+  onTopMode: string; // 窗口置顶三态："never" | "play" | "always"
   activeKeywordGroupId: string; // 当前使用的关键词组
   lastFolderPath: string; // 上次打开的文件夹（文件夹侧栏恢复用）
   folderAutoOpen: boolean; // 启动时自动打开文件夹侧栏

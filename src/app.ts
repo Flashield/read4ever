@@ -51,7 +51,8 @@ function defaultStore(): StoreData {
       keepAwake: true,
       playBorderless: false, // 播放/滚屏开始时自动进入无边框模式
       pauseKeepBorderless: false, // 暂停时保持无边框模式（真实结束仍自动退出还原）
-      playOnTop: false, // 播放/滚屏期间自动置顶
+      playOnTop: false, // 旧双开关残留：仅供迁移读取
+      onTopMode: "never", // 窗口置顶三态："never" | "play" | "always"
       activeKeywordGroupId: "",
       lastFolderPath: "",
       folderAutoOpen: true,
@@ -87,6 +88,14 @@ function mergeDefaults(data: StoreData): StoreData {
   const sp = merged.settings.scrollSpeed;
   if (sp > 0 && sp <= 9) merged.settings.scrollSpeed = sp * 45;
   merged.settings.fontFamily = normalizeFontFamily(merged.settings.fontFamily);
+  // 置顶三态：非法值兜底 "never"；旧「播放时在最顶端」开过的迁为 "play"，旧字段清零
+  if (merged.settings.onTopMode !== "play" && merged.settings.onTopMode !== "always") {
+    merged.settings.onTopMode = "never";
+  }
+  if (merged.settings.playOnTop && merged.settings.onTopMode === "never") {
+    merged.settings.onTopMode = "play";
+    merged.settings.playOnTop = false;
+  }
   merged.settings.customThemes = (merged.settings.customThemes || []).map((t) => ({
     ...t,
     fontFamily: normalizeFontFamily(t.fontFamily),
@@ -666,7 +675,7 @@ function onPlaybackToggled(): void {
     if (state.store.settings.playBorderless && !fsActive && !fullscreen.isBorderless()) {
       void toggleBorderless();
     }
-    if (state.store.settings.playOnTop) fullscreen.setPlaybackOnTop(true);
+    if (state.store.settings.onTopMode === "play") fullscreen.setPlaybackOnTop(true);
   } else if (fullscreen.isBorderless()) {
     if (state.store.settings.pauseKeepBorderless) {
       pauseKept = true;
@@ -715,7 +724,7 @@ let onTopPrevPlaying = false;
 let onTopConfirmTimer = 0;
 function startOnTopWatch(): void {
   window.setInterval(() => {
-    if (!state.store.settings.playOnTop) {
+    if (state.store.settings.onTopMode !== "play") {
       window.clearTimeout(onTopConfirmTimer);
       onTopPrevPlaying = false;
       return;
@@ -1231,26 +1240,33 @@ export async function toggleBorderless(): Promise<void> {
   updateUI();
 }
 
-/* ========== 窗口置顶（总是在最顶端 / 播放时在最顶端） ========== */
+/* ========== 窗口置顶（三态：从不 / 播放时 / 总是） ========== */
 
-export function isAlwaysOnTop(): boolean {
-  return fullscreen.isOnTop();
+const ON_TOP_META: Record<fullscreen.OnTopMode, { label: string; glyph: string; tip: string }> = {
+  never: { label: "从不", glyph: "🔓", tip: "窗口置顶：从不 (Alt+T)：点击循环 从不→播放时→总是" },
+  play: { label: "播放时", glyph: "📌", tip: "窗口置顶：播放时 (Alt+T)：播放/滚屏期间自动置顶，停止还原" },
+  always: { label: "总是", glyph: "📍", tip: "窗口置顶：总是 (Alt+T)：窗口保持在最顶端" },
+};
+
+export function getOnTopMode(): fullscreen.OnTopMode {
+  return fullscreen.getOnTopMode();
 }
 
-export function toggleAlwaysOnTop(): void {
-  const on = fullscreen.toggleAlwaysTop();
-  toast(on ? "窗口置顶：开" : "窗口置顶：关");
-  updateUI();
-}
-
-export function togglePlayOnTop(): void {
-  const on = !state.store.settings.playOnTop;
-  state.store.settings.playOnTop = on;
-  // 开→播放中立即置顶；关→显式动作立即还原（不经监视的 1 秒确认）
-  fullscreen.setPlaybackOnTop(on && isPlaying());
+/** 设置三态（菜单三选一）：显式动作立即生效——播放中改「从不」立即还原、改「播放时」立即置顶
+ *  （同旧开关不经监视轮询），改「总是」恒置顶。 */
+export function setOnTop(m: fullscreen.OnTopMode): void {
+  fullscreen.setOnTopMode(m);
+  if (m === "play") fullscreen.setPlaybackOnTop(isPlaying());
+  state.store.settings.onTopMode = m;
   persist();
   updateUI();
-  toast(on ? "播放时置顶：开" : "播放时置顶：关");
+  toast(`窗口置顶：${ON_TOP_META[m].label}`);
+}
+
+/** 工具栏按钮 / Alt+T：三态循环 从不 → 播放时 → 总是 → 从不 */
+export function cycleOnTop(): void {
+  const next: Record<fullscreen.OnTopMode, fullscreen.OnTopMode> = { never: "play", play: "always", always: "never" };
+  setOnTop(next[fullscreen.getOnTopMode()] ?? "never");
 }
 
 /** 进入托盘：全部标签页的滚屏与播放暂停（恢复显示后保持暂停，由用户手动继续）。
@@ -1325,8 +1341,13 @@ export function updateUI(): void {
   setBtn("btn-page-mode", reader.getMode() === "page");
   setBtn("btn-dual-page", reader.isDual());
   setBtn("btn-fullscreen", isFullscreen());
-  setBtn("btn-on-top", fullscreen.isOnTop());
-  setBtn("btn-play-on-top", state.store.settings.playOnTop);
+  const topMode = fullscreen.getOnTopMode();
+  setBtn("btn-on-top", topMode !== "never");
+  const topBtn = document.getElementById("btn-on-top");
+  if (topBtn) {
+    topBtn.textContent = ON_TOP_META[topMode].glyph;
+    topBtn.title = ON_TOP_META[topMode].tip;
+  }
   const simpBtn = document.getElementById("btn-simp-trad");
   if (simpBtn) simpBtn.textContent = displayModeLabel().slice(0, 1);
   updateStatus();
@@ -1408,6 +1429,8 @@ export async function boot(): Promise<void> {
   reader.setMode(s.scrollMode === "page" ? "page" : "continuous");
   reader.setPageInterval(s.pageInterval);
   if (s.dualPage) reader.setDual(true);
+  // 窗口置顶三态同步进 fullscreen 模块（迁移与非法值兜底已在 mergeDefaults 完成）
+  fullscreen.setOnTopMode(s.onTopMode as fullscreen.OnTopMode);
   state.displayMode = (s.displayMode as DisplayMode) || "auto";
 
   applyAppearance();

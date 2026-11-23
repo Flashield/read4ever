@@ -116,20 +116,13 @@ export function initShortcuts(): void {
       return;
     }
 
-    // 窗口置顶不受插件视图屏蔽（与 F11/F9/T 同级的窗口公共功能）。
+    // 窗口置顶三态循环不受插件视图屏蔽（与 F11/F9/T 同级的窗口公共功能）。
     // 用 e.code 识别：macOS Option 组合的 e.key 是合成字符（†/ø 等），按 key 匹配会失灵。
     // 需在单键分支之前拦截，否则 Linux 下 Alt+T 的 e.key 仍是 "t" 会误触隐藏到托盘。
-    if (e.altKey && !ctrl) {
-      if (e.code === "KeyT") {
-        e.preventDefault();
-        app.toggleAlwaysOnTop();
-        return;
-      }
-      if (e.code === "KeyP") {
-        e.preventDefault();
-        app.togglePlayOnTop();
-        return;
-      }
+    if (e.altKey && !ctrl && e.code === "KeyT") {
+      e.preventDefault();
+      app.cycleOnTop();
+      return;
     }
 
     // 滚屏/播放公共入口不受插件视图屏蔽：宿主按视图类型分发（文本滚屏 / 插件播放切换）
