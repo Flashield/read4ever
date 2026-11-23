@@ -689,29 +689,47 @@ function onPlaybackToggled(): void {
 
 /* 无边框×播放兜底监视：仅无边框期间生效。播放态 true→false 后延时确认，
  * 确认窗口内复原则不算结束（EPUB 换章 stop→加载下一章→start 的瞬时停止）；
- * 仍未恢复才退出还原。极慢网络的章节加载超过确认窗口会误退出，属已知可接受边界。 */
+ * 仍未恢复才退出还原。极慢网络的章节加载超过确认窗口会误退出，属已知可接受边界。
+ * 播放态看全部实例：isPlaying 只看激活视图，切走标签页后它恒 false，后台还在播的
+ * 媒体（连播策略视频/音频豁免）不能被误判成播完。切标签页导致的停止（切走滚屏/
+ * 按策略暂停后台媒体）属用户导航，置 tabSwitchKept 跳过本次布防不退出。 */
 let watchPrevPlaying = false;
 let watchConfirmTimer = 0;
+let tabSwitchKept = false;
+
+/** tabs 层切标签页停止播放时调用（滚屏被切走/后台媒体按策略暂停）：本次停止不算
+ *  「播完」，无边框不自动退出；任一播放恢复或退出无边框时清除（幂等） */
+export function onPlaybackStoppedByTabSwitch(): void {
+  if (fullscreen.isBorderless()) tabSwitchKept = true;
+}
+
 function startPlaybackWatch(): void {
   window.setInterval(() => {
     if (!fullscreen.isBorderless()) {
       window.clearTimeout(watchConfirmTimer);
       watchPrevPlaying = false;
       pauseKept = false;
+      tabSwitchKept = false;
       return;
     }
-    const now = isPlaying();
-    if (pauseKept && !now) {
-      // 手动暂停保持中：不布防退出，等恢复播放（标志在播放分支/下方 now 分支清除）
+    const now = isPlaying() || plugins.anyInstancePlaying();
+    if (now) {
+      window.clearTimeout(watchConfirmTimer);
+      pauseKept = false; // 内部恢复（如媒体坞直调）也清标志，防真实播完被误保
+      tabSwitchKept = false; // 切 tab 后开始播放（如新 tab 滚屏）：导航保持完成使命
+    } else if (pauseKept || tabSwitchKept) {
+      // 手动暂停保持中 / 切标签页导致的停止：不布防退出，等恢复播放
       window.clearTimeout(watchConfirmTimer);
     } else if (watchPrevPlaying && !now) {
       window.clearTimeout(watchConfirmTimer);
       watchConfirmTimer = window.setTimeout(() => {
-        if (fullscreen.isBorderless() && !isPlaying()) void toggleBorderless();
+        if (
+          fullscreen.isBorderless() &&
+          !isPlaying() &&
+          !plugins.anyInstancePlaying()
+        )
+          void toggleBorderless();
       }, 1000);
-    } else if (now) {
-      window.clearTimeout(watchConfirmTimer);
-      pauseKept = false; // 内部恢复（如媒体坞直调）也清标志，防真实播完被误保
     }
     watchPrevPlaying = now;
   }, 500);

@@ -120,19 +120,25 @@ function storeLiveInto(tab: Tab): void {
   }
 }
 
-/** 播放策略：切走后按设置暂停后台媒体（"continue" 时不打断） */
+/** 播放策略：切走后按设置暂停后台媒体（"continue" 时不打断）。
+ *  实际暂停了在播媒体时通知 app：切标签页导致的停止不算「播完」，无边框不自动退出 */
 function applyPlaybackPolicy(): void {
   if (app.state.store.settings.tabSwitchPlayback === "continue") return;
+  let paused = false;
   for (const t of tabs) {
     if (t.id === activeId || !t.viewId) continue;
     if (plugins.viewAllowsBackground(t.viewId)) continue; // 后台播放插件(音频):切标签页不打断
     const inst = plugins.instanceOf(t.viewId);
     try {
-      if (inst?.isPlaying?.()) inst.togglePlay?.();
+      if (inst?.isPlaying?.()) {
+        inst.togglePlay?.();
+        paused = true;
+      }
     } catch {
       /* 忽略 */
     }
   }
+  if (paused) app.onPlaybackStoppedByTabSwitch();
 }
 
 /* ========== 切换 / 新建 / 关闭 ========== */
@@ -173,7 +179,10 @@ function renderTextTab(snap: TextSnapshot): void {
 }
 
 function activate(target: Tab): void {
-  reader.stopScroll();
+  if (reader.isScrolling()) {
+    reader.stopScroll(); // 切走的滚屏属导航停止：不算播完，无边框不因此退出
+    app.onPlaybackStoppedByTabSwitch();
+  }
   if (target.lazy) {
     // 旧 tab 的视图面板先收起：否则其视图仍处激活态（registry.curActiveViewId 仍指它），
     // 惰性装载的文本会渲染在仍然可见的旧视图之后
@@ -213,7 +222,10 @@ export function createTab(title: string): Tab | null {
   activeId = t.id;
   touchRecent(t.id);
   bumpEpoch();
-  reader.stopScroll();
+  if (reader.isScrolling()) {
+    reader.stopScroll(); // 切走的滚屏属导航停止：不算播完，无边框不因此退出
+    app.onPlaybackStoppedByTabSwitch();
+  }
   plugins.hideActiveView(); // 旧 tab 的视图面板收起保活（归它自己的 tab）
   applyPlaybackPolicy(); // 新 tab 时后台媒体按设置暂停，与 switchToTab 一致
   renderTabBar();

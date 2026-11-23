@@ -112,6 +112,19 @@ export function viewAllowsBackground(id: string): boolean {
   return views.get(id)?.plugin.backgroundPlayback === true;
 }
 
+/** 是否任一视图实例正在播放（含后台保活实例）：app 无边框兜底监视用——
+ *  isPlaying 只看激活实例，切走标签页后后台仍在播的媒体会被误判成停 */
+export function anyInstancePlaying(): boolean {
+  for (const e of views.values()) {
+    try {
+      if (e.inst.isPlaying?.()) return true;
+    } catch {
+      /* 忽略：单个实例异常不阻断其余 */
+    }
+  }
+  return false;
+}
+
 export function register(p: Read4EverPlugin, pkg?: PluginPkgInfo): boolean {
   if (plugins.some((x) => x.id === p.id)) return false;
   plugins.push(p);
