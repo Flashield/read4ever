@@ -61,3 +61,21 @@ macOS 桌面手测发现拖动无效，两轮修复后定位到根因。调试�
    setPosition 目标——拖窗时光标始终钉在窗口内抓取点，webview 事件不会断，
    也免掉每帧 IPC 轮询。
 3. 前次提交 ec05c3c 的合成 mouseDown 方案（objc2-app-kit）整体移除。
+
+## 实现期修订记录二（2026-11-23，真手测试后）
+
+权限修复后真手仍拖不动，悬浮角标（记录 mousedown/mousemove 的 client/screen/
+movement 坐标）暴露两个残留问题，修复后真手验证通过：
+
+1. **监听面漏掉插件视图**：原挂 `#reader-content`，而自动恢复常落在视频等
+   插件视图上（`#plugin-view-host` 是其兄弟节点、覆盖阅读区）——视频页面
+   按下根本不进处理器。改挂 `#reader-container`（文本区与插件视图宿主同在
+   其内），左右面板/各栏仍在外面不会误命中。
+2. **跟随坐标必须用 screenX/Y，不能用 clientX/Y**：clientX 相对窗口原点，
+   窗口一动误差信号即被自身位移抵消（目标位恒被拉回，表现为拖不动/半速
+   抖动）。真手数据实证：拖动中 screen 每拍稳定 +7~8（与 movementX 一致），
+   client 几乎不动——窗口确实跟着光标走。判阈仍用 client（按下后窗口未动
+   前判超阈值，语义不变）。
+3. 调试注意：vite HMR 对 tauri dev 页面并非每次都推送（本次重启前两轮修改
+   均未送达页面，「改了没生效」的时间线被污染）。验证前端改动前先确认
+   dev 日志出现 `hmr update`，必要时直接重启 `npm run tauri dev`。

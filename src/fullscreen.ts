@@ -163,29 +163,36 @@ export async function toggleBorderless(): Promise<void> {
 }
 
 /* ========== 无边框中央拖动移窗：标题栏隐藏后由阅读区代管窗口拖动。
-   按下后位移超阈值才进入自管拖动，此后按「mousedown 时窗口位 + webview
-   mousemove 增量 × 缩放」setPosition 跟随（绝对对齐，不累积漂移）。
+   监听面是 #reader-container（文本阅读区与插件视图宿主同在其内——视频/PDF
+   等插件视图激活时覆盖阅读区，只挂 reader-content 会漏掉最常见的恢复场景）。
+   按下后位移超阈值才进入自管拖动，此后按「mousedown 时窗口位 + screenX/Y
+   增量 × 缩放」setPosition 跟随（绝对对齐，不累积漂移）。
+   坐标必须用 screenX/Y：clientX/Y 相对窗口原点，窗口一移动、误差信号即被
+   自身位移抵消（目标位恒被拉回，窗口半速跟移甚至原地抖动）；screenX/Y 锚定
+   屏幕，窗口移动不影响其值（拖窗时光标钉在窗口内抓取点，事件流不断）。
    不走 tao 的 start_dragging——macOS 下它要求 currentEvent 恰为发起拖动的
    mouseDown，从 mousemove 阈值进来 AppKit 静默拒绝（见无边框拖窗设计文档）；
    也不用 cursorPosition()——tao 的 macOS 实现把 mouseLocation 点坐标与
-   像素高度混算（X 是点、Y 是像素高−点），与 setPosition 的物理像素不可换算。
-   webview 增量方案无需全局光标：拖窗时光标始终钉在窗口内抓取点，事件不会断。
-   取词是 WebKit 原生选区行为（mousedown 默认），不能 preventDefault；拖动中
+   像素高度混算，与 setPosition 的物理像素不可换算。
+   取词/视频点击是 WebKit 原生行为（mousedown 默认），不能 preventDefault；
+   超阈值即拖窗、不足 5px 仍是点击（双击取词、视频暂停不受影响）；拖动中
    每次移动压住原生拖选（无边框期间拖选文字本就让位于拖窗，退出无边框一切恢复）。
-   插件视图/面板/热区均为上层元素不会命中；浏览器演示无窗口概念，不启用；
-   普通窗口模式有标题栏，不引入。 */
+   左右面板/各栏均在 reader-container 之外不会命中；浏览器演示无窗口概念，
+   不启用；普通窗口模式有标题栏，不引入。 */
 const DRAG_THRESHOLD = 5; // 位移超过此像素数才判为拖窗
 
 let dragArmed = false; // 拖窗武装：合法按下且窗口位就绪后置位，超阈触发或 mouseup 解除
 let dragging = false; // 自管拖动进行中（超阈后）
-let dragX = 0; // mousedown 起点（webview CSS px）
+let dragX = 0; // mousedown 起点（webview CSS px，仅判阈）
 let dragY = 0;
+let dragSX = 0; // mousedown 起点（屏幕坐标，screenX/Y 锚定屏幕，窗口移动不影响）
+let dragSY = 0;
 let winX = 0; // mousedown 时窗口左上角（物理 px）
 let winY = 0;
 let winScale = 1; // 缩放：CSS px → 物理 px（跨不同缩放显示器的拖动会有轻微误差，可接受）
 
 function initBorderlessDrag(): void {
-  const el = document.getElementById("reader-content");
+  const el = document.getElementById("reader-container");
   if (!el) return;
   el.addEventListener("mousedown", (e) => {
     dragArmed = false;
@@ -193,6 +200,8 @@ function initBorderlessDrag(): void {
     if (!isBorderless() || isBrowserDemo() || e.button !== 0) return;
     dragX = e.clientX;
     dragY = e.clientY;
+    dragSX = e.screenX;
+    dragSY = e.screenY;
     // 先取窗口位与缩放再武装：未就绪前超阈不触发（IPC 毫秒级，人手 5px 远慢于此）
     const win = getCurrentWindow();
     void Promise.all([win.outerPosition(), win.scaleFactor()])
@@ -220,8 +229,8 @@ function initBorderlessDrag(): void {
     void getCurrentWindow()
       .setPosition(
         new PhysicalPosition(
-          Math.round(winX + (e.clientX - dragX) * winScale),
-          Math.round(winY + (e.clientY - dragY) * winScale),
+          Math.round(winX + (e.screenX - dragSX) * winScale),
+          Math.round(winY + (e.screenY - dragSY) * winScale),
         ),
       )
       .catch(() => {
