@@ -1,6 +1,6 @@
 [package]
 name = "Read4Ever"
-version = "2026.10.30"
+version = "2026.11.24"
 description = "My Reading Apps"
 authors = ["Flashield"]
 edition = "2024"
