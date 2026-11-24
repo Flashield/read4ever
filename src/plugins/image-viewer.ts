@@ -588,10 +588,16 @@ class ImageView implements PluginViewInstance {
     const zoomEl = this.q<HTMLElement>(".imgv-zoom");
     if (!stage || !cur || !zoomEl) return;
 
-    // 宿主短暂不可见/布局未就绪时 stage 尺寸会塌缩：延迟重试，避免把图片缩到地板尺寸
-    if (stage.clientWidth < 80 && this.layoutRetry < 40) {
-      this.layoutRetry++;
-      setTimeout(() => this.applyLayout(), 16);
+    // 宿主短暂不可见/布局未就绪时 stage 尺寸会塌缩：延迟重试。重试耗尽仍塌缩
+    // （后台 tab 面板 display:none 常驻）则放弃本次布局——保持既有帧尺寸，激活时重排；
+    // 绝不能落到 40px 地板尺寸：后台播放换图会把新帧排成看不见的细条（切回即"图片无法显示"）
+    if (stage.clientWidth < 80) {
+      if (this.layoutRetry < 40) {
+        this.layoutRetry++;
+        setTimeout(() => this.applyLayout(), 16);
+      } else {
+        this.layoutRetry = 0; // 放弃本次，等待激活/下一次触发时按真实几何重排
+      }
       return;
     }
     this.layoutRetry = 0;
@@ -740,6 +746,10 @@ class ImageView implements PluginViewInstance {
         if (now - this.suspendedAt < 2000) return;
         this.scrollSuspended = false;
       }
+      // 面板隐藏（切走标签页 display:none）时 stage 几何为 0：noOverflow/atEnd/enter
+      // 判断全部退化为真 → 每帧 promoteStep 狂飙到容器尽头并提前"播放结束"。
+      // 隐藏期间不推进，恢复可见后原位继续。
+      if (stage.clientWidth === 0 || stage.clientHeight === 0) return;
       const noOverflowY = stage.scrollHeight <= stage.clientHeight + 2;
       const noOverflowX = stage.scrollWidth <= stage.clientWidth + 2;
       const atEnd =
@@ -1044,9 +1054,11 @@ class ImageView implements PluginViewInstance {
     return this.slideOn || this.scrollOn;
   }
 
-  /** 仅激活 tab 的实例接收全局事件（当前无 window 级监听，滚轮挂在面板内随面板销毁）；存值备用 */
+  /** 仅激活 tab 的实例接收全局事件（当前无 window 级监听，滚轮挂在面板内随面板销毁）；存值备用。
+   *  重新可见时按真实几何重排：后台期间窗口可能变化，后台换图的新帧也未参与过有效布局 */
   setActive(on: boolean): void {
     this.activeVisible = on;
+    if (on && this.ctx) this.applyLayout();
   }
 
   syncButtons(): void {
