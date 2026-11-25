@@ -692,7 +692,7 @@ window.__RB_MOCK_SETFILE__ = (name: string, dataUrl: string): boolean => {
   return true;
 };
 
-/* 浏览器演示：用网页原生拖拽事件模拟系统拖拽（真实环境走 Tauri 拖放事件，见 app.initDragDrop）。
+/* 浏览器演示：用网页原生拖拽事件模拟系统拖拽（真实环境走 Tauri 拖拽事件，见 app.initDragDrop）。
    拖入的文件按文件名映射到演示目录路径，交给与真实环境同一段的 openExternalPaths：
    可打开的类型打开演示内容，其余按「无法打开的项」跳过并提示；
    同时阻止浏览器默认的「直接打开被拖入的文件」 */

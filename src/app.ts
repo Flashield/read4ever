@@ -448,10 +448,12 @@ export async function openExternalPaths(paths: string[]): Promise<void> {
   let i = 0;
   for (; i < rest.length; i++) {
     const p = rest[i];
-    // 上限只拦「要新开标签页」的：同文件已开的照常跳转已有标签页
-    if (tabs.count() >= limit && !tabs.tabForPath(p)) break;
+    // 上限只拦「要新开标签页」的：同文件已开的照常跳转已有标签页；
+    // 关闭「默认新标签页」时按替换语义不新增标签页，不拦
+    if (state.store.settings.openInNewTab && tabs.count() >= limit && !tabs.tabForPath(p)) break;
     try {
-      await openPath(p, { batch: true });
+      // 只剩一个可打开项（如单独拖入一条目 zip）按手动打开语义：选中条目在当前标签页接续
+      await openPath(p, { batch: rest.length > 1 });
     } catch (e) {
       showMessage("打开失败", String(e)); // zip 目录读不出来等：与非 zip 路径的失败提示一致
     }
