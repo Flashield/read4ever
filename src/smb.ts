@@ -21,6 +21,8 @@ const childrenCache = new Map<string, SmbFileEntry[]>();
 const nodeRows = new Map<string, HTMLElement>();
 let treeSeq = 0; // 树/列表渲染重入守卫：过期请求放弃写 DOM（pickSmbDir 同款 seq 模式）
 let listSeq = 0;
+let quietLoads = 0; // >0：批量展开期间（定位）目录读取失败不逐级弹错，记入 quietFailedDirs 由发起方统一提示
+const quietFailedDirs = new Set<string>();
 
 const servers = (): SmbServer[] => app.state.store.smbServers;
 
@@ -33,7 +35,8 @@ async function loadChildren(dir: string): Promise<SmbFileEntry[]> {
   try {
     entries = await api.smbListDir(dir, app.state.store.settings.naturalSort);
   } catch (e) {
-    app.toast(String(e).slice(0, 60));
+    if (quietLoads > 0) quietFailedDirs.add(dir);
+    else app.toast(String(e).slice(0, 60));
     childrenCache.set(dir, []);
     return [];
   }
@@ -913,11 +916,16 @@ async function selectDir(path: string): Promise<void> {
   await renderList();
 }
 
-/** 在远程树中定位文件：逐级展开祖先目录、列表切到所在目录、滚动高亮 */
+/** 在远程树中定位文件：逐级展开祖先目录、列表切到所在目录、滚动高亮。
+ *  服务器已移除 / 连不上 / 文件已不在（可能被移动或删除）各给一条提示，不静默 */
 export async function revealRemote(path: string): Promise<void> {
   const pure = path.split("::")[0];
   const segs = pure.replace(/^smb:\/*/, "").split("/").filter(Boolean);
   if (segs.length === 0) return;
+  if (!servers().some((s) => s.id === segs[0])) {
+    app.toast("文件所属的服务器已移除");
+    return;
+  }
   // 展开服务器根到文件所在目录
   const dirs: string[] = [];
   let acc = `smb://${segs[0]}`;
@@ -929,12 +937,24 @@ export async function revealRemote(path: string): Promise<void> {
   for (const d of dirs) expanded.add(d);
   selectedDir = dirs[dirs.length - 1];
   childrenCache.clear();
-  await renderAll();
+  // 逐级展开要读多级目录：连不上时每一级都会失败，静默装载、结尾只提示一条
+  quietLoads++;
+  try {
+    await renderAll();
+  } finally {
+    quietLoads--;
+  }
+  const failed = [...quietFailedDirs];
+  quietFailedDirs.clear();
   const row = rowByPath(pure);
   if (row) {
     row.scrollIntoView({ block: "center" });
     row.classList.add("located");
     window.setTimeout(() => row.classList.remove("located"), 2000);
+  } else if (failed.includes(`smb://${segs[0]}`)) {
+    app.toast("无法连接服务器"); // 服务器根都读不出来
+  } else {
+    app.toast("未找到该文件，可能已被移动或删除");
   }
 }
 
@@ -943,6 +963,20 @@ export async function ensureRendered(): Promise<void> {
   if (renderedOnce) return;
   renderedOnce = true;
   await renderAll();
+}
+
+/** 远程文件在系统里可直接使用的地址（「复制文件路径」用）。规范路径 smb://<服务器id>/<共享>/<路径>
+ *  里的 id 是应用内部编号：主机名取自服务器配置，Windows 给 UNC 路径，其余给 smb URL。
+ *  UNC 带不了端口（自定义端口的服务器在 Windows 上只能按主机名给）；服务器配置已删除时原样返回 */
+export function systemPath(path: string): string {
+  const segs = path.split("::")[0].replace(/^smb:\/*/, "").split("/").filter(Boolean);
+  const srv = segs.length >= 2 ? servers().find((s) => s.id === segs[0]) : undefined;
+  if (!srv) return path;
+  const rest = segs.slice(1); // 共享名及其下的路径
+  if (/Windows/i.test(navigator.userAgent)) {
+    return `\\\\${srv.host.replace(/:\d+$/, "")}\\${rest.join("\\")}`;
+  }
+  return `smb://${srv.host}/${rest.join("/")}`;
 }
 
 /* ========== 交互事件 ========== */

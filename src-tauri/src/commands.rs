@@ -11,6 +11,7 @@ use crate::reorder::{looks_like_hard_lines, reorder_text};
 use crate::seqfile::{find_next_file, find_prev_file};
 use crate::smb;
 use crate::store::{self, StoreData};
+use crate::sysopen;
 use crate::zipfile::{is_zip_file, read_text_file, read_zip_entry as read_zip_entry_inner};
 
 /// 读取文件返回的结构
@@ -221,6 +222,14 @@ pub fn show_from_tray(app: AppHandle) {
 #[tauri::command]
 pub fn exit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// 前端启动恢复完成后取走排队中的系统打开请求（之后到达的直接经 rb-open-paths 事件推送）
+#[tauri::command]
+pub fn take_pending_opens(app: AppHandle) -> Vec<String> {
+    app.try_state::<sysopen::SysOpen>()
+        .map(|s| s.take())
+        .unwrap_or_default()
 }
 
 /* ========== 文件夹浏览与文件操作 ========== */

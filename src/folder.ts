@@ -15,6 +15,7 @@ let open = false;
 let expanded = new Set<string>();
 const childrenCache = new Map<string, FileEntry[]>();
 const nodeRows = new Map<string, HTMLElement>(); // 目录路径 → 树节点元素（行内编辑定位用）
+let lastLoadFailed = false; // 最近一次目录读取失败（定位时据此区分「目录读不出来」与「文件不在列表里」）
 let listRecursive = false;
 let filterText = "";
 
@@ -87,7 +88,9 @@ async function refresh(): Promise<void> {
   await renderAll();
 }
 
-/** 在文件夹栏中定位文件：必要时切换根目录、逐级展开、滚动到位并短暂高亮 */
+/** 在文件夹栏中定位文件：必要时切换根目录、逐级展开、滚动到位并短暂高亮。
+ *  文件夹栏可能停在远程标签：先切回本地，否则高亮藏在后面看不见。
+ *  找不到时轻提示；目录读不出来的情况 loadChildren 已弹过原始报错，不重复 */
 export async function revealFile(path: string): Promise<void> {
   if (!path) return;
   await openFolderPanel();
@@ -97,6 +100,8 @@ export async function revealFile(path: string): Promise<void> {
     await import("./smb").then((m) => m.revealRemote(path));
     return;
   }
+  await switchSideTab("local");
+  lastLoadFailed = false;
   const sep = path.includes("\\") ? "\\" : "/";
   const dirPath = path.slice(0, Math.max(path.lastIndexOf(sep), 0));
   if (!root || !path.startsWith(root)) {
@@ -116,6 +121,8 @@ export async function revealFile(path: string): Promise<void> {
     row.scrollIntoView({ block: "center" });
     row.classList.add("located");
     window.setTimeout(() => row.classList.remove("located"), 2000);
+  } else if (!lastLoadFailed) {
+    app.toast("未找到该文件，可能已被移动或删除");
   }
 }
 
@@ -129,6 +136,7 @@ async function loadChildren(dir: string): Promise<FileEntry[]> {
     childrenCache.set(dir, entries);
     return entries;
   } catch (e) {
+    lastLoadFailed = true;
     app.toast(String(e).slice(0, 60));
     childrenCache.set(dir, []);
     return [];

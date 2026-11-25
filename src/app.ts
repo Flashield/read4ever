@@ -4,7 +4,7 @@ import * as reader from "./reader";
 import * as plugins from "./plugins/registry";
 import { applyTheme, findThemeByName, normalizeFontFamily, FONT_SONG } from "./themes";
 import { convertDisplay, type DisplayMode } from "./simp_trad";
-import { showDropdown, initDropdown } from "./dropdown";
+import { showDropdown, initDropdown, type MenuItemDef } from "./dropdown";
 import { setKeepAwakeEnabled } from "./keepawake";
 import * as fullscreen from "./fullscreen";
 import * as tabs from "./tabs";
@@ -310,6 +310,9 @@ export interface OpenOpts {
   tab?: "new" | "replace";
   /** 内部：打开发起时的 tab epoch（跨 await 后校验，过期则丢弃结果） */
   epoch?: number;
+  /** 外部批量打开（拖拽 / 系统打开请求）：多条目 zip 的选择弹层期间挂起 openPath 直到弹层关闭，
+   *  选中的条目一律开新标签页（不顶替同批已打开的文件） */
+  batch?: boolean;
 }
 
 /** zip 条目在历史/书签/设置里保存为「zip路径::条目名」的复合路径 */
@@ -331,29 +334,32 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
       return;
     }
     if (openable.length === 1) {
-      await openPath(`${path}::${openable[0]}`, { ...opts, tab: tabOpt });
+      await openPath(`${path}::${openable[0]}`, { ...opts, tab: opts.batch ? "new" : tabOpt });
       return;
     }
     // 多个条目：弹出选择菜单
     const rect = (document.getElementById("reader-container") as HTMLElement).getBoundingClientRect();
-    showDropdown(
-      [
-        { label: `选择要阅读的文件（共 ${openable.length} 个）：`, disabled: true },
-        { sep: true },
-        ...openable.map((entry) => ({
-          label: entry,
-          action: () =>
-            void openPath(`${path}::${entry}`, {
-              ...opts,
-              // 文本条目保持当前 tab 接续（决策记录：zip 多条目选择 = 当前 tab）；
-              // 插件条目（图片/视频）是独立媒体，按手动打开默认分流（openInNewTab → 新 tab）
-              tab: plugins.handlerForExt(plugins.extOf(entry)) ? tabOpt : "replace",
-            }),
-        })),
-      ],
-      rect.left + rect.width / 2 - 150,
-      rect.top + 40
-    );
+    // 文本条目保持当前 tab 接续（决策记录：zip 多条目选择 = 当前 tab）；
+    // 插件条目（图片/视频）是独立媒体，按手动打开默认分流（openInNewTab → 新 tab）。
+    // 外部批量打开例外：一律开新 tab——同批其他文件刚开在当前 tab，「当前 tab 接续」会把它们顶掉
+    const entryTab = (entry: string): "new" | "replace" =>
+      opts.batch ? "new" : plugins.handlerForExt(plugins.extOf(entry)) ? tabOpt : "replace";
+    const items: MenuItemDef[] = [
+      { label: `选择要阅读的文件（共 ${openable.length} 个）：`, disabled: true },
+      { sep: true },
+      ...openable.map((entry) => ({
+        label: entry,
+        action: () => void openPath(`${path}::${entry}`, { ...opts, tab: entryTab(entry) }),
+      })),
+    ];
+    const x = rect.left + rect.width / 2 - 150;
+    const y = rect.top + 40;
+    if (!opts.batch) {
+      showDropdown(items, x, y);
+      return;
+    }
+    // 批量：等弹层关闭（选中 / 点空白处）再继续，下一个 zip 的弹层不会顶掉这一个
+    await new Promise<void>((resolve) => showDropdown(items, x, y, resolve));
     return;
   }
   // 快照激活 tab 文本位置（tab 分流切换 activeId 之前，比例才归属旧 tab；
@@ -418,6 +424,45 @@ export async function openPath(path: string, opts: OpenOpts = {}): Promise<void>
       showMessage("打开失败", String(e));
     }
   }
+}
+
+/* ========== 外部批量打开（拖拽 / 系统打开请求共用） ========== */
+
+/** 打开一批来自外部的路径。分流与手动打开一致（openInNewTab、同文件已开则跳转、标签页上限）。
+ *  可打开的按给定顺序依次打开，最后打开的成为当前标签页；打不开的（文件夹、无扩展名、
+ *  陌生扩展名）跳过并轻提示，不建标签页。多条目 zip 排在其余文件之后逐个弹选择。 */
+export async function openExternalPaths(paths: string[]): Promise<void> {
+  const list = [...new Set(paths.filter(Boolean))];
+  if (!list.length) return;
+  await tabs.settleActivate();
+  const skipped: string[] = [];
+  const zips: string[] = [];
+  const plain: string[] = [];
+  for (const p of list) {
+    if (!plugins.canOpenFile(baseName(p))) skipped.push(p);
+    else if (p.toLowerCase().endsWith(".zip")) zips.push(p);
+    else plain.push(p);
+  }
+  const limit = Math.max(1, state.store.settings.tabLimit || 20);
+  const rest = [...plain, ...zips];
+  let i = 0;
+  for (; i < rest.length; i++) {
+    const p = rest[i];
+    // 上限只拦「要新开标签页」的：同文件已开的照常跳转已有标签页
+    if (tabs.count() >= limit && !tabs.tabForPath(p)) break;
+    try {
+      await openPath(p, { batch: true });
+    } catch (e) {
+      showMessage("打开失败", String(e)); // zip 目录读不出来等：与非 zip 路径的失败提示一致
+    }
+  }
+  const notes: string[] = [];
+  if (i < rest.length) notes.push(`标签页已达上限（${limit}），还有 ${rest.length - i} 个未打开`);
+  if (skipped.length) {
+    const names = skipped.slice(0, 3).map(baseName).join("、");
+    notes.push(`已跳过 ${skipped.length} 个无法打开的项：${names}${skipped.length > 3 ? " 等" : ""}`);
+  }
+  if (notes.length) toast(notes.join("；"));
 }
 
 async function openZipEntry(
@@ -1511,6 +1556,8 @@ export async function boot(): Promise<void> {
   if ("__TAURI_INTERNALS__" in window) {
     const { listen } = await import("@tauri-apps/api/event");
     await listen("rb-tray-hidden", pauseAllActivity);
+    // 系统打开请求：前端就绪后到达的经此推送（就绪前排队的由 takePendingOpens 取走）
+    await listen("rb-open-paths", (e) => void openExternalPaths(e.payload as string[]));
   }
 
   updateUI();
@@ -1534,18 +1581,30 @@ export async function boot(): Promise<void> {
   if (s.folderAutoOpen && s.lastFolderPath) {
     void openFolderPanel();
   }
+
+  // 系统打开请求（冷启动）：取走启动恢复完成前排队的路径，此后的走 rb-open-paths 事件
+  api
+    .takePendingOpens()
+    .then((paths) => openExternalPaths(paths))
+    .catch(() => {});
 }
 
-/* 拖拽打开 */
+/* 拖拽打开：拖着外部文件悬在窗口上时显示整窗提示，松手后整批交给 openExternalPaths。
+   只响应系统级拖拽——应用内部的网页拖动（如音频列表排序）不产生这些事件 */
 async function initDragDrop(): Promise<void> {
   try {
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
     await getCurrentWebview().onDragDropEvent((ev) => {
-      if (ev.payload.type === "drop" && ev.payload.paths.length) {
-        openPath(ev.payload.paths[0]);
-      }
+      if (ev.payload.type === "enter") setDropHint(true);
+      else if (ev.payload.type !== "over") setDropHint(false); // drop / leave
+      if (ev.payload.type === "drop" && ev.payload.paths.length) void openExternalPaths(ev.payload.paths);
     });
   } catch {
     /* 拖拽不可用时忽略 */
   }
+}
+
+/** 拖拽悬停提示：拖着文件在窗口上时显示，移出或松手后隐藏 */
+export function setDropHint(on: boolean): void {
+  document.getElementById("drop-hint")?.classList.toggle("hidden", !on);
 }

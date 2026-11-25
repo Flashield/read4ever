@@ -691,6 +691,37 @@ window.__RB_MOCK_SETFILE__ = (name: string, dataUrl: string): boolean => {
   mockFsRoot.children.set(name, mockFile(dataUrl));
   return true;
 };
+
+/* 浏览器演示：用网页原生拖拽事件模拟系统拖拽（真实环境走 Tauri 拖放事件，见 app.initDragDrop）。
+   拖入的文件按文件名映射到演示目录路径，交给与真实环境同一段的 openExternalPaths：
+   可打开的类型打开演示内容，其余按「无法打开的项」跳过并提示；
+   同时阻止浏览器默认的「直接打开被拖入的文件」 */
+{
+  let depth = 0; // dragenter/leave 逐层成对触发，计数判断是否真正离开窗口
+  const hint = (on: boolean) => void import("./app").then((m) => m.setDropHint(on));
+  document.addEventListener("dragenter", (e) => {
+    if (!e.dataTransfer?.types.includes("Files")) return; // 应用内部的拖动（如音频列表排序）不模拟
+    e.preventDefault();
+    depth++;
+    hint(true);
+  });
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("dragleave", () => {
+    if (--depth <= 0) {
+      depth = 0;
+      hint(false);
+    }
+  });
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    depth = 0;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    void import("./app").then((m) => {
+      m.setDropHint(false);
+      return m.openExternalPaths(files.map((f) => `${MOCK_FOLDER}\\${f.name}`));
+    });
+  });
+}
 /* @ts-expect-error 扩展 window */
 window.__TAURI_INTERNALS__ = {
   metadata: {
@@ -1041,6 +1072,8 @@ window.__TAURI_INTERNALS__ = {
         return Promise.resolve(1);
       case "plugin:event|unlisten":
         return Promise.resolve(null);
+      case "take_pending_opens":
+        return Promise.resolve([]); // 演示模式没有系统打开请求
       default:
         console.warn("[mock] 未实现的命令:", cmd, args);
         return Promise.resolve(null);

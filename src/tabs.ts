@@ -5,6 +5,7 @@
 import * as app from "./app";
 import * as reader from "./reader";
 import * as plugins from "./plugins/registry";
+import { showDropdown, type MenuItemDef } from "./dropdown";
 
 export interface TextSnapshot {
   filePath: string; // zip 为复合路径
@@ -66,6 +67,11 @@ const baseName = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() |
 
 export function activeTab(): Tab | null {
   return tabs.find((t) => t.id === activeId) ?? null;
+}
+
+/** 当前标签页数量（外部批量打开据此判断是否还有新开标签页的余量） */
+export function count(): number {
+  return tabs.length;
 }
 
 /* ========== 快照与恢复 ========== */
@@ -158,12 +164,20 @@ export function switchToTab(id: string): void {
   app.persist();
 }
 
+/* 激活触发的文本装载（惰性装载 / 无驻留修改时的重读）在途时，外部批量打开要先等它落定：
+   「替换当前标签页」语义下两次装载写同一个 tab，晚到的旧内容会盖住新打开的文件 */
+let activateLoad: Promise<void> = Promise.resolve();
+/** 等激活触发的文本装载落定（无在途装载立即返回；装载失败同样视为落定） */
+export function settleActivate(): Promise<void> {
+  return activateLoad.catch(() => {});
+}
+
 /** 文本 tab 内容装载（activate 与 unbindView 关视图回退共用）：
  *  有驻留修改直接重渲染；否则重读文件（编码沿用快照，不重猜） */
 function renderTextTab(snap: TextSnapshot): void {
   if (snap.raw === null) {
     // 无驻留修改：重读文件；短暂显示旧内容属可接受的加载间隙
-    void app.openPath(snap.filePath, {
+    activateLoad = app.openPath(snap.filePath, {
       ratio: snap.ratio,
       encoding: snap.encoding || undefined,
       quiet: true,
@@ -190,7 +204,7 @@ function activate(target: Tab): void {
     const { path, ratio } = target.lazy;
     // lazy 标记保留到装载成功（loadFileContent 清除；失败保留可重试，
     // 窗口期内 descriptors 走 lazy 分支描述出正确路径）
-    void app.openPath(path, { ratio, quiet: true, tab: "replace" });
+    activateLoad = app.openPath(path, { ratio, quiet: true, tab: "replace" });
     return; // openPath 完成内容装载与 UI 更新
   }
   if (target.viewId) {
@@ -433,6 +447,51 @@ tabBar?.addEventListener("auxclick", (e) => {
   if (tab?.dataset.tabId) closeTab(tab.dataset.tabId);
 });
 
+/* 标签右键菜单：复制文件路径 / 在文件夹栏中定位 / 关闭标签页。
+   右键不切换激活——菜单只作用于被右键的标签（同 Chrome / VS Code）；标签栏空白处不弹 */
+tabBar?.addEventListener("contextmenu", (e) => {
+  const el = (e.target as HTMLElement).closest<HTMLElement>(".tab");
+  const tab = tabs.find((t) => t.id === el?.dataset.tabId);
+  if (!tab) return;
+  e.preventDefault();
+  const path = tabRealPath(tab);
+  const items: MenuItemDef[] = [];
+  if (path) {
+    items.push(
+      { label: "复制文件路径", action: () => void copyFilePath(path) },
+      { label: "在文件夹栏中定位", action: () => void import("./folder").then((f) => f.revealFile(path)) },
+      { sep: true }
+    );
+  }
+  // 不标 Ctrl+W：那个快捷键关的是当前标签页，不是被右键的这个
+  items.push({ label: "关闭标签页", action: () => closeTab(tab.id) });
+  showDropdown(items, e.clientX, e.clientY);
+});
+
+/** 「复制文件路径」：远程文件转成系统可直接使用的地址，其余照抄 */
+async function copyFilePath(path: string): Promise<void> {
+  const text = path.startsWith("smb://") ? (await import("./smb")).systemPath(path) : path;
+  let ok = true;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    ok = copyByExecCommand(text); // 非安全上下文或剪贴板权限被拒时的回退
+  }
+  app.toast(ok ? "已复制文件路径" : "复制失败");
+}
+
+function copyByExecCommand(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  return ok;
+}
+
 /** 激活视图上报标题变化时同步 tab 标题（app.updateUI 调用） */
 export function setTitleByView(viewId: string, title: string): void {
   const t = tabs.find((x) => x.viewId === viewId);
@@ -455,6 +514,13 @@ export function adoptActiveText(): void {
   const t = activeTab();
   if (!t) return;
   t.text = snapshotFromState();
+}
+
+/** 标签页对应文件的实际位置：压缩包内条目取压缩包本身。
+ *  取值次序同 descriptors（惰性描述 → 插件视图当前路径 → 文本快照），未装载/打开失败的标签页也有值 */
+export function tabRealPath(t: Tab): string {
+  const p = t.lazy ? t.lazy.path : t.viewId ? plugins.viewPath(t.viewId) : (t.text?.filePath ?? "");
+  return p.split("::")[0];
 }
 
 /** 当前全部 tab 的持久化描述（app.persist 落盘前调用）。

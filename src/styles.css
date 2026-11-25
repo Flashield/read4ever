@@ -303,6 +303,27 @@ body {
   transform: translateX(-50%) translateY(0);
 }
 
+/* 拖拽悬停提示：整窗覆盖、不拦截指针；层级高于弹窗（1001）与菜单（1000），低于轻提示（3000） */
+#drop-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 2900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+#drop-hint span {
+  padding: 14px 34px;
+  border: 2px dashed #fff;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 20px;
+  letter-spacing: 2px;
+}
+
 .reader-content.scroll-hidden {
   cursor: none;
 }

@@ -7,6 +7,7 @@ mod seqfile;
 mod smb;
 mod stream;
 mod store;
+mod sysopen;
 mod wake;
 pub mod zipfile; // pub：src-tauri/tests 集成测试访问
 
@@ -27,16 +28,22 @@ pub fn run() {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
         if !allow_multiple {
-            builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
                 // 重复启动 → 唤起并聚焦已有窗口（含托盘隐藏态）
                 commands::show_main_from_tray(app);
+                // 第二实例带来的文件（「打开方式」/拖到应用图标）按系统打开请求处理
+                sysopen::submit_args(app, &argv);
             }));
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let _ = allow_multiple;
     let builder = builder.plugin(tauri_plugin_dialog::init());
-    let builder = stream::register(builder).manage(wake::WakeState::default());
+    // 系统打开请求：启动参数里已有的路径先入队，前端启动恢复完成后取走
+    let startup = sysopen::paths_from_args(std::env::args_os().skip(1));
+    let builder = stream::register(builder)
+        .manage(wake::WakeState::default())
+        .manage(sysopen::SysOpen::with_pending(startup));
     builder
         .setup(|app| {
             // 系统托盘
@@ -97,6 +104,7 @@ pub fn run() {
             commands::smb_move,
             commands::smb_mkdir,
             wake::set_keep_awake,
+            commands::take_pending_opens,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时隐藏到托盘而非退出
@@ -105,6 +113,7 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .run(ctx)
-        .expect("error while running tauri application");
+        .build(ctx)
+        .expect("error while building tauri application")
+        .run(sysopen::on_run_event);
 }
